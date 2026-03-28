@@ -17,7 +17,6 @@ spec:
     - https://charts.jetstack.io
     - https://prometheus-community.github.io/helm-charts
     - registry-1.docker.io/bitnamicharts
-    - https://helm.goharbor.io
     - oci://ghcr.io/actions/actions-runner-controller-charts
   destinations:
     - namespace: argocd
@@ -35,8 +34,6 @@ spec:
     - namespace: monitoring
       server: https://kubernetes.default.svc
     - namespace: redis
-      server: https://kubernetes.default.svc
-    - namespace: harbor
       server: https://kubernetes.default.svc
     - namespace: arc-systems
       server: https://kubernetes.default.svc

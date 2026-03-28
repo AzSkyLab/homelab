@@ -457,10 +457,6 @@ data:
                   - title: GitHub
                     url: https://github.com/azskylab?tab=repositories
                     icon: si:github
-                  - title: Harbor Registry
-                    url: https://registry.home.lab
-                    icon: si:harbor
-                    allow-insecure: true
                   - title: Proxmox (pve-identity)
                     url: https://pve-identity.home.lab:8006
                     icon: si:proxmox

@@ -266,7 +266,7 @@ docker push <registry>/<image>:latest
 kubectl rollout restart deployment/<name> -n <namespace>
 ```
 
-For proper GitOps, apps should have a GitHub Actions CI workflow that builds images on push and pushes to Harbor. See the GitHub Actions CI/CD section below.
+For proper GitOps, apps should have a GitHub Actions CI workflow that builds images on push and pushes to GHCR. See the GitHub Actions CI/CD section below.
 
 ### Checking ArgoCD Status
 
@@ -387,16 +387,15 @@ GitHub (`github.com/azskylab`) is the primary git remote. CI runs on self-hosted
 ```
 Developer pushes to GitHub (git@github.com:azskylab/<repo>)
   → GitHub Actions triggers CI workflow
-    → ARC scales up runner pod on k3s (DinD mode)
-    → Runner builds Docker image
-    ��� Pushes to Harbor (registry.home.lab)
+    → Builds Docker image
+    → Pushes to GHCR (ghcr.io/azskylab/<image>)
   → ArgoCD watches GitHub repo for k8s manifest changes → deploys
 ```
 
 **Components:**
-- **ARC Controller** — Helm chart (`gha-runner-scale-set-controller`) in `arc-systems` namespace, manages runner lifecycle
-- **ARC Runner Scale Set** — Helm chart (`gha-runner-scale-set`) in `arc-runners` namespace, org-level runners for `azskylab` org
-- **Harbor** — Container registry at `registry.home.lab`, robot account `robot$forgejo-ci` for CI push access
+- **ARC Controller** — Rendered manifests in `kubernetes/manifests/arc-controller/`, manages runner lifecycle
+- **ARC Runner Scale Set** — Rendered manifests in `kubernetes/manifests/arc-runners/`, org-level runners for `azskylab` org
+- **GHCR** — GitHub Container Registry at `ghcr.io`, free for public repos, auth via `GITHUB_TOKEN`
 
 ### Runner Configuration
 
@@ -406,56 +405,56 @@ ARC runners use Docker-in-Docker (DinD) mode for Docker builds:
 - **GitHub config URL**: `https://github.com/azskylab` (org-level)
 - **Authentication**: GitHub App (`arc-github-app` secret in `arc-runners` namespace)
 - **Scaling**: 0-3 runners (scales to zero when idle)
-- **DNS**: `10.0.20.53` (CoreDNS, resolves `registry.home.lab`)
-- **CA trust**: Home Lab root CA injected via init container for Harbor HTTPS
+- **DNS**: `10.0.20.53` (CoreDNS)
 
 Config files:
 - `kubernetes/apps/arc/arc-controller.yml` — ArgoCD Application for ARC controller
 - `kubernetes/apps/arc/arc-runner-set.yml` — ArgoCD Application for runner scale set
-- `kubernetes/apps/arc/arc-manifests.yml` — ArgoCD Application for supporting manifests
-- `kubernetes/manifests/arc/ca-configmap.yml` — Home Lab root CA cert for runners
+- `kubernetes/manifests/arc-controller/controller.yml` — ARC controller rendered manifests
+- `kubernetes/manifests/arc-runners/runner-set.yml` — Runner scale set rendered manifests
+- `kubernetes/manifests/arc-runners/ca-configmap.yml` — Home Lab root CA cert
 
 ### CI Workflow Pattern
 
-Each app repo has `.github/workflows/ci.yml`:
+Each app repo has `.github/workflows/docker.yml`:
 
 ```yaml
 name: Build and Push
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "k8s/**"
-      - "*.md"
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - ".github/workflows/docker.yml"
 
 jobs:
   build:
-    runs-on: homelab-runners
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Login to Harbor
-        env:
-          HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
-          HARBOR_PASS: ${{ secrets.HARBOR_PASSWORD }}
-        run: echo "$HARBOR_PASS" | docker login registry.home.lab -u "$HARBOR_USER" --password-stdin
-      - name: Build and push
-        run: |
-          docker build -t registry.home.lab/csgit34/<image>:${{ github.sha }} -t registry.home.lab/csgit34/<image>:latest .
-          docker push registry.home.lab/csgit34/<image>:${{ github.sha }}
-          docker push registry.home.lab/csgit34/<image>:latest
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/<image>:latest
+            ghcr.io/${{ github.repository_owner }}/<image>:sha-${{ github.sha }}
 ```
-
-**Important:** Harbor credentials MUST use `env:` vars (not inline `${{ secrets.* }}`). The `$` in `robot$forgejo-ci` gets interpreted by bash if placed directly in double-quoted strings.
 
 ### Adding CI to a New Repo
 
-1. **Create Harbor project** (if needed) for the image namespace
-2. **Add GitHub repo secrets** (Settings → Secrets and variables → Actions):
-   - `HARBOR_USERNAME`: `robot$forgejo-ci`
-   - `HARBOR_PASSWORD`: value from `pass homelab/forgejo/harbor-robot-secret`
-3. **Create workflow** at `.github/workflows/ci.yml` following the pattern above
-4. **Ensure GitHub App** has access to the new repo (Settings → Developer settings → GitHub Apps → homelab-arc-runner → Install App → Repository access)
-5. **Push to GitHub** — CI triggers automatically
+1. **Create workflow** at `.github/workflows/docker.yml` following the pattern above
+2. **Ensure GitHub App** has access to the new repo (Settings → Developer settings → GitHub Apps → azskylab-arc-runner → Install App → Repository access)
+3. **Push to GitHub** — CI triggers automatically, images pushed to `ghcr.io/azskylab/<image>`
 
 ### Recreating ARC K8s Secret
 
