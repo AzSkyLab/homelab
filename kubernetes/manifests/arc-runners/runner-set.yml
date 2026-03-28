@@ -1,0 +1,251 @@
+---
+# Source: gha-runner-scale-set/templates/no_permission_serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: homelab-runners-gha-rs-no-permission
+  namespace: arc-runners
+  labels:
+    helm.sh/chart: gha-rs-0.14.0
+    app.kubernetes.io/name: homelab-runners
+    app.kubernetes.io/instance: homelab-runners
+    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: homelab-runners
+    actions.github.com/scale-set-namespace: arc-runners
+  annotations:
+  finalizers:
+    - actions.github.com/cleanup-protection
+---
+# Source: gha-runner-scale-set/templates/manager_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: homelab-runners-gha-rs-manager
+  namespace: arc-runners
+  labels:
+    helm.sh/chart: gha-rs-0.14.0
+    app.kubernetes.io/name: homelab-runners
+    app.kubernetes.io/instance: homelab-runners
+    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: homelab-runners
+    actions.github.com/scale-set-namespace: arc-runners
+    app.kubernetes.io/component: manager-role
+  annotations:
+  finalizers:
+    - actions.github.com/cleanup-protection
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+  - update
+---
+# Source: gha-runner-scale-set/templates/manager_role_binding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: homelab-runners-gha-rs-manager
+  namespace: arc-runners
+  labels:
+    helm.sh/chart: gha-rs-0.14.0
+    app.kubernetes.io/name: homelab-runners
+    app.kubernetes.io/instance: homelab-runners
+    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: homelab-runners
+    actions.github.com/scale-set-namespace: arc-runners
+    app.kubernetes.io/component: manager-role-binding
+  annotations:
+  finalizers:
+    - actions.github.com/cleanup-protection
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: homelab-runners-gha-rs-manager
+subjects:
+- kind: ServiceAccount
+  name: 
+    arc-controller-gha-rs-controller
+  namespace: 
+    arc-systems
+---
+# Source: gha-runner-scale-set/templates/autoscalingrunnerset.yaml
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
+metadata:
+  name: homelab-runners
+  namespace: arc-runners
+  labels:
+    app.kubernetes.io/component: "autoscaling-runner-set"
+    helm.sh/chart: gha-rs-0.14.0
+    app.kubernetes.io/name: homelab-runners
+    app.kubernetes.io/instance: homelab-runners
+    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gha-rs
+    actions.github.com/scale-set-name: homelab-runners
+    actions.github.com/scale-set-namespace: arc-runners
+  annotations:
+    actions.github.com/values-hash: c01ca1640e16b8722f6a39a382ecf9aceb35fe6716fa8a35abc1231e6c4c1da
+    actions.github.com/cleanup-manager-role-binding: homelab-runners-gha-rs-manager
+    actions.github.com/cleanup-manager-role-name: homelab-runners-gha-rs-manager
+    actions.github.com/cleanup-no-permission-service-account-name: homelab-runners-gha-rs-no-permission
+
+spec:
+  githubConfigUrl: https://github.com/azskylab
+  githubConfigSecret: arc-github-app
+  runnerScaleSetName: homelab-runners
+  maxRunners: 3
+  minRunners: 0
+
+  template:
+    spec:
+      dnsConfig: 
+        nameservers:
+        - 10.0.20.53
+        searches:
+        - svc.cluster.local
+        - cluster.local
+      dnsPolicy: 
+        None
+      restartPolicy: Never
+      serviceAccountName: homelab-runners-gha-rs-no-permission
+      initContainers:
+      - name: init-dind-externals
+        
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["cp"]
+        args: ["-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+        volumeMounts:
+          - name: dind-externals
+            mountPath: /home/runner/tmpDir
+      - name: dind
+        image: docker:dind
+        args:
+          - dockerd
+          - --host=unix:///var/run/docker.sock
+          - --group=$(DOCKER_GROUP_GID)
+        env:
+          - name: DOCKER_GROUP_GID
+            value: "123"
+        securityContext:
+          privileged: true
+        restartPolicy: Always
+        startupProbe:
+          exec:
+            command:
+              - docker
+              - info
+          initialDelaySeconds: 0
+          failureThreshold: 24
+          periodSeconds: 5
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+          - name: dind-externals
+            mountPath: /home/runner/externals
+      - command:
+        - sh
+        - -c
+        - |
+          cp /ca/home-lab-root-ca.crt /usr/local/share/ca-certificates/
+          update-ca-certificates
+          cp -r /etc/ssl/certs/* /ssl-certs/
+        image: docker:27-dind
+        name: setup-ca
+        volumeMounts:
+        - mountPath: /ca
+          name: home-lab-ca
+          readOnly: true
+        - mountPath: /ssl-certs
+          name: ssl-certs
+      containers:
+      - name: runner
+        
+        command: 
+          - /home/runner/run.sh
+        image: 
+          ghcr.io/actions/actions-runner:latest
+        env:
+          - name: DOCKER_HOST
+            value: unix:///var/run/docker.sock
+          - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+            value: "120"
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+      
+      volumes:
+      - name: dind-sock
+        emptyDir: {}
+      - name: dind-externals
+        emptyDir: {}
+      
+      - name: work
+        emptyDir: {}
+      
+      - configMap:
+          name: arc-runner-ca
+        name: home-lab-ca
+      - emptyDir: {}
+        name: ssl-certs

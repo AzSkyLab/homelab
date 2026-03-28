@@ -9,48 +9,9 @@ metadata:
 spec:
   project: infrastructure
   source:
-    repoURL: ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
-    targetRevision: "0.14.0"
-    helm:
-      valuesObject:
-        githubConfigUrl: https://github.com/azskylab
-        githubConfigSecret: arc-github-app
-        runnerScaleSetName: homelab-runners
-        maxRunners: 3
-        minRunners: 0
-        containerMode:
-          type: dind
-        template:
-          spec:
-            dnsPolicy: None
-            dnsConfig:
-              nameservers:
-                - "10.0.20.53"
-              searches:
-                - svc.cluster.local
-                - cluster.local
-            initContainers:
-              - name: setup-ca
-                image: docker:27-dind
-                command:
-                  - sh
-                  - -c
-                  - |
-                    cp /ca/home-lab-root-ca.crt /usr/local/share/ca-certificates/
-                    update-ca-certificates
-                    cp -r /etc/ssl/certs/* /ssl-certs/
-                volumeMounts:
-                  - name: home-lab-ca
-                    mountPath: /ca
-                    readOnly: true
-                  - name: ssl-certs
-                    mountPath: /ssl-certs
-            volumes:
-              - name: home-lab-ca
-                configMap:
-                  name: arc-runner-ca
-              - name: ssl-certs
-                emptyDir: {}
+    repoURL: https://github.com/azskylab/homelab.git
+    targetRevision: main
+    path: kubernetes/manifests/arc-runners
   destination:
     server: https://kubernetes.default.svc
     namespace: arc-runners
