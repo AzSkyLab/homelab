@@ -181,6 +181,7 @@ spec:
           - dockerd
           - --host=unix:///var/run/docker.sock
           - --group=$(DOCKER_GROUP_GID)
+          - --insecure-registry=registry.home.lab
         env:
           - name: DOCKER_GROUP_GID
             value: "123"
