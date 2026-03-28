@@ -9,8 +9,7 @@ metadata:
 spec:
   project: infrastructure
   source:
-    repoURL: ghcr.io/actions/actions-runner-controller-charts
-    chart: gha-runner-scale-set-controller
+    repoURL: ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
     targetRevision: "0.14.0"
     helm:
       valuesObject:
