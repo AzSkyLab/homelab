@@ -9,7 +9,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/csGIT34/homelab.git
+    repoURL: https://github.com/azskylab/homelab.git
     targetRevision: main
     path: kubernetes/apps
     directory:

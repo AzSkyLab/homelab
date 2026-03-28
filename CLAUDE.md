@@ -35,12 +35,12 @@ homelab/
 │   │   ├── speedtest-tracker/
 │   │   ├── traefik/
 │   │   ├── workout-tracker/
-│   │   ├── forgejo/              # Forgejo server + runner
+│   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
 │   │   ├── litellm/             # LiteLLM API gateway
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
 │   └── manifests/
 │       ├── ingress/              # Traefik Ingress resources for infra services
-│       ├── forgejo-runner/       # Forgejo Actions runner + DinD sidecar
+│       ├── arc/                  # ARC runner CA certificate
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
 └── docs/                         # Network design, Unifi setup, AD migration
@@ -68,7 +68,6 @@ homelab/
 | Ollama (VM) | 10.0.20.30 | `ollama.home.lab` |
 | Ollama (Workstation) | 10.0.10.40 | `desktop.home.lab` |
 | LiteLLM | 10.0.20.80 | `llm.home.lab` (via Traefik) |
-| Forgejo SSH | 10.0.20.81 | `git.home.lab` (SSH) |
 | WireGuard | 10.0.20.21 (hostNetwork) | `vpn.home.lab` (web UI) |
 
 ### Kubeconfig
@@ -133,7 +132,7 @@ kubectl apply -f kubernetes/projects/infrastructure.yml
    spec:
      project: applications  # or infrastructure
      source:
-       repoURL: https://git.home.lab/csGIT34/<repo>.git
+       repoURL: https://github.com/azskylab/<repo>.git
        targetRevision: main  # or master
        path: k8s/            # path to manifests in the source repo
      destination:
@@ -151,7 +150,7 @@ kubectl apply -f kubernetes/projects/infrastructure.yml
    Edit `kubernetes/projects/applications.yml`:
    ```yaml
    sourceRepos:
-     - https://git.home.lab/csGIT34/<new-repo>.git
+     - https://github.com/azskylab/<new-repo>.git
    ```
    Then apply manually: `kubectl apply -f kubernetes/projects/applications.yml`
 
@@ -211,15 +210,16 @@ spec:
 | cert-manager | cert-manager | Helm | Internal CA (`home-lab-ca`) |
 | MetalLB | metallb-system | Helm | IP pool: `k8s-vlan-pool` |
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
-| Forgejo | forgejo | Helm (forgejo-helm) | https://git.home.lab |
+| ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
+| ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
 
 ### Application Workloads
 
 | App | Namespace | Source Repo | Access |
 |-----|-----------|-------------|--------|
 | Linkwarden | linkwarden | homelab (kubernetes/manifests/linkwarden/) | https://linkwarden.home.lab |
-| Workout Tracker | workout-tracker | Forgejo csGIT34/workouttracker (k8s/) | https://workout.home.lab |
-| CorpoCache | corpocache | Forgejo csGIT34/CorpoCache (helm/) | https://cache.home.lab |
+| Workout Tracker | workout-tracker | GitHub azskylab/workouttracker (k8s/) | https://workout.home.lab |
+| CorpoCache | corpocache | GitHub azskylab/CorpoCache (helm/) | https://cache.home.lab |
 | Speedtest Tracker | speedtest-tracker | homelab (kubernetes/manifests/speedtest-tracker/) | https://speedtest.home.lab |
 | LiteLLM | litellm | homelab (kubernetes/manifests/litellm/) | https://llm.home.lab |
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
@@ -266,7 +266,7 @@ docker push <registry>/<image>:latest
 kubectl rollout restart deployment/<name> -n <namespace>
 ```
 
-For proper GitOps, apps should have a Forgejo Actions CI pipeline that builds images on push and pushes to Harbor. See the Forgejo CI/CD section below.
+For proper GitOps, apps should have a GitHub Actions CI workflow that builds images on push and pushes to Harbor. See the GitHub Actions CI/CD section below.
 
 ### Checking ArgoCD Status
 
@@ -317,9 +317,9 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/pgadmin/*` | pgadmin-credentials | pgadmin | Default admin email and password |
 | `homelab/corpocache/*` | corpocache-secret | corpocache | PostgreSQL connection details |
 | `homelab/workout-tracker/*` | workout-tracker-secrets | workout-tracker | PostgreSQL URL, JWT secrets |
-| `homelab/forgejo/*` | forgejo-db-secret, forgejo-app-secrets, forgejo-admin-secret | forgejo | DB password, secret key, internal token, JWT secrets, admin credentials |
-| `homelab/forgejo/runner-registration-token` | forgejo-runner-secret | forgejo | Forgejo Actions runner registration token |
-| `homelab/forgejo/harbor-robot-secret` | forgejo-runner-harbor-secret | forgejo | Harbor robot account for CI image push |
+| `homelab/arc/github-app-id` | arc-github-app | arc-runners | GitHub App ID for ARC runner registration |
+| `homelab/arc/github-app-installation-id` | arc-github-app | arc-runners | GitHub App Installation ID |
+| `homelab/arc/github-app-private-key` | arc-github-app | arc-runners | GitHub App private key (PEM) |
 | `homelab/litellm/master-key` | litellm-secrets | litellm | LiteLLM master key (API auth + UI login) |
 | `homelab/litellm/db-password` | litellm-secrets | litellm | LiteLLM PostgreSQL password |
 | `homelab/litellm/master-key` | litellm-api-key | open-webui | Same key, used by Open WebUI to call LiteLLM |
@@ -378,45 +378,46 @@ Open WebUI connects to LiteLLM via env vars in `kubernetes/manifests/open-webui/
 - **Workstation UFW rule**: `ufw allow from 10.0.20.0/24 to any port 11434 proto tcp`
 - Workstation Ollama binds `0.0.0.0` via systemd override at `/etc/systemd/system/ollama.service.d/override.conf`
 
-## Forgejo CI/CD
+## GitHub Actions CI/CD (ARC)
 
 ### Architecture
 
-Forgejo (`git.home.lab`) is the primary git remote for application repos. It provides GitHub Actions-compatible CI via Forgejo Actions.
+GitHub (`github.com/azskylab`) is the primary git remote. CI runs on self-hosted runners via Actions Runner Controller (ARC) on k3s.
 
 ```
-Developer pushes to Forgejo (git@git.home.lab)
-  → Forgejo Actions triggers CI workflow
-    → Runner builds Docker image (DinD sidecar)
-    → Pushes to Harbor (registry.home.lab)
-  → Forgejo push-mirrors to GitHub (backup)
-  → ArgoCD watches Forgejo repo for k8s manifest changes → deploys
+Developer pushes to GitHub (git@github.com:azskylab/<repo>)
+  → GitHub Actions triggers CI workflow
+    → ARC scales up runner pod on k3s (DinD mode)
+    → Runner builds Docker image
+    ��� Pushes to Harbor (registry.home.lab)
+  → ArgoCD watches GitHub repo for k8s manifest changes → deploys
 ```
 
 **Components:**
-- **Forgejo server** — Helm chart via ArgoCD (`kubernetes/apps/forgejo/forgejo.yml`), external PG + Redis, Traefik ingress (HTTP+HTTPS), SSH via MetalLB LoadBalancer at `10.0.20.81`
-- **Forgejo runner** — Raw k8s manifests (`kubernetes/manifests/forgejo-runner/`), DinD sidecar (privileged) for Docker builds
+- **ARC Controller** — Helm chart (`gha-runner-scale-set-controller`) in `arc-systems` namespace, manages runner lifecycle
+- **ARC Runner Scale Set** — Helm chart (`gha-runner-scale-set`) in `arc-runners` namespace, org-level runners for `azskylab` org
 - **Harbor** — Container registry at `registry.home.lab`, robot account `robot$forgejo-ci` for CI push access
 
 ### Runner Configuration
 
-The runner uses Docker-in-Docker (DinD) to build images inside CI jobs:
+ARC runners use Docker-in-Docker (DinD) mode for Docker builds:
 
-- **Runner image**: `code.forgejo.org/forgejo/runner:6.3.1`
-- **DinD image**: `docker:27-dind` with `--insecure-registry=registry.home.lab`
-- **Instance URL**: `http://git.home.lab` (HTTP, not HTTPS — runner runs as non-root, can't install CA certs)
-- **Job container DNS**: `--dns 10.0.20.53` (external CoreDNS, resolves `git.home.lab` and `registry.home.lab`)
-- **Docker socket**: Mounted into job containers via `-v /var/run/docker.sock:/var/run/docker.sock`
-- **Labels**: `ubuntu-latest` → `node:20-bookworm`, `docker` → `docker:27`
+- **Runner scale set name**: `homelab-runners` (use in `runs-on:`)
+- **GitHub config URL**: `https://github.com/azskylab` (org-level)
+- **Authentication**: GitHub App (`arc-github-app` secret in `arc-runners` namespace)
+- **Scaling**: 0-3 runners (scales to zero when idle)
+- **DNS**: `10.0.20.53` (CoreDNS, resolves `registry.home.lab`)
+- **CA trust**: Home Lab root CA injected via init container for Harbor HTTPS
 
 Config files:
-- `kubernetes/manifests/forgejo-runner/deployment.yml` — Runner + DinD sidecar Deployment
-- `kubernetes/manifests/forgejo-runner/configmap.yml` — Runner config (labels, capacity, DNS, container options)
-- `kubernetes/manifests/forgejo-runner/ca-configmap.yml` — Home Lab root CA cert for DinD
+- `kubernetes/apps/arc/arc-controller.yml` — ArgoCD Application for ARC controller
+- `kubernetes/apps/arc/arc-runner-set.yml` — ArgoCD Application for runner scale set
+- `kubernetes/apps/arc/arc-manifests.yml` — ArgoCD Application for supporting manifests
+- `kubernetes/manifests/arc/ca-configmap.yml` — Home Lab root CA cert for runners
 
 ### CI Workflow Pattern
 
-Each app repo has `.forgejo/workflows/ci.yml`:
+Each app repo has `.github/workflows/ci.yml`:
 
 ```yaml
 name: Build and Push
@@ -429,12 +430,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: homelab-runners
     steps:
       - uses: actions/checkout@v4
-      - name: Install Docker CLI
-        run: |
-          apt-get update && apt-get install -y docker.io
       - name: Login to Harbor
         env:
           HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
@@ -452,33 +450,20 @@ jobs:
 ### Adding CI to a New Repo
 
 1. **Create Harbor project** (if needed) for the image namespace
-2. **Add Forgejo repo secrets** (Settings → Actions → Secrets):
+2. **Add GitHub repo secrets** (Settings → Secrets and variables → Actions):
    - `HARBOR_USERNAME`: `robot$forgejo-ci`
    - `HARBOR_PASSWORD`: value from `pass homelab/forgejo/harbor-robot-secret`
-3. **Create workflow** at `.forgejo/workflows/ci.yml` following the pattern above
-4. **Push to Forgejo** — CI triggers automatically
+3. **Create workflow** at `.github/workflows/ci.yml` following the pattern above
+4. **Ensure GitHub App** has access to the new repo (Settings → Developer settings → GitHub Apps → homelab-arc-runner → Install App → Repository access)
+5. **Push to GitHub** — CI triggers automatically
 
-### Push Mirroring
-
-Repos on Forgejo are push-mirrored to GitHub as backup (sync-on-commit + 8h interval). Configure via Forgejo UI: **Repo Settings → Repository → Mirror Settings → Add Push Mirror**.
-
-GitHub PAT stored at `pass homelab/forgejo/github-mirror-pat` (needs `repo` scope).
-
-### Git Remotes
-
-Local repos use Forgejo as `origin` and GitHub as `github`:
+### Recreating ARC K8s Secret
 
 ```bash
-git remote -v
-# origin   git@git.home.lab:csGIT34/<repo>.git (Forgejo, primary)
-# github   git@github.com:csGIT34/<repo>.git (GitHub, backup)
-```
-
-SSH config for Forgejo (`~/.ssh/config`):
-```
-Host git.home.lab
-  HostName 10.0.20.81
-  User git
+kubectl create secret generic arc-github-app -n arc-runners \
+  --from-literal=github_app_id="$(pass homelab/arc/github-app-id)" \
+  --from-literal=github_app_installation_id="$(pass homelab/arc/github-app-installation-id)" \
+  --from-literal=github_app_private_key="$(pass homelab/arc/github-app-private-key)"
 ```
 
 ## WireGuard VPN (Remote Access)

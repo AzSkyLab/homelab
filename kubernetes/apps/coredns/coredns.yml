@@ -76,7 +76,6 @@ spec:
               chat              IN  A    10.0.20.80
               n8n               IN  A    10.0.20.80
               registry          IN  A    10.0.20.80
-              git               IN  A    10.0.20.80
               glance-k8s        IN  A    10.0.20.61
               pve-identity      IN  A    10.0.10.11
               pve-r720          IN  A    10.0.10.12

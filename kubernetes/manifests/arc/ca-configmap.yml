@@ -2,8 +2,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: forgejo-runner-ca
-  namespace: forgejo
+  name: arc-runner-ca
+  namespace: arc-runners
 data:
   home-lab-root-ca.crt: |
     -----BEGIN CERTIFICATE-----

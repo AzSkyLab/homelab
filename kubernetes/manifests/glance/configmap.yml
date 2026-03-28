@@ -454,10 +454,9 @@ data:
                     url: https://llm.home.lab/ui
                     icon: si:openai
                     allow-insecure: true
-                  - title: Forgejo
-                    url: https://git.home.lab
-                    icon: si:forgejo
-                    allow-insecure: true
+                  - title: GitHub
+                    url: https://github.com/azskylab?tab=repositories
+                    icon: si:github
                   - title: Harbor Registry
                     url: https://registry.home.lab
                     icon: si:harbor

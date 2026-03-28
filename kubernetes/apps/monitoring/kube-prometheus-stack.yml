@@ -146,9 +146,9 @@ spec:
                   - name: DS_PROMETHEUS
                     value: Prometheus
               proxmox-ve:
-                url: https://raw.githubusercontent.com/csGIT34/homelab/main/kubernetes/manifests/grafana-dashboards/proxmox-ve.json
+                url: https://raw.githubusercontent.com/azskylab/homelab/main/kubernetes/manifests/grafana-dashboards/proxmox-ve.json
               disk-storage:
-                url: https://raw.githubusercontent.com/csGIT34/homelab/main/kubernetes/manifests/grafana-dashboards/disk-storage.json
+                url: https://raw.githubusercontent.com/azskylab/homelab/main/kubernetes/manifests/grafana-dashboards/disk-storage.json
             homelab-network:
               unpoller-network-sites:
                 gnetId: 11311

@@ -9,7 +9,7 @@ metadata:
 spec:
   description: Infrastructure services (service mesh, ingress, monitoring)
   sourceRepos:
-    - https://github.com/csGIT34/homelab.git
+    - https://github.com/azskylab/homelab.git
     - https://argoproj.github.io/argo-helm
     - https://metallb.github.io/metallb
     - https://coredns.github.io/helm
@@ -18,7 +18,7 @@ spec:
     - https://prometheus-community.github.io/helm-charts
     - registry-1.docker.io/bitnamicharts
     - https://helm.goharbor.io
-    - oci://code.forgejo.org/forgejo-helm/forgejo
+    - oci://ghcr.io/actions/actions-runner-controller-charts
   destinations:
     - namespace: argocd
       server: https://kubernetes.default.svc
@@ -38,7 +38,9 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: harbor
       server: https://kubernetes.default.svc
-    - namespace: forgejo
+    - namespace: arc-systems
+      server: https://kubernetes.default.svc
+    - namespace: arc-runners
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: "*"

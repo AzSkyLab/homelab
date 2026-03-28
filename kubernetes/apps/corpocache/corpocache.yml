@@ -9,7 +9,7 @@ metadata:
 spec:
   project: applications
   source:
-    repoURL: https://git.home.lab/csGIT34/CorpoCache.git
+    repoURL: https://github.com/azskylab/CorpoCache.git
     targetRevision: main
     path: helm/corpocache
     helm:

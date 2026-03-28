@@ -9,9 +9,9 @@ metadata:
 spec:
   description: Application workloads
   sourceRepos:
-    - https://github.com/csGIT34/homelab.git
-    - https://git.home.lab/csGIT34/workouttracker.git
-    - https://git.home.lab/csGIT34/CorpoCache.git
+    - https://github.com/azskylab/homelab.git
+    - https://github.com/azskylab/workouttracker.git
+    - https://github.com/azskylab/CorpoCache.git
   destinations:
     - namespace: "*"
       server: https://kubernetes.default.svc

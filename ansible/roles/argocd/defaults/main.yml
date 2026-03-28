@@ -6,7 +6,7 @@ argocd_chart_repo: https://argoproj.github.io/argo-helm
 argocd_nodeport: 30443
 
 # Git repo for ArgoCD
-argocd_repo_url: https://github.com/csGIT34/homelab.git
+argocd_repo_url: https://github.com/azskylab/homelab.git
 argocd_repo_branch: main
 
 # Kubeconfig

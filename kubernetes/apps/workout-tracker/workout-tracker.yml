@@ -9,7 +9,7 @@ metadata:
 spec:
   project: applications
   source:
-    repoURL: https://git.home.lab/csGIT34/workouttracker.git
+    repoURL: https://github.com/azskylab/workouttracker.git
     targetRevision: master
     path: k8s/
   destination:
