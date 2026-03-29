@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: n8n
-          image: docker.n8n.io/n8nio/n8n:latest
+          image: docker.n8n.io/n8nio/n8n:2.13.3
           ports:
             - name: http
               containerPort: 5678
