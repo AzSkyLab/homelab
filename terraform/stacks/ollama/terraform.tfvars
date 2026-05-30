@@ -5,7 +5,7 @@ target_node       = "pve-desktop"
 
 cores     = 8
 memory    = 16384
-disk_size = 100
+disk_size = 200
 
 vlan_id    = 20
 ip_address = "10.0.20.30/24"

@@ -36,7 +36,7 @@ variable "memory" {
 variable "disk_size" {
   type        = number
   description = "Disk size in GB"
-  default     = 100
+  default     = 200
 }
 
 variable "vlan_id" {
