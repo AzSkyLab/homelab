@@ -17,6 +17,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: metallb-system
+  ignoreDifferences:
+    # metallb's controller injects the real webhook caBundle at runtime;
+    # the chart ships a placeholder, causing a permanent diff. Ignore it.
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - .spec.conversion.webhook.clientConfig.caBundle
   syncPolicy:
     automated:
       prune: true
