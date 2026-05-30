@@ -8,63 +8,39 @@ data:
   config.yaml: |
     model_list:
       # VM - RTX 3090 (24GB) — explicit models with vm/ prefix
-      - model_name: "vm/gemma3:27b"
+      - model_name: "vm/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/gemma3:27b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/mistral-small:24b"
-        litellm_params:
-          model: "ollama/mistral-small:24b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/phi4:14b"
-        litellm_params:
-          model: "ollama/phi4:14b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/qwen2.5-coder:32b"
-        litellm_params:
-          model: "ollama/qwen2.5-coder:32b"
+          model: "ollama/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
       - model_name: "vm/deepseek-r1:32b"
         litellm_params:
           model: "ollama/deepseek-r1:32b"
           api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/llama3.2:latest"
+      - model_name: "vm/gemma4:26b"
         litellm_params:
-          model: "ollama/llama3.2:latest"
+          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.20.30:11434"
       # Workstation - RTX 5090 (32GB) — explicit models with ws/ prefix
-      - model_name: "ws/gemma3:27b"
+      - model_name: "ws/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/gemma3:27b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ws/qwen2.5-coder:32b"
-        litellm_params:
-          model: "ollama/qwen2.5-coder:32b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ws/qwen3:32b"
-        litellm_params:
-          model: "ollama/qwen3:32b"
+          model: "ollama/qwen3-coder:30b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ws/deepseek-r1:32b"
         litellm_params:
           model: "ollama/deepseek-r1:32b"
           api_base: "http://10.0.10.40:11434"
+      - model_name: "ws/gemma4:26b"
+        litellm_params:
+          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
+          api_base: "http://10.0.10.40:11434"
       # Load-balanced — same model_name with multiple backends for round-robin
-      - model_name: "ollama/gemma3:27b"
+      - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/gemma3:27b"
+          model: "ollama/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/gemma3:27b"
+      - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/gemma3:27b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ollama/qwen2.5-coder:32b"
-        litellm_params:
-          model: "ollama/qwen2.5-coder:32b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/qwen2.5-coder:32b"
-        litellm_params:
-          model: "ollama/qwen2.5-coder:32b"
+          model: "ollama/qwen3-coder:30b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ollama/deepseek-r1:32b"
         litellm_params:
@@ -74,22 +50,13 @@ data:
         litellm_params:
           model: "ollama/deepseek-r1:32b"
           api_base: "http://10.0.10.40:11434"
-      # Single-backend models (no load balancing peer)
-      - model_name: "ollama/mistral-small:24b"
+      - model_name: "ollama/gemma4:26b"
         litellm_params:
-          model: "ollama/mistral-small:24b"
+          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/phi4:14b"
+      - model_name: "ollama/gemma4:26b"
         litellm_params:
-          model: "ollama/phi4:14b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/llama3.2:latest"
-        litellm_params:
-          model: "ollama/llama3.2:latest"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/qwen3:32b"
-        litellm_params:
-          model: "ollama/qwen3:32b"
+          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.10.40:11434"
 
     general_settings:
