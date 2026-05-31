@@ -11,6 +11,7 @@
       --tls-san {{ ansible_host }} \
       --disable traefik \
       --disable servicelb \
+      --kube-controller-manager-arg=terminated-pod-gc-threshold=100 \
       --flannel-iface eth0 \
       --node-ip {{ ansible_host }}
   args:
