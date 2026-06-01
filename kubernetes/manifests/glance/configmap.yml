@@ -478,8 +478,9 @@ data:
                 title: Latest Movies
                 frameless: true
                 cache: 5m
+                allow-insecure: true
                 options:
-                  base-url: http://jellyfin.home.lab
+                  base-url: https://jellyfin.home.lab
                   api-key: ${JELLYFIN_API_KEY}
                   user-name: "root"
                   library-name: "Movies"
@@ -952,8 +953,9 @@ data:
               - type: custom-api
                 title: Jellyfin Stats
                 cache: 5m
+                allow-insecure: true
                 options:
-                  url: http://jellyfin.home.lab
+                  url: https://jellyfin.home.lab
                   key: ${JELLYFIN_API_KEY}
                 template: |
                   {{ $url := .Options.StringOr "url" "" }}
