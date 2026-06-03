@@ -26,13 +26,6 @@ spec:
             loadBalancerIP: "10.0.20.80"
           annotations:
             metallb.universe.tf/address-pool: k8s-vlan-pool
-        ports:
-          web:
-            redirections:
-              entryPoint:
-                to: websecure
-                scheme: https
-                permanent: true
         resources:
           requests:
             cpu: 100m
