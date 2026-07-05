@@ -26,11 +26,20 @@ PVE_DESKTOP="10.0.10.13"    # k3s control plane, ollama (GPU)
 
 HOSTS=("$PVE_R720" "$PVE_DESKTOP" "$PVE_IDENTITY")
 
-# Wake-on-LAN MACs (optional). Fill in to let `up` power hosts on remotely.
+# Wake-on-LAN MACs — lets `up` power the hosts on remotely (magic packet).
+# NIC-side WoL (ethtool wol g) is enabled + persisted on each host via a
+# wol.service oneshot. Actually waking from full-off (S5) ALSO requires WoL
+# enabled in each host's BIOS/UEFI — set that manually if a host won't wake.
+# Caveats:
+#   - pve-identity/pve-r720 bond their NICs (LACP); a magic packet must reach a
+#     physical port, which can be unreliable through a UniFi LAG when the host
+#     is fully off. If they don't wake, power on manually.
+#   - pve-r720 is most reliably powered on via iDRAC (10.0.10.15):
+#       racadm -r 10.0.10.15 -u <user> -p <pass> serveraction powerup
 declare -A WOL_MAC=(
-  # ["$PVE_IDENTITY"]="aa:bb:cc:dd:ee:11"
-  # ["$PVE_R720"]="aa:bb:cc:dd:ee:12"
-  # ["$PVE_DESKTOP"]="aa:bb:cc:dd:ee:13"
+  ["$PVE_IDENTITY"]="0c:c4:7a:08:e7:68"
+  ["$PVE_R720"]="90:b1:1c:20:a0:b1"
+  ["$PVE_DESKTOP"]="b4:2e:99:a2:fb:86"
 )
 
 SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes"
@@ -187,20 +196,38 @@ do_down() {
   log "All servers down. Safe to unplug."
 }
 
+# Send a WoL magic packet to a MAC. Prefers wakeonlan/etherwake if installed,
+# otherwise falls back to a native python3 broadcast (no external dependency).
+send_wol() {
+  local mac="$1"
+  if command -v wakeonlan >/dev/null 2>&1; then wakeonlan "$mac" >/dev/null 2>&1 && return 0; fi
+  if command -v etherwake  >/dev/null 2>&1; then etherwake  "$mac" >/dev/null 2>&1 && return 0; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$mac" <<'PY'
+import socket, sys
+mac = sys.argv[1].replace(':', '').replace('-', '')
+pkt = bytes.fromhex('f' * 12 + mac * 16)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+for port in (9, 7):
+    s.sendto(pkt, ('255.255.255.255', port))
+PY
+    return 0
+  fi
+  return 1
+}
+
 wake_hosts() {
   local down=()
   for h in "${HOSTS[@]}"; do host_up "$h" || down+=("$h"); done
   [[ ${#down[@]} -eq 0 ]] && return 0
-  local waker=""
-  command -v wakeonlan >/dev/null 2>&1 && waker="wakeonlan"
-  command -v etherwake  >/dev/null 2>&1 && waker="${waker:-etherwake}"
   for h in "${down[@]}"; do
     local mac="${WOL_MAC[$h]:-}"
-    if [[ -n "$mac" && -n "$waker" ]]; then
+    if [[ -n "$mac" ]]; then
       log "WOL magic packet -> $h ($mac)"
-      $waker "$mac" >/dev/null 2>&1 || warn "  WOL send failed for $h"
+      send_wol "$mac" || warn "  WOL send failed for $h — power it on manually"
     else
-      warn "Host $h is OFF — power it on manually (no WOL MAC/tool configured)"
+      warn "Host $h is OFF — power it on manually (no WOL MAC configured)"
     fi
   done
   log "Waiting for Proxmox hosts to come online"
