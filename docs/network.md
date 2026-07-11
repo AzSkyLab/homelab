@@ -191,9 +191,17 @@ Switch LAG config: Unifi US-24 ports set to "Aggregating" operation for each bon
 
 ## DNS
 
-- Primary DNS: CoreDNS on k3s (`10.0.20.53`) — resolves `home.lab` zone, forwards all other queries to `1.1.1.1` / `8.8.8.8`
-- Fallback DNS: `1.1.1.1` — handed out as secondary via DHCP so internet DNS works if k3s is down
-- AD DNS: dc-01 (`10.0.10.10`) — only for AD-joined machines and Entra Connect testing
-- DHCP on homelab VLANs: `10.0.20.53, 1.1.1.1`
-- DHCP on Work/Guest VLANs: `1.1.1.1, 8.8.8.8` (no local DNS needed)
-- **Note:** Mobile devices may query any DHCP-provided DNS server, not just the first. If `*.home.lab` fails to resolve on a phone, manually set DNS to `10.0.20.53` only in the device's WiFi settings.
+> **State (2026-07): client VLANs now use the USG gateway as DNS, not CoreDNS `10.0.20.53`.**
+> Done to stop WiFi/internet dying when pve-desktop (k3s control plane) is off. Side effect:
+> `home.lab` no longer resolves on those VLANs until a modern gateway takes over local DNS.
+> Full context + cutover plan: [unifi/dns-and-gateway-plan.md](unifi/dns-and-gateway-plan.md).
+
+- **Client VLANs (Management, Personal 60, IoT 70, Sandbox 40):** DHCP hands out the USG
+  gateway IP for that VLAN (e.g. `10.0.60.1`) as the single DNS server; the USG forwards to
+  public DNS. Keeps internet working with every server off. `home.lab` does NOT resolve here.
+- **CoreDNS `coredns-external` (`10.0.20.53`, on k3s):** still serves the `home.lab` zone and
+  forwards other queries — used by the workstation split-DNS and in-cluster pods
+  (`kube-system` `coredns-custom` forwards `home.lab → 10.0.20.53`). No longer handed to client VLANs.
+- **Workstation:** split DNS (`~home.lab → 10.0.20.53`, else public) via NetworkManager.
+- **AD DNS:** dc-01 (`10.0.10.10`) — AD-joined machines / Entra Connect only.
+- **Work/Guest VLANs:** public DNS only (`8.8.8.8`), no local DNS needed.
