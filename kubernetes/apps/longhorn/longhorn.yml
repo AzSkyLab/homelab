@@ -1,0 +1,43 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://charts.longhorn.io
+    chart: longhorn
+    targetRevision: "1.12.0"
+    helm:
+      valuesObject:
+        persistence:
+          defaultClass: false
+          defaultClassReplicaCount: 2
+        defaultSettings:
+          defaultReplicaCount: 2
+          defaultDataLocality: best-effort
+        ingress:
+          enabled: true
+          ingressClassName: traefik
+          host: longhorn.home.lab
+          tls: true
+          tlsSecret: longhorn-tls
+          annotations:
+            cert-manager.io/cluster-issuer: home-lab-ca
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

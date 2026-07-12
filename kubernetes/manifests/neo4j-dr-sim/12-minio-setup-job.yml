@@ -1,0 +1,33 @@
+---
+# One-shot setup: buckets + versioning + east->west bucket replication
+# (the Azure Blob Object Replication analogue; async + server-side, same semantics).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-setup
+  namespace: neo4j-eastus2
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc alias set east http://minio.neo4j-eastus2.svc.cluster.local:9000 minioadmin minioadmin123; do sleep 5; done
+              until mc alias set west http://minio.neo4j-centralus.svc.cluster.local:9000 minioadmin minioadmin123; do sleep 5; done
+              mc mb -p east/dumps || true
+              mc mb -p west/dumps || true
+              mc version enable east/dumps
+              mc version enable west/dumps
+              mc replicate add east/dumps \
+                --remote-bucket "http://minioadmin:minioadmin123@minio.neo4j-centralus.svc.cluster.local:9000/dumps" \
+                --priority 1 2>/dev/null || echo "replication rule already exists"
+              mc replicate ls east/dumps
+              echo "minio setup complete"

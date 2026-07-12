@@ -18,8 +18,12 @@ spec:
     - https://prometheus-community.github.io/helm-charts
     - registry-1.docker.io/bitnamicharts
     - oci://ghcr.io/actions/actions-runner-controller-charts
+    - https://charts.longhorn.io
+    - https://piraeus.io/helm-charts
   destinations:
     - namespace: argocd
+      server: https://kubernetes.default.svc
+    - namespace: longhorn-system
       server: https://kubernetes.default.svc
     - namespace: kube-system
       server: https://kubernetes.default.svc

@@ -1,0 +1,119 @@
+---
+# Primary Neo4j CE — "eastus2". Single Azure Disk PV analogue: one Longhorn RWO
+# volume holding stores + tx logs (atomic snapshots). Never stopped for backups.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: neo4j-eastus2
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: neo4j
+  replicas: 1
+  selector:
+    matchLabels: {app: neo4j, sim-region: eastus2}
+  template:
+    metadata:
+      labels: {app: neo4j, sim-region: eastus2}
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: neo4j
+          image: neo4j:5.26.28-community
+          env:
+            - name: NEO4J_AUTH
+              value: "neo4j/neo4jdemo-2026"   # DEMO credential, lab only
+            - name: NEO4J_db_checkpoint_interval_time
+              value: "5m"
+            - name: NEO4J_server_memory_heap_initial__size
+              value: "512m"
+            - name: NEO4J_server_memory_heap_max__size
+              value: "512m"
+            - name: NEO4J_server_memory_pagecache_size
+              value: "256m"
+          ports:
+            - {name: http, containerPort: 7474}
+            - {name: bolt, containerPort: 7687}
+          readinessProbe:
+            tcpSocket: {port: 7687}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: 7687}
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "1", memory: 1536Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: neo4j-eastus2
+spec:
+  selector: {app: neo4j, sim-region: eastus2}
+  ports:
+    - {name: http, port: 7474, targetPort: 7474}
+    - {name: bolt, port: 7687, targetPort: 7687}
+---
+# Fixed LB IP = the "region endpoint". neo4j.db.home.lab points here (10.0.20.90)
+# until a failover PR flips the CoreDNS record to 10.0.20.91 (centralus).
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j-lb
+  namespace: neo4j-eastus2
+  annotations:
+    metallb.universe.tf/address-pool: k8s-vlan-pool
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 10.0.20.90
+  selector: {app: neo4j, sim-region: eastus2}
+  ports:
+    - {name: bolt, port: 7687, targetPort: 7687}
+    - {name: http, port: 7474, targetPort: 7474}
+---
+# Seed data + schema so restores can prove both survive.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neo4j-seed
+  namespace: neo4j-eastus2
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: neo4j:5.26.28-community
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              A="bolt://neo4j.neo4j-eastus2.svc.cluster.local:7687"
+              until cypher-shell -a "$A" -u neo4j -p 'neo4jdemo-2026' "RETURN 1;" >/dev/null 2>&1; do
+                echo waiting for neo4j; sleep 10
+              done
+              EXISTING=$(cypher-shell -a "$A" -u neo4j -p 'neo4jdemo-2026' --format plain "MATCH (n:Person) RETURN count(n);" | tail -1)
+              if [ "$EXISTING" -ge 100000 ] 2>/dev/null; then echo "already seeded ($EXISTING)"; exit 0; fi
+              cypher-shell -a "$A" -u neo4j -p 'neo4jdemo-2026' "CREATE INDEX person_id IF NOT EXISTS FOR (p:Person) ON (p.id);"
+              cypher-shell -a "$A" -u neo4j -p 'neo4jdemo-2026' "UNWIND range(1,100000) AS i CREATE (:Person {id: i, name: 'person-' + toString(i)});"
+              cypher-shell -a "$A" -u neo4j -p 'neo4jdemo-2026' --format plain "MATCH (n) RETURN count(n);"
+              echo "seed complete"

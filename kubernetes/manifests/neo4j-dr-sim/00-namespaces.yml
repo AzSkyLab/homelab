@@ -1,0 +1,27 @@
+---
+# Simulated Azure regions for the Neo4j CE backup/DR concept demo.
+# eastus2 = primary, centralus = DR. See docs/neo4j-dr-sim.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neo4j-eastus2
+  labels:
+    sim-region: eastus2
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neo4j-centralus
+  labels:
+    sim-region: centralus
+---
+# In-cluster Longhorn snapshots (type: snap) — no backup target needed.
+# Plays the role of Azure Disk incremental snapshots.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: longhorn-snap
+driver: driver.longhorn.io
+deletionPolicy: Delete
+parameters:
+  type: snap
