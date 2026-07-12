@@ -18,10 +18,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
@@ -106,9 +106,12 @@ data:
             - |
               set -e
               mc alias set west http://minio.neo4j-centralus.svc.cluster.local:9000 minioadmin minioadmin123
-              LATEST=$(mc ls west/dumps/prod/ | awk '{print $NF}' | tr -d '/' | sort | tail -1)
-              [ -n "$LATEST" ] || { echo "no dumps in DR bucket"; exit 1; }
-              mc stat west/dumps/prod/$LATEST/latest-verified >/dev/null || { echo "newest folder $LATEST lacks verified marker"; exit 1; }
+              LATEST=""
+              for p in $(mc find west/dumps/prod/ --name latest-verified); do
+                d=${p%/latest-verified}; d=${d##*/}
+                if [ "$d" \> "$LATEST" ]; then LATEST=$d; fi
+              done
+              [ -n "$LATEST" ] || { echo "no verified dumps in DR bucket"; exit 1; }
               echo "restoring from $LATEST"
               mc cp --recursive west/dumps/prod/$LATEST/ /restore/
               ls -la /restore

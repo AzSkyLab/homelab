@@ -34,9 +34,12 @@ spec:
               set -e
               if [ -d /data/databases/neo4j ]; then echo "data present — skipping hydration"; exit 0; fi
               mc alias set west http://minio.neo4j-centralus.svc.cluster.local:9000 minioadmin minioadmin123
-              LATEST=$(mc ls west/dumps/prod/ | awk '{print $NF}' | tr -d '/' | sort | tail -1)
-              [ -n "$LATEST" ] || { echo "no dumps available to hydrate from"; exit 1; }
-              mc stat west/dumps/prod/$LATEST/latest-verified >/dev/null || { echo "newest folder lacks verified marker"; exit 1; }
+              LATEST=""
+              for p in $(mc find west/dumps/prod/ --name latest-verified); do
+                d=${p%/latest-verified}; d=${d##*/}
+                if [ "$d" \> "$LATEST" ]; then LATEST=$d; fi
+              done
+              [ -n "$LATEST" ] || { echo "no verified dumps to hydrate from"; exit 1; }
               echo "hydrating from $LATEST"
               mc cp --recursive west/dumps/prod/$LATEST/ /restore/
               touch /restore/.do-load
