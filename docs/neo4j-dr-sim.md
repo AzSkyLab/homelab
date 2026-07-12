@@ -84,6 +84,17 @@ Failback: revert the commit (replicas back to 0, DNS back to .90). Delete the
 centralus PVC (`data-neo4j-0`) afterwards if you want the next failover to
 re-hydrate from a fresh dump.
 
+## Demo results (2026-07-11, first full run)
+
+Every stage verified live on the cluster:
+
+- Snapshot of the running primary: ready in ~19 s; prod accepted writes mid-backup (zero downtime proven).
+- Clone-dump backup: snapshot -> clone PVC -> crash recovery -> clean stop -> check -> dump -> upload + marker, ~5 min end to end, self-cleaned.
+- MinIO replication to "centralus": artifacts present within seconds of upload.
+- Restore drill: fetched newest verified dump, loaded, checked, counted 100,000/100,000 Person nodes + index present.
+- Failover: single commit (replicas 0->1 + CoreDNS flip) -> DR hydrated from verified dump and served all data at neo4j.db.home.lab (10.0.20.91); failed back the same way.
+- Negative testing: dump-refusal on unrecovered stores proven via SIGKILL test (Docker, same image); in-cluster clones were consistently checkpointed within the 5 min interval and a dump of an "unclean" clone was proven complete (5000/5000 pending writes present after reload) — the recovery step stays mandatory because you cannot know which case you have.
+
 ## What this does NOT simulate
 
 - Real cross-region latency / paired-region semantics
