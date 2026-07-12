@@ -23,3 +23,16 @@ spec:
       selfHeal: true
     syncOptions:
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  # The conversion webhook rotates its cert Secret and injects caBundle into the
+  # snapshot CRDs at runtime — without these ignores the app is perpetually
+  # OutOfSync and selfHeal fights the webhook.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+    - kind: Secret
+      name: snapshot-controller-conversion-webhook
+      jsonPointers:
+        - /data
