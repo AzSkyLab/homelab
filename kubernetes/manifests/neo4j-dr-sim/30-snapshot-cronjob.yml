@@ -1,0 +1,77 @@
+---
+# Hourly crash-consistent VolumeSnapshot of the RUNNING primary PV.
+# Plays the role of Azure Disk incremental snapshots. Keeps the newest 8.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neo4j-snapshotter
+  namespace: neo4j-eastus2
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neo4j-snapshotter
+  namespace: neo4j-eastus2
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neo4j-snapshotter
+  namespace: neo4j-eastus2
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: neo4j-snapshotter
+subjects:
+  - kind: ServiceAccount
+    name: neo4j-snapshotter
+    namespace: neo4j-eastus2
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: neo4j-snapshot
+  namespace: neo4j-eastus2
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: neo4j-snapshotter
+          restartPolicy: OnFailure
+          containers:
+            - name: snapshot
+              image: alpine/k8s:1.33.4
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  cat <<EOF | kubectl apply -f -
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: neo4j-data-$TS
+                    namespace: neo4j-eastus2
+                    labels: {app: neo4j}
+                  spec:
+                    volumeSnapshotClassName: longhorn-snap
+                    source:
+                      persistentVolumeClaimName: data-neo4j-0
+                  EOF
+                  kubectl wait volumesnapshot/neo4j-data-$TS -n neo4j-eastus2 \
+                    --for=jsonpath='{.status.readyToUse}'=true --timeout=5m
+                  echo "snapshot neo4j-data-$TS ready"
+                  # prune: keep newest 8
+                  kubectl get volumesnapshot -n neo4j-eastus2 -l app=neo4j \
+                    --sort-by=.metadata.creationTimestamp -o name | head -n -8 | \
+                    xargs -r kubectl delete -n neo4j-eastus2

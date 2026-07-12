@@ -1,0 +1,181 @@
+---
+# Weekly restore drill in the DR "region": prove the replicated artifact restores.
+# Downloads newest marker-verified dump from WEST MinIO, loads into a fresh PVC,
+# checks integrity, boots a throwaway server, verifies counts, tears down.
+# suspend: true — trigger manually for the demo:
+#   kubectl create job drill-manual --from=cronjob/neo4j-restore-drill -n neo4j-centralus
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neo4j-drill
+  namespace: neo4j-centralus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neo4j-drill
+  namespace: neo4j-centralus
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neo4j-drill
+  namespace: neo4j-centralus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: neo4j-drill
+subjects:
+  - kind: ServiceAccount
+    name: neo4j-drill
+    namespace: neo4j-centralus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neo4j-drill-scripts
+  namespace: neo4j-centralus
+data:
+  drill.sh: |
+    #!/bin/sh
+    set -e
+    NS=neo4j-centralus
+    TS=$(date +%Y%m%d-%H%M%S)
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: neo4j-drill-$TS
+      namespace: $NS
+      labels: {app: neo4j-drill}
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: longhorn
+      resources:
+        requests:
+          storage: 2Gi
+    EOF
+    sed -e "s/__TS__/$TS/g" /scripts/drill-pod.yaml | kubectl apply -f -
+    PHASE=""
+    i=0
+    while [ $i -lt 240 ]; do
+      PHASE=$(kubectl get pod drill-worker-$TS -n $NS -o jsonpath='{.status.phase}' 2>/dev/null || echo Pending)
+      [ "$PHASE" = "Succeeded" ] && break
+      if [ "$PHASE" = "Failed" ]; then break; fi
+      sleep 10; i=$((i+1))
+    done
+    kubectl logs drill-worker-$TS -n $NS --all-containers=true --prefix || true
+    if [ "$PHASE" != "Succeeded" ]; then
+      echo "DRILL FAILED (phase=$PHASE) — leaving pod and PVC for debugging"
+      exit 1
+    fi
+    kubectl delete pod drill-worker-$TS -n $NS
+    kubectl delete pvc neo4j-drill-$TS -n $NS
+    echo "restore drill $TS PASSED"
+  drill-pod.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: drill-worker-__TS__
+      namespace: neo4j-centralus
+      labels: {app: neo4j-drill-worker}
+    spec:
+      restartPolicy: Never
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: neo4j-drill-__TS__
+        - name: restore
+          emptyDir: {}
+      initContainers:
+        - name: fetch
+          image: minio/mc:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mc alias set west http://minio.neo4j-centralus.svc.cluster.local:9000 minioadmin minioadmin123
+              LATEST=$(mc ls west/dumps/prod/ | awk '{print $NF}' | tr -d '/' | sort | tail -1)
+              [ -n "$LATEST" ] || { echo "no dumps in DR bucket"; exit 1; }
+              mc stat west/dumps/prod/$LATEST/latest-verified >/dev/null || { echo "newest folder $LATEST lacks verified marker"; exit 1; }
+              echo "restoring from $LATEST"
+              mc cp --recursive west/dumps/prod/$LATEST/ /restore/
+              ls -la /restore
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+        - name: load-verify
+          image: neo4j:5.26.28-community
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              export NEO4J_server_memory_heap_max__size=512m
+              export NEO4J_server_memory_pagecache_size=256m
+              neo4j-admin database load system --from-path=/restore --overwrite-destination=true
+              neo4j-admin database load neo4j --from-path=/restore --overwrite-destination=true
+              neo4j-admin database check neo4j
+              /startup/docker-entrypoint.sh neo4j &
+              PID=$!
+              READY=no
+              for i in $(seq 1 60); do
+                if cypher-shell -u neo4j -p 'neo4jdemo-2026' "RETURN 1;" >/dev/null 2>&1; then READY=yes; break; fi
+                sleep 5
+              done
+              [ "$READY" = "yes" ] || { echo "restored server failed to start"; exit 1; }
+              COUNT=$(cypher-shell -u neo4j -p 'neo4jdemo-2026' --format plain "MATCH (n:Person) RETURN count(n);" | tail -1)
+              echo "restored Person count: $COUNT"
+              [ "$COUNT" -ge 100000 ] || { echo "COUNT MISMATCH — expected >=100000"; exit 1; }
+              cypher-shell -u neo4j -p 'neo4jdemo-2026' --format plain "SHOW INDEXES YIELD name RETURN name;"
+              kill -TERM $PID
+              wait $PID || true
+              echo "drill verification passed"
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: restore, mountPath: /restore}
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "1", memory: 1536Mi}
+      containers:
+        - name: done
+          image: busybox:1.36
+          command: ["sh", "-c", "echo drill __TS__ passed"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: neo4j-restore-drill
+  namespace: neo4j-centralus
+spec:
+  schedule: "0 6 * * 1"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: neo4j-drill
+          restartPolicy: Never
+          volumes:
+            - name: scripts
+              configMap:
+                name: neo4j-drill-scripts
+                defaultMode: 0755
+          containers:
+            - name: orchestrate
+              image: alpine/k8s:1.33.4
+              command: ["/bin/sh", "/scripts/drill.sh"]
+              volumeMounts:
+                - {name: scripts, mountPath: /scripts}

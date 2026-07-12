@@ -1,0 +1,124 @@
+---
+# Pilot-light DR Neo4j — "centralus". replicas: 0 in steady state.
+# FAILOVER = one PR that (1) sets replicas: 1 here and (2) flips the CoreDNS
+# record neo4j.db.home.lab from 10.0.20.90 -> 10.0.20.91.
+# On first boot the hydrate initContainers load the newest verified dump from
+# the DR MinIO before the server starts.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: neo4j-centralus
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: neo4j
+  replicas: 0
+  selector:
+    matchLabels: {app: neo4j, sim-region: centralus}
+  template:
+    metadata:
+      labels: {app: neo4j, sim-region: centralus}
+    spec:
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: restore
+          emptyDir: {}
+      initContainers:
+        - name: hydrate-fetch
+          image: minio/mc:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -d /data/databases/neo4j ]; then echo "data present — skipping hydration"; exit 0; fi
+              mc alias set west http://minio.neo4j-centralus.svc.cluster.local:9000 minioadmin minioadmin123
+              LATEST=$(mc ls west/dumps/prod/ | awk '{print $NF}' | tr -d '/' | sort | tail -1)
+              [ -n "$LATEST" ] || { echo "no dumps available to hydrate from"; exit 1; }
+              mc stat west/dumps/prod/$LATEST/latest-verified >/dev/null || { echo "newest folder lacks verified marker"; exit 1; }
+              echo "hydrating from $LATEST"
+              mc cp --recursive west/dumps/prod/$LATEST/ /restore/
+              touch /restore/.do-load
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+            - {name: data, mountPath: /data}
+        - name: hydrate-load
+          image: neo4j:5.26.28-community
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -f /restore/.do-load ]; then echo "no hydration requested"; exit 0; fi
+              neo4j-admin database load system --from-path=/restore --overwrite-destination=true
+              neo4j-admin database load neo4j --from-path=/restore --overwrite-destination=true
+              neo4j-admin database check neo4j
+              echo "hydration complete"
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+            - {name: data, mountPath: /data}
+      containers:
+        - name: neo4j
+          image: neo4j:5.26.28-community
+          env:
+            - name: NEO4J_AUTH
+              value: "neo4j/neo4jdemo-2026"   # DEMO credential, lab only
+            - name: NEO4J_db_checkpoint_interval_time
+              value: "5m"
+            - name: NEO4J_server_memory_heap_initial__size
+              value: "512m"
+            - name: NEO4J_server_memory_heap_max__size
+              value: "512m"
+            - name: NEO4J_server_memory_pagecache_size
+              value: "256m"
+          ports:
+            - {name: http, containerPort: 7474}
+            - {name: bolt, containerPort: 7687}
+          readinessProbe:
+            tcpSocket: {port: 7687}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: 7687}
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: "1", memory: 1536Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: neo4j-centralus
+spec:
+  selector: {app: neo4j, sim-region: centralus}
+  ports:
+    - {name: http, port: 7474, targetPort: 7474}
+    - {name: bolt, port: 7687, targetPort: 7687}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j-lb
+  namespace: neo4j-centralus
+  annotations:
+    metallb.universe.tf/address-pool: k8s-vlan-pool
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 10.0.20.91
+  selector: {app: neo4j, sim-region: centralus}
+  ports:
+    - {name: bolt, port: 7687, targetPort: 7687}
+    - {name: http, port: 7474, targetPort: 7474}
