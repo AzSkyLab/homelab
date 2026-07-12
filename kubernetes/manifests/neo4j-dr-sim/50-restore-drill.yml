@@ -91,6 +91,7 @@ data:
       labels: {app: neo4j-drill-worker}
     spec:
       restartPolicy: Never
+      enableServiceLinks: false
       volumes:
         - name: data
           persistentVolumeClaim:

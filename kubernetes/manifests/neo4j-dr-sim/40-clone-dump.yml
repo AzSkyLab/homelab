@@ -104,6 +104,7 @@ data:
       labels: {app: neo4j-backup-worker}
     spec:
       restartPolicy: Never
+      enableServiceLinks: false
       volumes:
         - name: clone
           persistentVolumeClaim:

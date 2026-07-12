@@ -18,6 +18,7 @@ spec:
       labels: {app: neo4j, sim-region: eastus2}
     spec:
       terminationGracePeriodSeconds: 120
+      enableServiceLinks: false
       containers:
         - name: neo4j
           image: neo4j:5.26.28-community

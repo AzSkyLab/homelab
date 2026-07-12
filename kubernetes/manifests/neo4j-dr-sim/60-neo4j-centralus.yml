@@ -21,6 +21,7 @@ spec:
       labels: {app: neo4j, sim-region: centralus}
     spec:
       terminationGracePeriodSeconds: 120
+      enableServiceLinks: false
       volumes:
         - name: restore
           emptyDir: {}
