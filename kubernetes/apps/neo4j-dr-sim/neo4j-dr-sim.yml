@@ -1,0 +1,27 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: neo4j-dr-sim
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: applications
+  source:
+    repoURL: https://github.com/azskylab/homelab.git
+    targetRevision: main
+    path: kubernetes/manifests/neo4j-dr-sim/
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: neo4j-eastus2
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  # NOTE: git owns StatefulSet replicas on purpose — failover is a PR that flips
+  # the centralus replicas 0->1 (plus the CoreDNS record). Worker pods, clone
+  # PVCs, and VolumeSnapshots are created dynamically by the CronJobs and are
+  # not ArgoCD-managed (no ownership labels), so prune/selfHeal leaves them be.
