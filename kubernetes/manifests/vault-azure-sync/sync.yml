@@ -1,0 +1,142 @@
+---
+# DIY "secrets sync": Vault -> Azure Key Vault (client-secret auth).
+# NOTE: This replicates Vault Enterprise Secrets Sync for CE. The pod authenticates
+# to Vault with its own Kubernetes ServiceAccount JWT (no static Vault token), reads
+# the SPN client secret + payloads from Vault, and writes them to Azure Key Vault.
+#
+# Vault-side prerequisites (runtime config, not in git — see CLAUDE.md):
+#   - kubernetes auth role `azure-syncer` bound to SA azure-syncer / ns vault
+#   - policy `azure-syncer` (read secret/data/azure/sp, read+list secret/*/azure-sync/*)
+#   - secret/azure/sp        -> field client_secret  (the SPN password)
+#   - secret/azure-sync/<n>  -> field value          (each mirrored to KV secret <n>)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: azure-syncer
+  namespace: vault
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-azure-sync-script
+  namespace: vault
+data:
+  sync.py: |
+    #!/usr/bin/env python3
+    """DIY Vault -> Azure Key Vault secret sync (client-secret auth)."""
+    import json, os, urllib.parse, urllib.request, urllib.error
+
+    def env(name, default=None, required=True):
+        v = os.environ.get(name, default)
+        if required and not v:
+            raise SystemExit(f"missing env {name}")
+        return v
+
+    VAULT_ADDR = env("VAULT_ADDR").rstrip("/")
+    VAULT_ROLE = env("VAULT_ROLE")
+    KV_URI     = env("KEY_VAULT_URI").rstrip("/")
+    TENANT_ID  = env("AZURE_TENANT_ID")
+    CLIENT_ID  = env("AZURE_CLIENT_ID")
+    KV_MOUNT   = env("KV_MOUNT", "secret", required=False)
+    PREFIX     = env("SYNC_PREFIX", "azure-sync", required=False)
+    KV_API     = "7.4"
+
+    def req(method, url, data=None, headers=None):
+        h = dict(headers or {})
+        body = None
+        if isinstance(data, (dict, list)):
+            body = json.dumps(data).encode(); h.setdefault("Content-Type", "application/json")
+        elif isinstance(data, str):
+            body = data.encode()
+        r = urllib.request.Request(url, data=body, method=method, headers=h)
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                raw = resp.read().decode()
+                return resp.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"HTTP {e.code} {method} {url}: {e.read().decode()[:400]}")
+
+    # 1) Vault login via kubernetes auth (this pod's SA JWT)
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+        jwt = f.read().strip()
+    _, r = req("POST", f"{VAULT_ADDR}/v1/auth/kubernetes/login",
+               {"role": VAULT_ROLE, "jwt": jwt})
+    VH = {"X-Vault-Token": r["auth"]["client_token"]}
+    print(f"[vault] authenticated (role={VAULT_ROLE})", flush=True)
+
+    # 2) SPN client secret
+    _, r = req("GET", f"{VAULT_ADDR}/v1/{KV_MOUNT}/data/azure/sp", headers=VH)
+    client_secret = r["data"]["data"]["client_secret"]
+
+    # 3) list payloads to sync
+    _, r = req("GET", f"{VAULT_ADDR}/v1/{KV_MOUNT}/metadata/{PREFIX}?list=true", headers=VH)
+    names = [n for n in r["data"]["keys"] if not n.endswith("/")]
+    print(f"[vault] {len(names)} secret(s) to sync: {names}", flush=True)
+
+    # 4) Azure AD token (Key Vault data-plane scope)
+    form = urllib.parse.urlencode({
+        "client_id": CLIENT_ID, "client_secret": client_secret,
+        "grant_type": "client_credentials", "scope": "https://vault.azure.net/.default",
+    })
+    _, r = req("POST", f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
+               form, {"Content-Type": "application/x-www-form-urlencoded"})
+    AH = {"Authorization": f"Bearer {r['access_token']}"}
+    print("[azure] token acquired", flush=True)
+
+    # 5) push each payload to Key Vault
+    for n in names:
+        _, sd = req("GET", f"{VAULT_ADDR}/v1/{KV_MOUNT}/data/{PREFIX}/{n}", headers=VH)
+        val = sd["data"]["data"].get("value")
+        if val is None:
+            print(f"[skip] {n}: no 'value' field", flush=True); continue
+        st, _ = req("PUT", f"{KV_URI}/secrets/{n}?api-version={KV_API}", {"value": val}, AH)
+        print(f"[sync] {PREFIX}/{n} -> {KV_URI}/secrets/{n} (HTTP {st})", flush=True)
+    print("[done] sync complete", flush=True)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-azure-sync
+  namespace: vault
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          serviceAccountName: azure-syncer
+          restartPolicy: Never
+          containers:
+            - name: sync
+              image: python:3.12-slim
+              command: ["python3", "/app/sync.py"]
+              env:
+                - name: VAULT_ADDR
+                  value: http://vault.vault.svc:8200
+                - name: VAULT_ROLE
+                  value: azure-syncer
+                - name: KEY_VAULT_URI
+                  value: https://kv-hlvsync-20010.vault.azure.net
+                - name: AZURE_TENANT_ID
+                  value: c84490ff-0452-4bfb-9782-08a31017d89a
+                - name: AZURE_CLIENT_ID
+                  value: 3f34ce85-1f16-446e-997d-5c18f6c138ae
+              volumeMounts:
+                - name: script
+                  mountPath: /app
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+          volumes:
+            - name: script
+              configMap:
+                name: vault-azure-sync-script
