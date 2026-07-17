@@ -212,6 +212,7 @@ spec:
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
 | ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
 | ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
+| Vault | vault | Helm (hashicorp/vault) | https://vault.home.lab (CE, Raft; seals on restart — see below) |
 
 ### Application Workloads
 
@@ -327,6 +328,9 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomain (`malliefivpn`) |
+| `homelab/vault/root-token` | N/A (not in k8s) | vault | Vault initial root token |
+| `homelab/vault/unseal-key-{1..5}` | N/A (not in k8s) | vault | Vault unseal keys (threshold 3 of 5) |
+| `homelab/vault/init-json` | N/A (not in k8s) | vault | Full `operator init` output (canonical backup) |
 
 ### Recreating a K8s Secret from pass
 
@@ -533,6 +537,55 @@ kubectl create secret generic duckdns-secrets -n wireguard \
 - `kubernetes/manifests/wireguard/pvc.yml` — 100Mi for WireGuard config persistence
 - `kubernetes/manifests/wireguard/cronjob.yml` — DuckDNS IP updater (every 5 min)
 - `kubernetes/apps/wireguard/wireguard.yml` — ArgoCD Application
+
+## HashiCorp Vault (Secrets Management)
+
+Vault **Community Edition** (chart `hashicorp/vault` 0.34.0 / app 2.0.3) runs on k3s
+via ArgoCD, using **integrated Raft storage** on a single Longhorn-backed node.
+
+### Architecture
+
+| Setting | Value |
+|---------|-------|
+| Namespace | `vault` |
+| Storage | Raft integrated storage, `data-vault-0` PVC (5Gi, `longhorn`) |
+| Replicas | 1 (StatefulSet `vault-0`) — bump to 3 + add `retry_join` for real HA |
+| API/UI | `http://vault:8200` in-cluster (listener `tls_disable = 1`) |
+| Ingress | `https://vault.home.lab` — TLS terminates at Traefik (`home-lab-ca`) |
+| Seal | Shamir, 5 key shares, **threshold 3** — no auto-unseal |
+| Agent Injector | enabled (`vault-agent-injector`) |
+
+- `kubernetes/apps/vault/vault.yml` — ArgoCD Application (all Helm values inline)
+- Keys/token live **only in `pass`** under `homelab/vault/` — never in git or k8s.
+
+### ⚠️ Unseal after every pod restart
+
+Vault seals on any restart (node reboot, pod reschedule, upgrade). The pod stays
+`0/1 Running` and the ArgoCD app shows `Progressing` until unsealed. There is **no
+auto-unseal** — you must feed 3 of 5 keys manually:
+
+```bash
+export KUBECONFIG=ansible/kubeconfig
+for i in 1 2 3; do
+  kubectl exec -n vault vault-0 -- vault operator unseal "$(pass homelab/vault/unseal-key-$i)"
+done
+kubectl exec -n vault vault-0 -- vault status   # Sealed=false, HA Mode=active
+```
+
+### First login / admin access
+
+```bash
+# UI: https://vault.home.lab/ui  → Token auth → paste root token
+pass homelab/vault/root-token
+# or CLI against the ingress (self-signed CA):
+export VAULT_ADDR=https://vault.home.lab VAULT_SKIP_VERIFY=true
+export VAULT_TOKEN="$(pass homelab/vault/root-token)"
+vault status
+```
+
+**Never rely on the root token day-to-day** — enable an auth method (e.g. Kubernetes
+or userpass), create scoped policies, then revoke/store the root token. To harden the
+seal, migrate to auto-unseal (Transit or a cloud KMS) so restarts self-recover.
 
 ## Documentation
 
