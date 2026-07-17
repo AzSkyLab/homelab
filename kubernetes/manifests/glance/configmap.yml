@@ -421,6 +421,10 @@ data:
                     url: https://argocd.home.lab
                     icon: si:argo
                     allow-insecure: true
+                  - title: Vault
+                    url: https://vault.home.lab
+                    icon: si:vault
+                    allow-insecure: true
                   - title: Grafana
                     url: https://grafana.home.lab
                     icon: si:grafana
