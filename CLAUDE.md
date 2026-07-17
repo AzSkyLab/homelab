@@ -331,6 +331,7 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/vault/root-token` | N/A (not in k8s) | vault | Vault initial root token |
 | `homelab/vault/unseal-key-{1..5}` | vault-unseal-keys (keys 1-3) | vault | Vault unseal keys (threshold 3 of 5); keys 1-3 mirrored into the Secret for the auto-unsealer |
 | `homelab/vault/init-json` | N/A (not in k8s) | vault | Full `operator init` output (canonical backup) |
+| `homelab/azure/vault-sync-sp-secret` | (also in Vault `secret/azure/sp`) | vault | SPN client secret for the Vault→Azure KV syncer |
 
 ### Recreating a K8s Secret from pass
 
@@ -639,6 +640,25 @@ Or use the **Vault Agent Injector** (already running) via pod annotations
 An example `demo` role + `demo-read` policy + `secret/demo/config` exist as a live
 reference (bound to SA `demo`/ns `vault-demo`); safe to delete once real apps are
 onboarded.
+
+### DIY sync to Azure Key Vault (CE — Secrets Sync is Enterprise-only)
+
+Vault's built-in Secrets Sync (`sys/sync/*`) is Enterprise/HCP only (returns 404 on
+CE), so a CronJob replicates it: **`vault-azure-sync`** (ns `vault`, every 5 min)
+authenticates to Vault with its own SA JWT (k8s auth role `azure-syncer`), reads the
+SPN client secret + payloads from Vault, and writes them to Azure Key Vault via the
+Key Vault REST API.
+
+- Manifests: `kubernetes/manifests/vault-azure-sync/` (SA + Python ConfigMap + CronJob); ArgoCD app `vault-azure-sync` (wave 7)
+- Mapping: `secret/azure-sync/<name>` (field `value`) → Key Vault secret `<name>`
+- Azure: RG `rg-homelab-vaultsync`, KV `kv-hlvsync-20010`, App Reg (SPN) `homelab-vault-secrets-sync` (client_id `3f34ce85-1f16-446e-997d-5c18f6c138ae`), SPN has **Key Vault Secrets Officer** on the KV
+- Auth = SPN **client secret** (client-credentials grant), stored at Vault `secret/azure/sp` field `client_secret` (backup: `pass homelab/azure/vault-sync-sp-secret`)
+- Add a secret to sync: `kubectl exec -n vault vault-0 -- vault kv put secret/azure-sync/<name> value=<v>` (KV names must match `[0-9a-zA-Z-]+`)
+- Force a run: `kubectl create job --from=cronjob/vault-azure-sync run-now -n vault`
+
+This is **client-secret** auth, not WIF. True WIF needs Vault's OIDC issuer publicly
+reachable by Entra (Vault + k3s are internal-only), plus a publicly-trusted TLS cert —
+deferred. To tear down: delete the ArgoCD app + `az group delete -n rg-homelab-vaultsync`.
 
 ## Documentation
 
