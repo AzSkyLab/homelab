@@ -1,0 +1,75 @@
+---
+# Auto-unseal for Vault CE (no native seal stanza). Every 2 minutes this Job checks
+# vault-0's seal status via the Vault HTTP API and, if sealed, submits the unseal
+# keys. Recovers Vault automatically after a pod reschedule / node reboot / upgrade.
+#
+# The unseal keys come from the `vault-unseal-keys` Secret, which is created MANUALLY
+# from pass (NOT in git) so the key material never lands in the repo:
+#
+#   kubectl create secret generic vault-unseal-keys -n vault \
+#     --from-literal=key1="$(pass homelab/vault/unseal-key-1)" \
+#     --from-literal=key2="$(pass homelab/vault/unseal-key-2)" \
+#     --from-literal=key3="$(pass homelab/vault/unseal-key-3)"
+#
+# Trade-off (accepted): with keys in a cluster Secret, an attacker with both the
+# Secret and Vault's storage gets everything. For stronger at-rest protection use a
+# KMS/Transit seal with an off-cluster key anchor instead.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-unsealer
+  namespace: vault
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 60
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false # talks to Vault over HTTP, not the k8s API
+          containers:
+            - name: unsealer
+              image: hashicorp/vault:2.0.3
+              env:
+                - name: VAULT_ADDR
+                  value: http://vault.vault.svc:8200
+                - name: UNSEAL_KEY_1
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-unseal-keys
+                      key: key1
+                - name: UNSEAL_KEY_2
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-unseal-keys
+                      key: key2
+                - name: UNSEAL_KEY_3
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-unseal-keys
+                      key: key3
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  vault status >/dev/null 2>&1
+                  rc=$?
+                  if [ "$rc" -eq 0 ]; then echo "Vault already unsealed; nothing to do."; exit 0; fi
+                  if [ "$rc" -ne 2 ]; then echo "Vault unreachable (rc=$rc); will retry next run."; exit 0; fi
+                  echo "Vault is SEALED — unsealing..."
+                  vault operator unseal "$UNSEAL_KEY_1" >/dev/null || { echo "unseal 1 failed"; exit 1; }
+                  vault operator unseal "$UNSEAL_KEY_2" >/dev/null || { echo "unseal 2 failed"; exit 1; }
+                  vault operator unseal "$UNSEAL_KEY_3" >/dev/null || { echo "unseal 3 failed"; exit 1; }
+                  vault status 2>&1 | grep -E "Sealed|HA Mode" || true
+                  echo "Unseal complete."
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
