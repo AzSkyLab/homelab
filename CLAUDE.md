@@ -212,7 +212,7 @@ spec:
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
 | ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
 | ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
-| Vault | vault | Helm (hashicorp/vault) | https://vault.home.lab (CE, Raft; seals on restart — see below) |
+| Vault | vault | Helm (hashicorp/vault) | https://vault.home.lab (CE, Raft; auto-unsealed via CronJob) |
 
 ### Application Workloads
 
@@ -329,7 +329,7 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomain (`malliefivpn`) |
 | `homelab/vault/root-token` | N/A (not in k8s) | vault | Vault initial root token |
-| `homelab/vault/unseal-key-{1..5}` | N/A (not in k8s) | vault | Vault unseal keys (threshold 3 of 5) |
+| `homelab/vault/unseal-key-{1..5}` | vault-unseal-keys (keys 1-3) | vault | Vault unseal keys (threshold 3 of 5); keys 1-3 mirrored into the Secret for the auto-unsealer |
 | `homelab/vault/init-json` | N/A (not in k8s) | vault | Full `operator init` output (canonical backup) |
 
 ### Recreating a K8s Secret from pass
@@ -558,11 +558,26 @@ via ArgoCD, using **integrated Raft storage** on a single Longhorn-backed node.
 - `kubernetes/apps/vault/vault.yml` — ArgoCD Application (all Helm values inline)
 - Keys/token live **only in `pass`** under `homelab/vault/` — never in git or k8s.
 
-### ⚠️ Unseal after every pod restart
+### Seal / unseal (auto-unsealed)
 
-Vault seals on any restart (node reboot, pod reschedule, upgrade). The pod stays
-`0/1 Running` and the ArgoCD app shows `Progressing` until unsealed. There is **no
-auto-unseal** — you must feed 3 of 5 keys manually:
+Vault seals on any restart (node reboot, pod reschedule, upgrade) — the pod goes
+`0/1 Running` while sealed. Vault CE has no native auto-unseal, so an **in-cluster
+unsealer CronJob** (`vault-unsealer`, ns `vault`, every 2 min) checks the seal state
+and unseals via the Vault API using keys from the `vault-unseal-keys` Secret.
+Recovery is automatic within ~2 min; no action needed.
+
+- Manifest: `kubernetes/manifests/vault-unsealer/cronjob.yml` (ArgoCD app `vault-unsealer`)
+- Keys Secret is **manual, not in git** — recreate after a cluster rebuild:
+  ```bash
+  kubectl create secret generic vault-unseal-keys -n vault \
+    --from-literal=key1="$(pass homelab/vault/unseal-key-1)" \
+    --from-literal=key2="$(pass homelab/vault/unseal-key-2)" \
+    --from-literal=key3="$(pass homelab/vault/unseal-key-3)"
+  ```
+- Trade-off: unseal keys live in a cluster Secret (weaker at-rest protection than a
+  KMS/Transit seal). Force a run: `kubectl create job --from=cronjob/vault-unsealer manual-unseal -n vault`
+
+**Manual unseal** (only if the unsealer or its Secret is broken):
 
 ```bash
 export KUBECONFIG=ansible/kubeconfig
