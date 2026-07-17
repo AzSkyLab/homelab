@@ -587,6 +587,44 @@ vault status
 or userpass), create scoped policies, then revoke/store the root token. To harden the
 seal, migrate to auto-unseal (Transit or a cloud KMS) so restarts self-recover.
 
+### Kubernetes auth (pods → secrets, no static tokens)
+
+The **Kubernetes auth method** is enabled at `auth/kubernetes/`, letting pods
+authenticate with their ServiceAccount JWT (no stored Vault tokens). Vault runs
+in-cluster so it validates JWTs via the TokenReview API using its own SA
+(`system:auth-delegator` binding, `disable_local_ca_jwt=false`). A **KV v2** engine
+is mounted at `secret/`.
+
+Vault runtime config is **not** GitOps/ArgoCD-managed — the reproducible source of
+truth is `scripts/vault-k8s-auth-setup.sh` (idempotent; re-run after any re-init):
+
+```bash
+export KUBECONFIG=ansible/kubeconfig     # Vault must be unsealed first
+scripts/vault-k8s-auth-setup.sh bootstrap                      # enable+config k8s auth + KV v2
+scripts/vault-k8s-auth-setup.sh add-app <app> <namespace> [sa] # per-app policy + role
+```
+
+`add-app` creates a policy `<app>-read` (read on `secret/data/<app>/*`) and a role
+`<app>` bound to ServiceAccount `<sa>` (defaults to `<app>`) in `<namespace>`.
+
+**How an app consumes a secret** (env `VAULT_ADDR=http://vault.vault.svc:8200`):
+
+```bash
+# store (admin, once):
+kubectl exec -n vault vault-0 -- vault kv put secret/<app>/config key=value
+# in the app pod (uses its projected SA token):
+JWT=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+TOKEN=$(vault write -field=token auth/kubernetes/login role=<app> jwt="$JWT")
+VAULT_TOKEN=$TOKEN vault kv get secret/<app>/config
+```
+
+Or use the **Vault Agent Injector** (already running) via pod annotations
+(`vault.hashicorp.com/agent-inject: "true"`, `.../role`, `.../agent-inject-secret-*`).
+
+An example `demo` role + `demo-read` policy + `secret/demo/config` exist as a live
+reference (bound to SA `demo`/ns `vault-demo`); safe to delete once real apps are
+onboarded.
+
 ## Documentation
 
 - [docs/network.md](docs/network.md) — VLANs, firewall rules, IP assignments
