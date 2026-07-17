@@ -1,0 +1,91 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault
+  namespace: argocd
+  annotations:
+    # After cert-manager + home-lab-ca issuer (wave 1) and Longhorn (wave -1)
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://helm.releases.hashicorp.com
+    chart: vault
+    targetRevision: "0.34.0" # Vault CE 2.0.3
+    helm:
+      valuesObject:
+        # Default image hashicorp/vault == Community Edition (BSL).
+        # Enterprise would require hashicorp/vault-enterprise + a license.
+        server:
+          # Raft integrated storage, single node. Bump replicas to 3 later
+          # (and add retry_join) to grow into a real HA quorum.
+          ha:
+            enabled: true
+            replicas: 1
+            raft:
+              enabled: true
+              setNodeId: true
+              config: |
+                ui = true
+
+                listener "tcp" {
+                  tls_disable     = 1
+                  address         = "[::]:8200"
+                  cluster_address = "[::]:8201"
+                }
+
+                storage "raft" {
+                  path = "/vault/data"
+                }
+
+                service_registration "kubernetes" {}
+          dataStorage:
+            enabled: true
+            size: 5Gi
+            storageClass: longhorn
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # TLS terminates at Traefik; Vault listener is plain HTTP in-cluster.
+          ingress:
+            enabled: true
+            ingressClassName: traefik
+            annotations:
+              cert-manager.io/cluster-issuer: home-lab-ca
+              traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+            hosts:
+              - host: vault.home.lab
+                paths: []
+            tls:
+              - secretName: vault-tls
+                hosts:
+                  - vault.home.lab
+        ui:
+          enabled: true
+        # Vault Agent Injector (secret injection into annotated pods).
+        injector:
+          enabled: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

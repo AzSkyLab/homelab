@@ -20,6 +20,7 @@ spec:
     - oci://ghcr.io/actions/actions-runner-controller-charts
     - https://charts.longhorn.io
     - https://piraeus.io/helm-charts
+    - https://helm.releases.hashicorp.com
   destinations:
     - namespace: argocd
       server: https://kubernetes.default.svc
@@ -42,6 +43,8 @@ spec:
     - namespace: arc-systems
       server: https://kubernetes.default.svc
     - namespace: arc-runners
+      server: https://kubernetes.default.svc
+    - namespace: vault
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: "*"
