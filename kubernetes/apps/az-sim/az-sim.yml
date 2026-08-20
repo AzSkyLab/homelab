@@ -18,6 +18,9 @@ spec:
   syncPolicy:
     automated:
       prune: true
-      selfHeal: true
+      # selfHeal deliberately OFF: game days + blue/green weighting work by
+      # kubectl-scaling the color deployments (sim of ACA revision weights);
+      # self-heal would instantly revert them (found the hard way in GD-1).
+      selfHeal: false
     syncOptions:
       - CreateNamespace=true

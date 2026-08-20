@@ -8,6 +8,7 @@
 - name: Extract az wildcard cert from the cluster (Key Vault -> F5 PFX handoff sim)
   hosts: localhost
   gather_facts: false
+  become: false # ansible.cfg defaults become=True; staging files must stay readable by the controller user
   vars:
     kubeconfig: "{{ playbook_dir }}/../kubeconfig"
     certdir: "{{ playbook_dir }}/../.az-sim-certs"

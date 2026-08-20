@@ -15,7 +15,7 @@ module "dns_az" {
   clone_template_id = var.clone_template_id
   cores             = 1
   memory            = 1024
-  disk_size         = 20
+  disk_size         = 30
   storage_pool      = var.storage_pool
 
   vlan_id    = var.vlan_id
@@ -37,7 +37,7 @@ module "ingress_east" {
   clone_template_id = var.clone_template_id
   cores             = 2
   memory            = 2048
-  disk_size         = 20
+  disk_size         = 30
   storage_pool      = var.storage_pool
 
   vlan_id    = var.vlan_id
@@ -59,7 +59,7 @@ module "ingress_central" {
   clone_template_id = var.clone_template_id
   cores             = 2
   memory            = 2048
-  disk_size         = 20
+  disk_size         = 30
   storage_pool      = var.storage_pool
 
   vlan_id    = var.vlan_id
