@@ -5,6 +5,33 @@ Home-lab test bed for the **az.comp.app ingress blueprint** (full design:
 Validates the control-plane behavior — split-horizon DNS, layer contract, F5 priority-group
 failover, DNS health-flipper timing, blue/green weighting — with open-source stand-ins.
 
+![az-ingress-sim architecture](img/az-ingress-sim.svg)
+
+## Quick validation (copy-paste, ~30 seconds)
+
+```bash
+cd ~/github/homelab
+
+# 1. DNS: CoreDNS forwards az.home.lab to bind9, which answers with the active VIP
+dig +short @10.0.20.53 app1.az.home.lab            # expect: 10.0.40.61 (east)
+
+# 2. Full chain: TLS(HAProxy) -> nginx -> k3s env, cert verified against the lab CA
+curl -s --cacert home-lab-root-ca.crt \
+  --resolve app1.az.home.lab:443:10.0.40.61 \
+  https://app1.az.home.lab/ | grep ^Name           # expect: Name: east-blue
+
+# 3. Both regions independently reachable via their plumbing names
+curl -s --cacert home-lab-root-ca.crt --resolve central.az.home.lab:443:10.0.40.62 \
+  https://central.az.home.lab/ | grep ^Name        # expect: Name: central-blue
+
+# 4. Flipper is watching (should show its startup line / any FLIP events)
+ssh ubuntu@10.0.40.53 "sudo journalctl -u az-flipper -n 5 --no-pager -o cat"
+```
+
+Result log: GD-1 executed 2026-08-19 — east env killed, HAProxy served `central-blue`
+through the east VIP in **12s**, DNS untouched; failback after restore also 12s.
+(First attempt exposed ArgoCD `selfHeal` reverting the kill — now off for this app.)
+
 ## Component mapping
 
 | Blueprint (production) | Lab stand-in | Where |

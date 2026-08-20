@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 940" font-family="-apple-system, 'Segoe UI', Roboto, Ubuntu, sans-serif" role="img" aria-label="az-ingress-sim lab architecture: client resolves app1.az.home.lab through CoreDNS which forwards to bind9 on dns-az-01; traffic flows to HAProxy on ingress-east, re-encrypts to nginx, then to the whoami-east service on k3s. A mirrored central path exists. HAProxy backup pools cross regions (measured 12s failover) and the az-flipper service rewrites DNS on region loss.">
+  <rect x="0" y="0" width="1240" height="940" fill="#F7F8FA"/>
+
+  <defs>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2B6CB0"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5A6B7C"/>
+    </marker>
+    <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9A6516"/>
+    </marker>
+    <marker id="agr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#177357"/>
+    </marker>
+  </defs>
+
+  <!-- title -->
+  <text x="40" y="42" font-size="17" font-weight="700" fill="#1B2530">az-ingress-sim — multi-region ingress blueprint, home-lab edition</text>
+  <text x="40" y="62" font-size="11.5" fill="#5A6B7C">every box is a real lab component · “plays:” = the production piece it simulates · border color = who owns that piece in production</text>
+
+  <!-- legend -->
+  <line x1="740" y1="38" x2="778" y2="38" stroke="#2B6CB0" stroke-width="2.5"/>
+  <text x="786" y="42" font-size="11" fill="#5A6B7C">data path (HTTPS)</text>
+  <line x1="950" y1="38" x2="988" y2="38" stroke="#9A6516" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="996" y="42" font-size="11" fill="#5A6B7C">cross-region backup</text>
+  <line x1="740" y1="60" x2="778" y2="60" stroke="#5A6B7C" stroke-width="1.6" stroke-dasharray="4 4"/>
+  <text x="786" y="64" font-size="11" fill="#5A6B7C">DNS lookup / forward</text>
+  <line x1="950" y1="60" x2="988" y2="60" stroke="#177357" stroke-width="1.6" stroke-dasharray="3 4"/>
+  <text x="996" y="64" font-size="11" fill="#5A6B7C">health probe / record update</text>
+  <rect x="740" y="76" width="14" height="10" rx="2" fill="#E4F2EC" stroke="#177357" stroke-width="1.5"/>
+  <text x="762" y="85" font-size="11" fill="#5A6B7C">yours in prod</text>
+  <rect x="950" y="76" width="14" height="10" rx="2" fill="#F7EDDA" stroke="#9A6516" stroke-width="1.5"/>
+  <text x="972" y="85" font-size="11" fill="#5A6B7C">other team's in prod</text>
+
+  <!-- ============ BAND A: DNS control plane ============ -->
+  <text x="40" y="102" font-size="11" letter-spacing="2" fill="#5A6B7C" font-weight="600">DNS CONTROL PLANE</text>
+
+  <rect x="40" y="110" width="200" height="78" rx="7" fill="#FFFFFF" stroke="#C9D2DC" stroke-width="1.4"/>
+  <text x="140" y="134" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">Client</text>
+  <text x="140" y="152" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">https://app1.az.home.lab</text>
+  <text x="140" y="168" font-size="10.5" fill="#5A6B7C" text-anchor="middle">resolves via CoreDNS</text>
+
+  <rect x="330" y="110" width="270" height="78" rx="7" fill="#FFF9EF" stroke="#9A6516" stroke-width="1.5"/>
+  <text x="465" y="134" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">CoreDNS · 10.0.20.53</text>
+  <text x="465" y="152" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">zone home.lab · forward az.home.lab →</text>
+  <text x="465" y="170" font-size="10.5" font-style="italic" fill="#9A6516" text-anchor="middle">plays: corp DNS + conditional forwarder</text>
+
+  <rect x="690" y="110" width="300" height="78" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="840" y="134" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">dns-az-01 · bind9 · 10.0.40.53 (VM 450)</text>
+  <text x="840" y="152" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">zone az.home.lab · app1 A → active VIP · TTL 30s</text>
+  <text x="840" y="170" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: Azure DNS (delegated az zone, RFC2136)</text>
+
+  <rect x="690" y="216" width="300" height="64" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="840" y="238" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">az-flipper.service</text>
+  <text x="840" y="255" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">probes both VIPs every 15s · fall 3 · rise 2</text>
+  <text x="840" y="271" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: DNS health flipper (blueprint §8 layer B)</text>
+
+  <path d="M240,149 L328,149" stroke="#5A6B7C" stroke-width="1.6" stroke-dasharray="4 4" fill="none" marker-end="url(#ag)"/>
+  <text x="284" y="141" font-size="10" fill="#5A6B7C" text-anchor="middle" font-family="monospace">1 lookup</text>
+  <text x="284" y="164" font-size="10" fill="#5A6B7C" text-anchor="middle" font-family="monospace">3 answer: VIP</text>
+  <path d="M600,149 L684,149" stroke="#5A6B7C" stroke-width="1.6" stroke-dasharray="4 4" fill="none" marker-end="url(#ag)"/>
+  <text x="644" y="141" font-size="10" fill="#5A6B7C" text-anchor="middle" font-family="monospace">2 forward</text>
+  <path d="M750,216 L750,192" stroke="#177357" stroke-width="1.6" stroke-dasharray="3 4" fill="none" marker-end="url(#agr)"/>
+  <text x="758" y="208" font-size="10" fill="#177357" font-family="monospace">nsupdate rewrites app1 · 45–90s on region loss (GD-2)</text>
+
+  <!-- client data paths -->
+  <path d="M140,188 L140,356" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
+  <text x="148" y="288" font-size="10.5" fill="#2B6CB0" font-family="monospace">HTTPS :443</text>
+  <path d="M80,188 L80,296 L1050,296 L1050,356" stroke="#2B6CB0" stroke-width="1.6" stroke-dasharray="6 5" fill="none" marker-end="url(#ab)"/>
+  <text x="300" y="290" font-size="10" fill="#2B6CB0" font-family="monospace">path after DNS flip</text>
+
+  <!-- flipper probes -->
+  <path d="M760,280 L760,308 L522,308 L522,356" stroke="#177357" stroke-width="1.4" stroke-dasharray="3 4" fill="none" marker-end="url(#agr)"/>
+  <path d="M900,280 L900,356" stroke="#177357" stroke-width="1.4" stroke-dasharray="3 4" fill="none" marker-end="url(#agr)"/>
+  <text x="908" y="330" font-size="10" fill="#177357" font-family="monospace">probe /healthz through full chain</text>
+
+  <!-- ============ BAND B: region VMs ============ -->
+  <rect x="40" y="320" width="560" height="310" rx="10" fill="none" stroke="#C9D2DC" stroke-width="1.2" stroke-dasharray="2 5"/>
+  <text x="210" y="344" font-size="11" letter-spacing="2" fill="#5A6B7C" font-weight="600">“EAST” — VLAN 40</text>
+  <rect x="640" y="320" width="560" height="310" rx="10" fill="none" stroke="#C9D2DC" stroke-width="1.2" stroke-dasharray="2 5"/>
+  <text x="660" y="344" font-size="11" letter-spacing="2" fill="#5A6B7C" font-weight="600">“CENTRAL” — VLAN 40</text>
+
+  <!-- east haproxy -->
+  <rect x="90" y="360" width="460" height="84" rx="7" fill="#FFF9EF" stroke="#9A6516" stroke-width="1.5"/>
+  <text x="320" y="382" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">HAProxy · ingress-east · 10.0.40.61:443 (VM 451)</text>
+  <text x="320" y="399" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">TLS terminate — wildcard *.az.home.lab (home-lab-ca) · stats :8404</text>
+  <text x="320" y="414" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">pool: local nginx primary · remote nginx backup</text>
+  <text x="320" y="431" font-size="10.5" font-style="italic" fill="#9A6516" text-anchor="middle">plays: F5 BIG-IP — wildcard VS + priority-group pools</text>
+
+  <!-- east nginx -->
+  <rect x="90" y="496" width="460" height="72" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="320" y="518" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">nginx · 127.0.0.1:8443</text>
+  <text x="320" y="535" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">host route *.az.home.lab → env LB 10.0.20.85 (re-encrypted hop)</text>
+  <text x="320" y="552" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: App Gateway v2 — private frontend, host rules</text>
+
+  <path d="M320,444 L320,494" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
+  <text x="328" y="474" font-size="10.5" fill="#2B6CB0" font-family="monospace">re-encrypt</text>
+
+  <!-- central haproxy -->
+  <rect x="690" y="360" width="460" height="84" rx="7" fill="#FFF9EF" stroke="#9A6516" stroke-width="1.5"/>
+  <text x="920" y="382" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">HAProxy · ingress-central · 10.0.40.62:443 (VM 452)</text>
+  <text x="920" y="399" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">TLS terminate — wildcard *.az.home.lab (home-lab-ca) · stats :8404</text>
+  <text x="920" y="414" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">pool: local nginx primary · remote nginx backup</text>
+  <text x="920" y="431" font-size="10.5" font-style="italic" fill="#9A6516" text-anchor="middle">plays: F5 BIG-IP — wildcard VS + priority-group pools</text>
+
+  <!-- central nginx -->
+  <rect x="690" y="496" width="460" height="72" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="920" y="518" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">nginx · 127.0.0.1:8443</text>
+  <text x="920" y="535" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">host route *.az.home.lab → env LB 10.0.20.86 (re-encrypted hop)</text>
+  <text x="920" y="552" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: App Gateway v2 — private frontend, host rules</text>
+
+  <path d="M920,444 L920,494" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
+
+  <!-- cross-region backups -->
+  <path d="M550,402 L618,402 L618,532 L686,532" stroke="#9A6516" stroke-width="2" stroke-dasharray="6 4" fill="none" marker-end="url(#aa)"/>
+  <text x="604" y="472" font-size="10.5" fill="#9A6516" font-family="monospace" transform="rotate(90 604 472)" text-anchor="middle">backup (symmetric) · GD-1: 12s ✓</text>
+
+  <!-- ============ BAND C: k3s ============ -->
+  <rect x="40" y="680" width="1160" height="176" rx="10" fill="none" stroke="#C9D2DC" stroke-width="1.2" stroke-dasharray="2 5"/>
+  <text x="60" y="704" font-size="11" letter-spacing="2" fill="#5A6B7C" font-weight="600">K3S CLUSTER — VLAN 20 · NAMESPACE az-sim</text>
+
+  <rect x="90" y="720" width="460" height="108" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="320" y="744" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">svc whoami-east → LB 10.0.20.85</text>
+  <text x="320" y="763" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">deploy whoami-east-blue · replicas 2</text>
+  <text x="320" y="779" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">deploy whoami-east-green · replicas 0</text>
+  <text x="320" y="799" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: ACA internal env “East US 2” — revision weights = replica ratio</text>
+
+  <rect x="690" y="720" width="460" height="108" rx="7" fill="#F2FAF6" stroke="#177357" stroke-width="1.5"/>
+  <text x="920" y="744" font-size="13" font-weight="600" fill="#1B2530" text-anchor="middle">svc whoami-central → LB 10.0.20.86</text>
+  <text x="920" y="763" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">deploy whoami-central-blue · replicas 2</text>
+  <text x="920" y="779" font-size="10.5" fill="#5A6B7C" text-anchor="middle" font-family="monospace">deploy whoami-central-green · replicas 0</text>
+  <text x="920" y="799" font-size="10.5" font-style="italic" fill="#177357" text-anchor="middle">plays: ACA internal env “Central US” — revision weights = replica ratio</text>
+
+  <path d="M320,568 L320,718" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
+  <text x="328" y="650" font-size="10.5" fill="#2B6CB0" font-family="monospace">HTTP → 10.0.20.85</text>
+  <path d="M920,568 L920,718" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
+  <text x="928" y="650" font-size="10.5" fill="#2B6CB0" font-family="monospace">HTTP → 10.0.20.86</text>
+
+  <!-- footer -->
+  <text x="40" y="892" font-size="10.5" fill="#5A6B7C" font-family="monospace">failure layers: backend dies → nginx/HAProxy check (seconds) · env dies → HAProxy remote backup (measured 12s) · region dies → flipper DNS flip (45–90s, TTL 30s)</text>
+  <text x="40" y="912" font-size="10.5" fill="#5A6B7C" font-family="monospace">code: terraform/stacks/az-ingress-sim · ansible/playbooks/az-ingress-sim.yml (+templates/az-sim) · kubernetes/manifests/az-sim · kubernetes/apps/coredns/coredns.yml · docs/az-ingress-sim.md</text>
+</svg>
