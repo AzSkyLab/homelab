@@ -20,6 +20,10 @@ data:
         litellm_params:
           model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.20.30:11434"
+      - model_name: "vm/qwen3.6:27b"
+        litellm_params:
+          model: "ollama/qwen3.6:27b"
+          api_base: "http://10.0.20.30:11434"
       # Workstation - RTX 5090 (32GB) — explicit models with ws/ prefix
       - model_name: "ws/qwen3-coder:30b"
         litellm_params:
@@ -32,6 +36,10 @@ data:
       - model_name: "ws/gemma4:26b"
         litellm_params:
           model: "ollama/gemma4:26b-a4b-it-q4_K_M"
+          api_base: "http://10.0.10.40:11434"
+      - model_name: "ws/qwen3.6:35b-a3b"
+        litellm_params:
+          model: "ollama/qwen3.6:35b-a3b"
           api_base: "http://10.0.10.40:11434"
       # Load-balanced — same model_name with multiple backends for round-robin
       - model_name: "ollama/qwen3-coder:30b"
