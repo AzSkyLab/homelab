@@ -361,7 +361,29 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 - **`ws/<model>`** — routes to the workstation (RTX 5090)
 - **`ollama/<model>`** — load-balanced across whichever backend has the model
 
-Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap.
+Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup).
+
+Current headliners (2026-08): `ws/qwen3.6:35b-a3b` (MoE, thinking, 23GB on the 5090) and `vm/qwen3.6:27b` (17GB on the 3090).
+
+### Ollama context length (important)
+
+Ollama defaults to a 4096 context, which silently truncates agentic prompts. Fixed via
+systemd drop-in `zz-context.conf` on both backends (the `zz-` prefix matters — the stock
+`override.conf` also sets `OLLAMA_CONTEXT_LENGTH` and drop-ins are applied in filename
+order, last wins):
+
+- Workstation: `OLLAMA_CONTEXT_LENGTH=32768`, `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
+- ollama-01 VM: `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_NUM_PARALLEL=1` (24GB card, tighter)
+
+### oh-my-pi (omp) — local coding agent on the workstation
+
+[omp](https://github.com/can1357/oh-my-pi) is installed on the workstation
+(`npm -g --prefix ~/.local`, needs `bun` from extra) and wired to LiteLLM, so it codes
+against local GPUs:
+
+- Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-chat` (NOT `openai-completions` — that endpoint hangs against LiteLLM/Ollama), apiKey = LiteLLM master key
+- Default model: `~/.omp/agent/config.yml` → `modelRoles: default: qwen3.6:35b-a3b` — use the **fuzzy short name**; the full `homelab/ws/qwen3.6:35b-a3b` form breaks omp's provider/model parsing (extra slash) and it silently falls back to another model
+- Usage: `omp "prompt"` (interactive) or `omp -p "prompt"` (print mode); `--model <fuzzy>` to switch
 
 ### Authentication
 
