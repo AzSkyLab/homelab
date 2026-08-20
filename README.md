@@ -29,6 +29,9 @@ IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k
                 │  NFS media share │  │ k3s-agent-03   │  │                   │
                 │                  │  │ postgres-01    │  │                   │
                 │                  │  │ sandbox VMs    │  │                   │
+                │                  │  │ dns-az-01      │  │                   │
+                │                  │  │ ingress-east   │  │                   │
+                │                  │  │ ingress-central│  │                   │
                 └──────────────────┘  └────────────────┘  └───────────────────┘
 
                                     ┌──────────────────────┐
@@ -46,7 +49,7 @@ IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k
 | — | Management | 10.0.10.0/24 | Proxmox hosts, admin access, workstation |
 | 20 | Kubernetes | 10.0.20.0/24 | k3s cluster, Ollama VM |
 | 30 | Database | 10.0.30.0/24 | PostgreSQL |
-| 40 | Sandbox | 10.0.40.0/24 | Test VMs |
+| 40 | Sandbox | 10.0.40.0/24 | Test VMs + az-ingress-sim |
 | 50 | Work | 10.0.50.0/24 | Work WiFi |
 | 60 | Personal | 10.0.60.0/24 | Personal WiFi |
 | 70 | IoT | 10.0.70.0/24 | Smart devices |
@@ -88,6 +91,25 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | Redis | internal | Shared key-value store |
 | WireGuard | [vpn.home.lab](https://vpn.home.lab) | Remote access VPN (wg-easy) |
 
+## Multi-Region Ingress Simulation (az-ingress-sim)
+
+Home-lab validation of a production multi-region ingress architecture (design doc in the
+[`ai-gov-review`](https://github.com/csGIT34/ai-gov-review/blob/main/az-ingress-blueprint.md)
+repo): split-horizon DNS, an F5-style TLS/inspection layer, host-based routing, blue/green
+weighting, and two independent cross-region failover layers — built entirely with
+open-source stand-ins (bind9, HAProxy, nginx, k3s). Zero cloud resources.
+
+![az-ingress-sim architecture](docs/img/az-ingress-sim.svg)
+
+**Game-day results (measured 2026-08-19):**
+
+| Failure injected | Recovery mechanism | Measured |
+|---|---|---|
+| App environment killed | HAProxy cross-region backup pool | **12s** (12s failback) |
+| Entire region VM stopped | DNS health flipper rewrites the record | **52s** (~30s failback) |
+
+Full component mapping, deploy steps, and game days GD-1…5: [docs/az-ingress-sim.md](docs/az-ingress-sim.md).
+
 ## AI / LLM Infrastructure
 
 Two Ollama backends are aggregated behind LiteLLM for unified model access:
@@ -116,6 +138,34 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 - **`vm/<model>`** — routes to RTX 3090 (Proxmox VM)
 - **`ws/<model>`** — routes to RTX 5090 (Workstation)
 - **`ollama/<model>`** — load-balanced across both
+
+**Current flagship models (2026-08):**
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes, agentic coding |
+| `vm/qwen3.6:27b` | RTX 3090 | 17GB | Dense, vision-capable |
+| `ws/` + `vm/qwen3-coder:30b` | both | 19GB | Previous coder, load-balanced as `ollama/qwen3-coder:30b` |
+| `ws/` + `vm/deepseek-r1:32b` | both | 20GB | Reasoning |
+
+Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default
+(32k workstation / 16k VM, `OLLAMA_NUM_PARALLEL=1`) via `zz-context.conf` systemd
+drop-ins — the stock default silently truncates agentic prompts.
+
+### Local coding agent (oh-my-pi)
+
+[omp](https://github.com/can1357/oh-my-pi) runs on the workstation against the LiteLLM
+gateway — a terminal coding agent (LSP, subagents, browser tools) powered entirely by
+local GPUs. Default model: `qwen3.6:35b-a3b` on the 5090.
+
+```bash
+omp "refactor this function"       # interactive
+omp -p "explain this error"        # print mode
+omp --model qwen3-coder "..."      # fuzzy model switch
+```
+
+Config: `~/.omp/agent/models.yml` (provider → `http://llm.home.lab/v1`, `api: openai-chat`);
+setup notes and gotchas in [CLAUDE.md](CLAUDE.md#oh-my-pi-omp--local-coding-agent-on-the-workstation).
 
 ## Remote Access (WireGuard VPN)
 
@@ -218,7 +268,8 @@ homelab/
 │       ├── k3s-cluster/          # k3s control plane + workers
 │       ├── database/             # PostgreSQL VM
 │       ├── ollama/               # Ollama inference server (GPU passthrough)
-│       └── sandbox/              # On-demand test VMs
+│       ├── sandbox/              # On-demand test VMs
+│       └── az-ingress-sim/       # Multi-region ingress sim (dns-az-01 + 2 ingress VMs)
 ├── ansible/                      # Post-provisioning playbooks + roles
 ├── cloud-init/                   # Cloud-init configs (base, k8s, postgres)
 ├── scripts/                      # Proxmox host setup, API token generation
@@ -235,3 +286,4 @@ homelab/
 - [Network Architecture](docs/network.md) — VLANs, firewall rules, IP assignments
 - [Unifi Setup](docs/unifi-setup.md) — USG Pro + AP configuration
 - [AD Migration](docs/ad-migration.md) — Domain migration runbook
+- [az-ingress-sim](docs/az-ingress-sim.md) — Multi-region ingress lab: architecture, game days, measured failover timings
