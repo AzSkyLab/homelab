@@ -63,7 +63,7 @@
   <path d="M600,149 L684,149" stroke="#5A6B7C" stroke-width="1.6" stroke-dasharray="4 4" fill="none" marker-end="url(#ag)"/>
   <text x="644" y="141" font-size="10" fill="#5A6B7C" text-anchor="middle" font-family="monospace">2 forward</text>
   <path d="M750,216 L750,192" stroke="#177357" stroke-width="1.6" stroke-dasharray="3 4" fill="none" marker-end="url(#agr)"/>
-  <text x="758" y="208" font-size="10" fill="#177357" font-family="monospace">nsupdate rewrites app1 · 45–90s on region loss (GD-2)</text>
+  <text x="758" y="208" font-size="10" fill="#177357" font-family="monospace">nsupdate rewrites app1 · GD-2 measured: 52s ✓</text>
 
   <!-- client data paths -->
   <path d="M140,188 L140,356" stroke="#2B6CB0" stroke-width="2.5" fill="none" marker-end="url(#ab)"/>
@@ -139,6 +139,6 @@
   <text x="928" y="650" font-size="10.5" fill="#2B6CB0" font-family="monospace">HTTP → 10.0.20.86</text>
 
   <!-- footer -->
-  <text x="40" y="892" font-size="10.5" fill="#5A6B7C" font-family="monospace">failure layers: backend dies → nginx/HAProxy check (seconds) · env dies → HAProxy remote backup (measured 12s) · region dies → flipper DNS flip (45–90s, TTL 30s)</text>
+  <text x="40" y="892" font-size="10.5" fill="#5A6B7C" font-family="monospace">failure layers: backend dies → nginx/HAProxy check (seconds) · env dies → HAProxy remote backup (measured 12s) · region dies → flipper DNS flip (measured 52s out / ~30s back)</text>
   <text x="40" y="912" font-size="10.5" fill="#5A6B7C" font-family="monospace">code: terraform/stacks/az-ingress-sim · ansible/playbooks/az-ingress-sim.yml (+templates/az-sim) · kubernetes/manifests/az-sim · kubernetes/apps/coredns/coredns.yml · docs/az-ingress-sim.md</text>
 </svg>
