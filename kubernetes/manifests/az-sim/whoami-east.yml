@@ -1,0 +1,99 @@
+---
+# "ACA environment — East US 2" simulation.
+# blue/green Deployments behind one Service = ACA revision traffic weighting
+# (weight ratio = replica ratio; shift with kubectl scale, see docs/az-ingress-sim.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami-east-blue
+  namespace: az-sim
+  labels:
+    app: whoami-east
+    color: blue
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: whoami-east
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: whoami-east
+        color: blue
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.10
+          args: ["--name=east-blue"]
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami-east-green
+  namespace: az-sim
+  labels:
+    app: whoami-east
+    color: green
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: whoami-east
+      color: green
+  template:
+    metadata:
+      labels:
+        app: whoami-east
+        color: green
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.10
+          args: ["--name=east-green"]
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+# Env ingress VIP — the nginx "AGW" on ingress-east proxies here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami-east
+  namespace: az-sim
+  annotations:
+    metallb.universe.tf/address-pool: k8s-vlan-pool
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 10.0.20.85
+  selector:
+    app: whoami-east
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

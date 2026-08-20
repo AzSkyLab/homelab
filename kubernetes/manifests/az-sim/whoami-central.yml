@@ -1,0 +1,96 @@
+---
+# "ACA environment — Central US" simulation (mirror of east).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami-central-blue
+  namespace: az-sim
+  labels:
+    app: whoami-central
+    color: blue
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: whoami-central
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: whoami-central
+        color: blue
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.10
+          args: ["--name=central-blue"]
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami-central-green
+  namespace: az-sim
+  labels:
+    app: whoami-central
+    color: green
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: whoami-central
+      color: green
+  template:
+    metadata:
+      labels:
+        app: whoami-central
+        color: green
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.10
+          args: ["--name=central-green"]
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami-central
+  namespace: az-sim
+  annotations:
+    metallb.universe.tf/address-pool: k8s-vlan-pool
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 10.0.20.86
+  selector:
+    app: whoami-central
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

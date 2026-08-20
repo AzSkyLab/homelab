@@ -660,8 +660,20 @@ This is **client-secret** auth, not WIF. True WIF needs Vault's OIDC issuer publ
 reachable by Entra (Vault + k3s are internal-only), plus a publicly-trusted TLS cert —
 deferred. To tear down: delete the ArgoCD app + `az group delete -n rg-homelab-vaultsync`.
 
+## az-ingress-sim (Ingress Blueprint Lab)
+
+Multi-region ingress architecture validation (blueprint lives in the `ai-gov-review` repo).
+Three VMs on VLAN 40: `dns-az-01` (10.0.40.53, bind9 `az.home.lab` + DNS health flipper),
+`ingress-east` (10.0.40.61) and `ingress-central` (10.0.40.62) — each HAProxy (F5 sim,
+TLS terminate + cross-region backup pool) → nginx (AGW sim) → k3s `az-sim` namespace
+whoami blue/green envs (LBs 10.0.20.85/.86). CoreDNS conditionally forwards
+`az.home.lab` → 10.0.40.53. Wildcard cert issued by `home-lab-ca` in ns `az-sim`,
+shipped to VMs by `ansible/playbooks/az-ingress-sim.yml`.
+Full runbook + game days: [docs/az-ingress-sim.md](docs/az-ingress-sim.md).
+
 ## Documentation
 
 - [docs/network.md](docs/network.md) — VLANs, firewall rules, IP assignments
 - [docs/unifi-setup.md](docs/unifi-setup.md) — USG Pro + AP configuration
 - [docs/ad-migration.md](docs/ad-migration.md) — Domain migration runbook
+- [docs/az-ingress-sim.md](docs/az-ingress-sim.md) — Ingress blueprint lab (VMs, game days, teardown)

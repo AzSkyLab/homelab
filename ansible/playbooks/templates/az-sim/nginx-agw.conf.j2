@@ -1,0 +1,20 @@
+# Managed by Ansible (az-ingress-sim) — region: {{ region }}
+# App Gateway v2 sim: host-based routing to the regional "ACA env"
+# (k3s LoadBalancer {{ env_lb_ip }}). Receives re-encrypted traffic from HAProxy.
+
+server {
+    listen 8443 ssl;
+    server_name .az.home.lab;
+
+    ssl_certificate     /etc/nginx/ssl/az-wildcard.crt;
+    ssl_certificate_key /etc/nginx/ssl/az-wildcard.key;
+
+    location / {
+        proxy_pass http://{{ env_lb_ip }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 10s;
+    }
+}

@@ -51,3 +51,6 @@ ansible/roles/argocd/files/*.key
 .env
 .env.*
 home-lab-root-ca.crt
+
+# az-ingress-sim: extracted cert material (never commit)
+ansible/.az-sim-certs/

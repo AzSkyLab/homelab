@@ -1,0 +1,19 @@
+; Managed by Ansible (az-ingress-sim) — INITIAL zone only, never re-pushed.
+; This is a dynamic zone: bind maintains a journal; the flipper rewrites app1.
+$ORIGIN az.home.lab.
+$TTL 300
+@       IN  SOA ns.az.home.lab. admin.az.home.lab. (
+                1       ; serial
+                3600    ; refresh
+                600     ; retry
+                604800  ; expire
+                60 )    ; negative TTL
+@       IN  NS  ns.az.home.lab.
+ns      IN  A   10.0.40.53
+
+; app1 = the floating record the flipper manages (blueprint: A app1 -> active F5 VIP)
+app1    30  IN  A   10.0.40.61
+
+; stable per-region names (debug/plumbing — always point at their own region)
+east    30  IN  A   10.0.40.61
+central 30  IN  A   10.0.40.62

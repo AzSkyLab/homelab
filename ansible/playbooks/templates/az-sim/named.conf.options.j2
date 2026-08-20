@@ -1,0 +1,12 @@
+// Managed by Ansible (az-ingress-sim) — authoritative-only bind for az.home.lab
+options {
+    directory "/var/cache/bind";
+
+    listen-on { any; };
+    listen-on-v6 { none; };
+
+    allow-query { any; };
+    recursion no;
+
+    dnssec-validation no;
+};

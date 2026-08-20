@@ -1,0 +1,243 @@
+---
+# az-ingress-sim — configure the ingress-blueprint lab VMs.
+# Prereqs (in order):
+#   1. terraform apply in terraform/stacks/az-ingress-sim (VMs up)
+#   2. ArgoCD has synced the az-sim app (cert az-wildcard-tls issued, whoami envs up)
+# Run: ansible-playbook -i inventory/homelab.yml playbooks/az-ingress-sim.yml
+
+- name: Extract az wildcard cert from the cluster (Key Vault -> F5 PFX handoff sim)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    kubeconfig: "{{ playbook_dir }}/../kubeconfig"
+    certdir: "{{ playbook_dir }}/../.az-sim-certs"
+  tasks:
+    - name: Ensure local cert staging dir
+      ansible.builtin.file:
+        path: "{{ certdir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Read az-wildcard-tls secret
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig }} get secret az-wildcard-tls
+        -n az-sim -o jsonpath={.data}
+      register: cert_secret
+      changed_when: false
+      failed_when: cert_secret.rc != 0
+    # If this fails: check the ArgoCD az-sim app synced and cert-manager issued the cert:
+    #   kubectl get certificate az-wildcard -n az-sim
+
+    - name: Write cert material
+      ansible.builtin.copy:
+        content: "{{ (cert_secret.stdout | from_json)[item.key] | b64decode }}"
+        dest: "{{ certdir }}/{{ item.file }}"
+        mode: "0600"
+      loop:
+        - { key: "tls.crt", file: "az-wildcard.crt" }
+        - { key: "tls.key", file: "az-wildcard.key" }
+        - { key: "ca.crt", file: "ca.crt" }
+      loop_control:
+        label: "{{ item.file }}"
+
+    - name: Assemble HAProxy pem (leaf + chain + key)
+      ansible.builtin.shell: >
+        cat {{ certdir }}/az-wildcard.crt {{ certdir }}/ca.crt
+        {{ certdir }}/az-wildcard.key > {{ certdir }}/az-wildcard.pem
+        && chmod 600 {{ certdir }}/az-wildcard.pem
+      changed_when: true
+
+- name: Configure bind9 DNS + health flipper (Azure DNS plane sim)
+  hosts: az_dns
+  become: true
+  tasks:
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [bind9, bind9-dnsutils, curl]
+        state: present
+        update_cache: true
+
+    - name: Install home lab root CA
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../home-lab-root-ca.crt"
+        dest: /usr/local/share/ca-certificates/home-lab-root-ca.crt
+        mode: "0644"
+      notify: Update CA trust
+
+    - name: Ensure bind key dir
+      ansible.builtin.file:
+        path: /etc/bind/keys
+        state: directory
+        owner: root
+        group: bind
+        mode: "0750"
+
+    - name: Generate TSIG key for dynamic updates
+      ansible.builtin.shell: tsig-keygen -a hmac-sha256 flipper-key > /etc/bind/keys/flipper.key
+      args:
+        creates: /etc/bind/keys/flipper.key
+
+    - name: TSIG key permissions
+      ansible.builtin.file:
+        path: /etc/bind/keys/flipper.key
+        owner: root
+        group: bind
+        mode: "0640"
+
+    - name: Configure named options
+      ansible.builtin.template:
+        src: templates/az-sim/named.conf.options.j2
+        dest: /etc/bind/named.conf.options
+        mode: "0644"
+      notify: Restart bind
+
+    - name: Configure az.home.lab zone
+      ansible.builtin.template:
+        src: templates/az-sim/named.conf.local.j2
+        dest: /etc/bind/named.conf.local
+        mode: "0644"
+      notify: Restart bind
+
+    - name: Seed initial zone file (dynamic zone — never overwrite)
+      ansible.builtin.template:
+        src: templates/az-sim/db.az.home.lab.j2
+        dest: /var/lib/bind/db.az.home.lab
+        owner: bind
+        group: bind
+        mode: "0644"
+        force: false
+      notify: Restart bind
+
+    - name: Enable bind
+      ansible.builtin.service:
+        name: named
+        state: started
+        enabled: true
+
+    - name: Install flipper script
+      ansible.builtin.template:
+        src: templates/az-sim/az-flipper.sh.j2
+        dest: /usr/local/bin/az-flipper.sh
+        mode: "0755"
+      notify: Restart flipper
+
+    - name: Install flipper unit
+      ansible.builtin.template:
+        src: templates/az-sim/az-flipper.service.j2
+        dest: /etc/systemd/system/az-flipper.service
+        mode: "0644"
+      notify: Restart flipper
+
+    - name: Enable flipper
+      ansible.builtin.systemd:
+        name: az-flipper
+        state: started
+        enabled: true
+        daemon_reload: true
+
+  handlers:
+    - name: Update CA trust
+      ansible.builtin.command: update-ca-certificates
+    - name: Restart bind
+      ansible.builtin.service:
+        name: named
+        state: restarted
+    - name: Restart flipper
+      ansible.builtin.systemd:
+        name: az-flipper
+        state: restarted
+        daemon_reload: true
+
+- name: Configure regional ingress (F5 sim + AGW sim)
+  hosts: az_ingress
+  become: true
+  vars:
+    certdir: "{{ playbook_dir }}/../.az-sim-certs"
+  tasks:
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [haproxy, nginx, curl]
+        state: present
+        update_cache: true
+
+    - name: Install home lab root CA
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../home-lab-root-ca.crt"
+        dest: /usr/local/share/ca-certificates/home-lab-root-ca.crt
+        mode: "0644"
+      notify: Update CA trust
+
+    - name: Cert dirs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - /etc/haproxy/certs
+        - /etc/nginx/ssl
+
+    - name: Deploy HAProxy pem
+      ansible.builtin.copy:
+        src: "{{ certdir }}/az-wildcard.pem"
+        dest: /etc/haproxy/certs/az-wildcard.pem
+        mode: "0600"
+      notify: Restart haproxy
+
+    - name: Deploy nginx cert material
+      ansible.builtin.copy:
+        src: "{{ certdir }}/{{ item }}"
+        dest: /etc/nginx/ssl/{{ item }}
+        mode: "0600"
+      loop:
+        - az-wildcard.crt
+        - az-wildcard.key
+      notify: Restart nginx
+
+    - name: Configure HAProxy (F5 sim)
+      ansible.builtin.template:
+        src: templates/az-sim/haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+        mode: "0644"
+        validate: haproxy -c -f %s
+      notify: Restart haproxy
+
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart nginx
+
+    - name: Configure nginx (AGW sim)
+      ansible.builtin.template:
+        src: templates/az-sim/nginx-agw.conf.j2
+        dest: /etc/nginx/sites-available/agw.conf
+        mode: "0644"
+      notify: Restart nginx
+
+    - name: Enable AGW site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/agw.conf
+        dest: /etc/nginx/sites-enabled/agw.conf
+        state: link
+      notify: Restart nginx
+
+    - name: Enable services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - haproxy
+        - nginx
+
+  handlers:
+    - name: Update CA trust
+      ansible.builtin.command: update-ca-certificates
+    - name: Restart haproxy
+      ansible.builtin.service:
+        name: haproxy
+        state: restarted
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
