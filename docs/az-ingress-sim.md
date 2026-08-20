@@ -28,9 +28,17 @@ curl -s --cacert home-lab-root-ca.crt --resolve central.az.home.lab:443:10.0.40.
 ssh ubuntu@10.0.40.53 "sudo journalctl -u az-flipper -n 5 --no-pager -o cat"
 ```
 
-Result log: GD-1 executed 2026-08-19 — east env killed, HAProxy served `central-blue`
-through the east VIP in **12s**, DNS untouched; failback after restore also 12s.
-(First attempt exposed ArgoCD `selfHeal` reverting the kill — now off for this app.)
+Result log:
+
+- **GD-1** (2026-08-19): east env killed → HAProxy served `central-blue` through the east
+  VIP in **12s**, DNS untouched; failback after restore also 12s. (First attempt exposed
+  ArgoCD `selfHeal` reverting the kill — now off for this app.)
+- **GD-2** (2026-08-19): `qm stop 451` (whole east region) → flipper flipped
+  `app1.az.home.lab` to central in **52s** (predicted 45–90s ✓); traffic served
+  `central-blue` immediately after. VM restart → automatic failback in **~30s** after
+  boot. Flipper log confirmed the state machine:
+  `FLIP: 10.0.40.61 -> 10.0.40.62 (east fails=3)` and
+  `FLIP: 10.0.40.62 -> 10.0.40.61 (east ok=2)`.
 
 ## Component mapping
 
