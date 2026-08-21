@@ -31,17 +31,6 @@ spec:
             cpu: 200m
             memory: 128Mi
         servers:
-          # Conditional forwarder to the az-ingress-sim bind9 VM — this block is
-          # the lab version of the one-time "corp DNS conditional forwarder" ticket
-          # from the ingress blueprint. No cache: failover tests need fresh answers.
-          - zones:
-              - zone: az.home.lab.
-                use_tcp: true
-            port: 53
-            plugins:
-              - name: errors
-              - name: forward
-                parameters: . 10.0.40.53
           - zones:
               - zone: .
                 use_tcp: true
@@ -100,7 +89,6 @@ spec:
               ap-u7-pro         IN  A    10.0.10.6
               llm               IN  A    10.0.20.80
               vpn               IN  A    10.0.20.80
-              vault             IN  A    10.0.20.80
   destination:
     server: https://kubernetes.default.svc
     namespace: coredns

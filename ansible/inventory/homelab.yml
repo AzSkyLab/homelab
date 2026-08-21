@@ -24,19 +24,3 @@ all:
       hosts:
         ollama-01:
           ansible_host: 10.0.20.30
-    az_dns:
-      hosts:
-        dns-az-01:
-          ansible_host: 10.0.40.53
-    az_ingress:
-      hosts:
-        ingress-east:
-          ansible_host: 10.0.40.61
-          region: east
-          env_lb_ip: 10.0.20.85
-          peer_ip: 10.0.40.62
-        ingress-central:
-          ansible_host: 10.0.40.62
-          region: central
-          env_lb_ip: 10.0.20.86
-          peer_ip: 10.0.40.61

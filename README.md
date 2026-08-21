@@ -29,9 +29,6 @@ IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k
                 │  NFS media share │  │ k3s-agent-03   │  │                   │
                 │                  │  │ postgres-01    │  │                   │
                 │                  │  │ sandbox VMs    │  │                   │
-                │                  │  │ dns-az-01      │  │                   │
-                │                  │  │ ingress-east   │  │                   │
-                │                  │  │ ingress-central│  │                   │
                 └──────────────────┘  └────────────────┘  └───────────────────┘
 
                                     ┌──────────────────────┐
@@ -49,7 +46,7 @@ IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k
 | — | Management | 10.0.10.0/24 | Proxmox hosts, admin access, workstation |
 | 20 | Kubernetes | 10.0.20.0/24 | k3s cluster, Ollama VM |
 | 30 | Database | 10.0.30.0/24 | PostgreSQL |
-| 40 | Sandbox | 10.0.40.0/24 | Test VMs + az-ingress-sim |
+| 40 | Sandbox | 10.0.40.0/24 | Test VMs |
 | 50 | Work | 10.0.50.0/24 | Work WiFi |
 | 60 | Personal | 10.0.60.0/24 | Personal WiFi |
 | 70 | IoT | 10.0.70.0/24 | Smart devices |
@@ -90,25 +87,6 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | CorpoCache | [cache.home.lab](https://cache.home.lab) | Corporate cache tool |
 | Redis | internal | Shared key-value store |
 | WireGuard | [vpn.home.lab](https://vpn.home.lab) | Remote access VPN (wg-easy) |
-
-## Multi-Region Ingress Simulation (az-ingress-sim)
-
-Home-lab validation of a production multi-region ingress architecture (design doc in the
-[`ai-gov-review`](https://github.com/csGIT34/ai-gov-review/blob/main/az-ingress-blueprint.md)
-repo): split-horizon DNS, an F5-style TLS/inspection layer, host-based routing, blue/green
-weighting, and two independent cross-region failover layers — built entirely with
-open-source stand-ins (bind9, HAProxy, nginx, k3s). Zero cloud resources.
-
-![az-ingress-sim architecture](docs/img/az-ingress-sim.svg)
-
-**Game-day results (measured 2026-08-19):**
-
-| Failure injected | Recovery mechanism | Measured |
-|---|---|---|
-| App environment killed | HAProxy cross-region backup pool | **12s** (12s failback) |
-| Entire region VM stopped | DNS health flipper rewrites the record | **52s** (~30s failback) |
-
-Full component mapping, deploy steps, and game days GD-1…5: [docs/az-ingress-sim.md](docs/az-ingress-sim.md).
 
 ## AI / LLM Infrastructure
 
@@ -268,8 +246,7 @@ homelab/
 │       ├── k3s-cluster/          # k3s control plane + workers
 │       ├── database/             # PostgreSQL VM
 │       ├── ollama/               # Ollama inference server (GPU passthrough)
-│       ├── sandbox/              # On-demand test VMs
-│       └── az-ingress-sim/       # Multi-region ingress sim (dns-az-01 + 2 ingress VMs)
+│       └── sandbox/              # On-demand test VMs
 ├── ansible/                      # Post-provisioning playbooks + roles
 ├── cloud-init/                   # Cloud-init configs (base, k8s, postgres)
 ├── scripts/                      # Proxmox host setup, API token generation
@@ -286,4 +263,3 @@ homelab/
 - [Network Architecture](docs/network.md) — VLANs, firewall rules, IP assignments
 - [Unifi Setup](docs/unifi-setup.md) — USG Pro + AP configuration
 - [AD Migration](docs/ad-migration.md) — Domain migration runbook
-- [az-ingress-sim](docs/az-ingress-sim.md) — Multi-region ingress lab: architecture, game days, measured failover timings

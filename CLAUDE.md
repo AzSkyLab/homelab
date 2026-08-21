@@ -212,7 +212,6 @@ spec:
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
 | ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
 | ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
-| Vault | vault | Helm (hashicorp/vault) | https://vault.home.lab (CE, Raft; auto-unsealed via CronJob) |
 
 ### Application Workloads
 
@@ -328,10 +327,6 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomain (`malliefivpn`) |
-| `homelab/vault/root-token` | N/A (not in k8s) | vault | Vault initial root token |
-| `homelab/vault/unseal-key-{1..5}` | vault-unseal-keys (keys 1-3) | vault | Vault unseal keys (threshold 3 of 5); keys 1-3 mirrored into the Secret for the auto-unsealer |
-| `homelab/vault/init-json` | N/A (not in k8s) | vault | Full `operator init` output (canonical backup) |
-| `homelab/azure/vault-sync-sp-secret` | (also in Vault `secret/azure/sp`) | vault | SPN client secret for the Vault→Azure KV syncer |
 
 ### Recreating a K8s Secret from pass
 
@@ -561,141 +556,8 @@ kubectl create secret generic duckdns-secrets -n wireguard \
 - `kubernetes/manifests/wireguard/cronjob.yml` — DuckDNS IP updater (every 5 min)
 - `kubernetes/apps/wireguard/wireguard.yml` — ArgoCD Application
 
-## HashiCorp Vault (Secrets Management)
-
-Vault **Community Edition** (chart `hashicorp/vault` 0.34.0 / app 2.0.3) runs on k3s
-via ArgoCD, using **integrated Raft storage** on a single Longhorn-backed node.
-
-### Architecture
-
-| Setting | Value |
-|---------|-------|
-| Namespace | `vault` |
-| Storage | Raft integrated storage, `data-vault-0` PVC (5Gi, `longhorn`) |
-| Replicas | 1 (StatefulSet `vault-0`) — bump to 3 + add `retry_join` for real HA |
-| API/UI | `http://vault:8200` in-cluster (listener `tls_disable = 1`) |
-| Ingress | `https://vault.home.lab` — TLS terminates at Traefik (`home-lab-ca`) |
-| Seal | Shamir, 5 key shares, **threshold 3** — no auto-unseal |
-| Agent Injector | enabled (`vault-agent-injector`) |
-
-- `kubernetes/apps/vault/vault.yml` — ArgoCD Application (all Helm values inline)
-- Keys/token live **only in `pass`** under `homelab/vault/` — never in git or k8s.
-
-### Seal / unseal (auto-unsealed)
-
-Vault seals on any restart (node reboot, pod reschedule, upgrade) — the pod goes
-`0/1 Running` while sealed. Vault CE has no native auto-unseal, so an **in-cluster
-unsealer CronJob** (`vault-unsealer`, ns `vault`, every 2 min) checks the seal state
-and unseals via the Vault API using keys from the `vault-unseal-keys` Secret.
-Recovery is automatic within ~2 min; no action needed.
-
-- Manifest: `kubernetes/manifests/vault-unsealer/cronjob.yml` (ArgoCD app `vault-unsealer`)
-- Keys Secret is **manual, not in git** — recreate after a cluster rebuild:
-  ```bash
-  kubectl create secret generic vault-unseal-keys -n vault \
-    --from-literal=key1="$(pass homelab/vault/unseal-key-1)" \
-    --from-literal=key2="$(pass homelab/vault/unseal-key-2)" \
-    --from-literal=key3="$(pass homelab/vault/unseal-key-3)"
-  ```
-- Trade-off: unseal keys live in a cluster Secret (weaker at-rest protection than a
-  KMS/Transit seal). Force a run: `kubectl create job --from=cronjob/vault-unsealer manual-unseal -n vault`
-
-**Manual unseal** (only if the unsealer or its Secret is broken):
-
-```bash
-export KUBECONFIG=ansible/kubeconfig
-for i in 1 2 3; do
-  kubectl exec -n vault vault-0 -- vault operator unseal "$(pass homelab/vault/unseal-key-$i)"
-done
-kubectl exec -n vault vault-0 -- vault status   # Sealed=false, HA Mode=active
-```
-
-### First login / admin access
-
-```bash
-# UI: https://vault.home.lab/ui  → Token auth → paste root token
-pass homelab/vault/root-token
-# or CLI against the ingress (self-signed CA):
-export VAULT_ADDR=https://vault.home.lab VAULT_SKIP_VERIFY=true
-export VAULT_TOKEN="$(pass homelab/vault/root-token)"
-vault status
-```
-
-**Never rely on the root token day-to-day** — enable an auth method (e.g. Kubernetes
-or userpass), create scoped policies, then revoke/store the root token. To harden the
-seal, migrate to auto-unseal (Transit or a cloud KMS) so restarts self-recover.
-
-### Kubernetes auth (pods → secrets, no static tokens)
-
-The **Kubernetes auth method** is enabled at `auth/kubernetes/`, letting pods
-authenticate with their ServiceAccount JWT (no stored Vault tokens). Vault runs
-in-cluster so it validates JWTs via the TokenReview API using its own SA
-(`system:auth-delegator` binding, `disable_local_ca_jwt=false`). A **KV v2** engine
-is mounted at `secret/`.
-
-Vault runtime config is **not** GitOps/ArgoCD-managed — the reproducible source of
-truth is `scripts/vault-k8s-auth-setup.sh` (idempotent; re-run after any re-init):
-
-```bash
-export KUBECONFIG=ansible/kubeconfig     # Vault must be unsealed first
-scripts/vault-k8s-auth-setup.sh bootstrap                      # enable+config k8s auth + KV v2
-scripts/vault-k8s-auth-setup.sh add-app <app> <namespace> [sa] # per-app policy + role
-```
-
-`add-app` creates a policy `<app>-read` (read on `secret/data/<app>/*`) and a role
-`<app>` bound to ServiceAccount `<sa>` (defaults to `<app>`) in `<namespace>`.
-
-**How an app consumes a secret** (env `VAULT_ADDR=http://vault.vault.svc:8200`):
-
-```bash
-# store (admin, once):
-kubectl exec -n vault vault-0 -- vault kv put secret/<app>/config key=value
-# in the app pod (uses its projected SA token):
-JWT=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-TOKEN=$(vault write -field=token auth/kubernetes/login role=<app> jwt="$JWT")
-VAULT_TOKEN=$TOKEN vault kv get secret/<app>/config
-```
-
-Or use the **Vault Agent Injector** (already running) via pod annotations
-(`vault.hashicorp.com/agent-inject: "true"`, `.../role`, `.../agent-inject-secret-*`).
-
-An example `demo` role + `demo-read` policy + `secret/demo/config` exist as a live
-reference (bound to SA `demo`/ns `vault-demo`); safe to delete once real apps are
-onboarded.
-
-### DIY sync to Azure Key Vault (CE — Secrets Sync is Enterprise-only)
-
-Vault's built-in Secrets Sync (`sys/sync/*`) is Enterprise/HCP only (returns 404 on
-CE), so a CronJob replicates it: **`vault-azure-sync`** (ns `vault`, every 5 min)
-authenticates to Vault with its own SA JWT (k8s auth role `azure-syncer`), reads the
-SPN client secret + payloads from Vault, and writes them to Azure Key Vault via the
-Key Vault REST API.
-
-- Manifests: `kubernetes/manifests/vault-azure-sync/` (SA + Python ConfigMap + CronJob); ArgoCD app `vault-azure-sync` (wave 7)
-- Mapping: `secret/azure-sync/<name>` (field `value`) → Key Vault secret `<name>`
-- Azure: RG `rg-homelab-vaultsync`, KV `kv-hlvsync-20010`, App Reg (SPN) `homelab-vault-secrets-sync` (client_id `3f34ce85-1f16-446e-997d-5c18f6c138ae`), SPN has **Key Vault Secrets Officer** on the KV
-- Auth = SPN **client secret** (client-credentials grant), stored at Vault `secret/azure/sp` field `client_secret` (backup: `pass homelab/azure/vault-sync-sp-secret`)
-- Add a secret to sync: `kubectl exec -n vault vault-0 -- vault kv put secret/azure-sync/<name> value=<v>` (KV names must match `[0-9a-zA-Z-]+`)
-- Force a run: `kubectl create job --from=cronjob/vault-azure-sync run-now -n vault`
-
-This is **client-secret** auth, not WIF. True WIF needs Vault's OIDC issuer publicly
-reachable by Entra (Vault + k3s are internal-only), plus a publicly-trusted TLS cert —
-deferred. To tear down: delete the ArgoCD app + `az group delete -n rg-homelab-vaultsync`.
-
-## az-ingress-sim (Ingress Blueprint Lab)
-
-Multi-region ingress architecture validation (blueprint lives in the `ai-gov-review` repo).
-Three VMs on VLAN 40: `dns-az-01` (10.0.40.53, bind9 `az.home.lab` + DNS health flipper),
-`ingress-east` (10.0.40.61) and `ingress-central` (10.0.40.62) — each HAProxy (F5 sim,
-TLS terminate + cross-region backup pool) → nginx (AGW sim) → k3s `az-sim` namespace
-whoami blue/green envs (LBs 10.0.20.85/.86). CoreDNS conditionally forwards
-`az.home.lab` → 10.0.40.53. Wildcard cert issued by `home-lab-ca` in ns `az-sim`,
-shipped to VMs by `ansible/playbooks/az-ingress-sim.yml`.
-Full runbook + game days: [docs/az-ingress-sim.md](docs/az-ingress-sim.md).
-
 ## Documentation
 
 - [docs/network.md](docs/network.md) — VLANs, firewall rules, IP assignments
 - [docs/unifi-setup.md](docs/unifi-setup.md) — USG Pro + AP configuration
 - [docs/ad-migration.md](docs/ad-migration.md) — Domain migration runbook
-- [docs/az-ingress-sim.md](docs/az-ingress-sim.md) — Ingress blueprint lab (VMs, game days, teardown)
