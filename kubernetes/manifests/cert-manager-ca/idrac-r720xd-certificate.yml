@@ -1,0 +1,24 @@
+---
+# Proper TLS cert for the R720xd iDRAC7 (10.0.10.15), signed by the home.lab Root CA.
+# iDRAC7 2.65 accepts an uploaded key+cert pair (racadm sslkeyupload / sslcertupload).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: idrac-r720xd
+  namespace: cert-manager
+spec:
+  commonName: idrac-HRGJF3X
+  dnsNames:
+    - idrac-HRGJF3X
+    - idrac-r720xd.home.lab
+  ipAddresses:
+    - 10.0.10.15
+  duration: 87600h      # 10y — iDRAC7 is EOL, never renewing this by hand
+  secretName: idrac-r720xd-tls
+  privateKey:
+    algorithm: RSA      # iDRAC7 wants RSA, not ECDSA
+    size: 2048
+    encoding: PKCS1     # "BEGIN RSA PRIVATE KEY" — iDRAC7 won't parse PKCS8
+  issuerRef:
+    name: home-lab-ca
+    kind: ClusterIssuer
