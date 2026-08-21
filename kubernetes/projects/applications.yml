@@ -24,8 +24,6 @@ spec:
       kind: ClusterRole
     - group: rbac.authorization.k8s.io
       kind: ClusterRoleBinding
-    - group: snapshot.storage.k8s.io
-      kind: VolumeSnapshotClass
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
