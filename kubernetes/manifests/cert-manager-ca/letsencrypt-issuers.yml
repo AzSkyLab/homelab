@@ -14,6 +14,13 @@ spec:
       - http01:
           ingress:
             ingressClassName: traefik-public
+            # The public Traefik redirects port 80 to https for everything, so the challenge must also be served on
+            # websecure (Let's Encrypt follows the redirect and does not check the certificate behind it).
+            ingressTemplate:
+              metadata:
+                annotations:
+                  traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+                  traefik.ingress.kubernetes.io/router.tls: "true"
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -28,3 +35,10 @@ spec:
       - http01:
           ingress:
             ingressClassName: traefik-public
+            # The public Traefik redirects port 80 to https for everything, so the challenge must also be served on
+            # websecure (Let's Encrypt follows the redirect and does not check the certificate behind it).
+            ingressTemplate:
+              metadata:
+                annotations:
+                  traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+                  traefik.ingress.kubernetes.io/router.tls: "true"
