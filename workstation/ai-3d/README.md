@@ -13,6 +13,11 @@ workstation/ai-3d/ai3d.sh stop
 ```
 
 Before TRELLIS.2 runs (about 24 GB VRAM), unload Ollama models: `ollama ps`, then `ollama stop <model>`.
+
+`ai3d.sh start` keeps the models on the GPU between jobs (`AI3D_VRAM=high`, ComfyUI's `--highvram`): in ComfyUI's default
+mode the TRELLIS.2 worker parked about 17 GB of weights in system RAM between jobs. That holds the card's memory while the
+service runs, so Ollama (the LiteLLM backend on this card) has little room; when you need Ollama while ComfyUI runs, start it
+with `AI3D_VRAM=normal workstation/ai-3d/ai3d.sh start` (models go back to RAM after each job).
 SDXL alone needs about 8 GB and can share the card with a small Ollama model.
 
 ## Layout

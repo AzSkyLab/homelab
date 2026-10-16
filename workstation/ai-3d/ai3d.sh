@@ -6,6 +6,15 @@ set -euo pipefail
 AI3D_HOME="${AI3D_HOME:-$HOME/ai-3d}"
 PORT="${AI3D_PORT:-8188}"
 LOG="$AI3D_HOME/comfyui.log"
+# VRAM mode: "high" keeps the models on the GPU between jobs (--highvram), so they don't sit in system RAM (TRELLIS.2's
+# weights were ~17 GB of RAM in ComfyUI's default mode) and jobs start faster; "normal" is ComfyUI's default, which moves
+# them back to RAM after each job and leaves the VRAM free for Ollama (the LiteLLM backend on this card).
+VRAM="${AI3D_VRAM:-high}"
+case "$VRAM" in
+  high) VRAM_FLAG=(--highvram) ;;
+  normal) VRAM_FLAG=() ;;
+  *) echo "AI3D_VRAM must be high or normal" >&2; exit 2 ;;
+esac
 URL="http://127.0.0.1:$PORT"
 
 running() { curl -sf -o /dev/null "$URL/system_stats"; }
@@ -23,7 +32,8 @@ case "${1:-status}" in
     if running; then echo "already running at $URL"; exit 0; fi
     vram_warning
     cd "$AI3D_HOME/ComfyUI"
-    HF_HUB_OFFLINE=1 nohup "$AI3D_HOME/venv/bin/python" main.py --listen 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
+    echo "VRAM mode: $VRAM (AI3D_VRAM=normal frees the GPU between jobs for Ollama)"
+    HF_HUB_OFFLINE=1 nohup "$AI3D_HOME/venv/bin/python" main.py --listen 127.0.0.1 --port "$PORT" "${VRAM_FLAG[@]}" >"$LOG" 2>&1 &
     for _ in $(seq 1 60); do running && { echo "running at $URL"; exit 0; }; sleep 2; done
     echo "did not start; see $LOG" >&2; exit 1 ;;
   stop)
