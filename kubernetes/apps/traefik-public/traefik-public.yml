@@ -1,0 +1,66 @@
+---
+# A second, small Traefik that only the game (mmo) uses, on its own MetalLB address.
+# The router forwards TCP 80/443 to THIS address only, so the lab's other web UIs
+# (served by the existing Traefik at 10.0.20.80) never face the internet.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik-public
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infrastructure
+  source:
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    targetRevision: "34.5.0"
+    helm:
+      valuesObject:
+        fullnameOverride: traefik-public
+        ingressClass:
+          enabled: true
+          isDefaultClass: false
+          name: traefik-public
+        providers:
+          kubernetesIngress:
+            ingressClass: traefik-public # serve ONLY Ingresses of this class
+          kubernetesCRD:
+            enabled: false
+          kubernetesGateway:
+            enabled: false
+        ingressRoute:
+          dashboard:
+            enabled: false
+        service:
+          type: LoadBalancer
+          annotations:
+            metallb.universe.tf/address-pool: k8s-vlan-pool
+            metallb.universe.tf/loadBalancerIPs: "10.0.20.83"
+        ports:
+          web:
+            redirections:
+              entryPoint:
+                to: websecure
+                scheme: https
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        logs:
+          access:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik-public
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

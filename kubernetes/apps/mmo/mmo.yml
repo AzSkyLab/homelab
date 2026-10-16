@@ -1,0 +1,26 @@
+---
+# The MMO game server. ArgoCD syncs deploy/k8s from the game repo (secrets are made by hand, see its docs/DEPLOY.md).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mmo
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: applications
+  source:
+    repoURL: https://github.com/azskylab/videogame.git
+    targetRevision: main
+    path: deploy/k8s
+    directory:
+      include: "{namespace,deployment,ingress,backup}.yml"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mmo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
