@@ -10,7 +10,7 @@ metadata:
 spec:
   project: applications
   source:
-    repoURL: https://github.com/azskylab/videogame.git
+    repoURL: git@github.com:AzSkyLab/videogame.git
     targetRevision: main
     path: deploy/k8s
     directory:
