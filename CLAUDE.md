@@ -439,6 +439,7 @@ door: a second Traefik on its own MetalLB address, so the router never forwards 
 Internet → USG port forward (TCP 80, 443) → traefik-public LB 10.0.20.83 → Ingress (class traefik-public) → mmo-server:7777
 mmo-server pod → PostgreSQL VM 10.0.30.10 (database `mmo`)
 Players: wss://jankmmo.duckdns.org (Let's Encrypt certificate, TLS ends at traefik-public, the pod speaks plain ws)
+Downloads: https://jankmmo.duckdns.org/downloads/ → Ingress mmo-downloads → nginx (mmo-downloads pod) ← mirror sidecar ← GitHub Releases
 ```
 
 ### Key Details
@@ -454,6 +455,9 @@ Players: wss://jankmmo.duckdns.org (Let's Encrypt certificate, TLS ends at traef
 | Backups | CronJob `mmo-backup`, daily 03:30 America/New_York, PVC `mmo-backups` |
 | Admin account | `cameren` (`MMO_ADMINS`); in-game `/who /kick /ban /unban /announce` |
 | Dev commands | Off (`MMO_DEV_COMMANDS=0`) |
+| Downloads | Deployment `mmo-downloads` (nginx-unprivileged + a curl mirror sidecar, images pinned by digest), PVC `mmo-downloads` 6 Gi; in the app's `include` list in `kubernetes/apps/mmo/mmo.yml` since 2026-10-17 |
+| Mirror token | Secret `mmo-downloads-token` (key `token`), `pass homelab/mmo/downloads-token`: fine-grained, videogame repo only, Contents read-only, made 2026-10-17, **expires about 2027-10-17** |
+| Update signing key | Private half in `pass mmo/update-signing-key` (top level, not under `homelab/`) and the repo secret `MMO_UPDATE_SIGNING_KEY`; public half committed as `tools/installer/update_key.pem` |
 
 ### USG Port Forwards
 
@@ -494,6 +498,12 @@ Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. 
 - **Private repo access.** ArgoCD reads the private videogame repo with a read-only deploy key (GitHub: repo settings ▸
   Deploy keys, "ArgoCD (read-only)"); the ArgoCD repository Secret is `videogame-repo` in `argocd`, and the AppProject
   `applications` lists the SSH URL `git@github.com:AzSkyLab/videogame.git`.
+- **Downloads mirror.** Every 5 minutes the sidecar reads the newest GitHub Release with the token, checks every file
+  against `SHA256SUMS` and switches `latest.json` last; a failed round keeps serving the old version. It gives up on a
+  tag after 3 failed tries, remembered in `/data/downloads/.failed` on the volume (survives restarts), and a release seen
+  before its assets finish uploading counts as a try. To make it try again:
+  `kubectl -n mmo exec deploy/mmo-downloads -c mirror -- rm /data/downloads/.failed`. When the token lapses it logs
+  "cannot read the latest release"; make a new one and replace the Secret.
 - **Image pulls.** `ghcr-pull-secret` (copied from `corpocache`) is attached to the `mmo` namespace's `default`
   ServiceAccount, the same pattern as corpocache and workout-tracker.
 
@@ -506,6 +516,9 @@ kubectl -n mmo logs deploy/mmo-server -f
 kubectl -n mmo rollout restart deployment/mmo-server   # everyone is saved and disconnected; warn with /announce first
 # Certificate state
 kubectl -n mmo get certificate,challenge
+# Downloads: what is served, and the mirror's log (a new v* tag on the videogame repo is served within ~5 minutes of its release)
+curl -s --resolve jankmmo.duckdns.org:443:10.0.20.83 https://jankmmo.duckdns.org/downloads/latest.json | head -5
+kubectl -n mmo logs deploy/mmo-downloads -c mirror --tail=20
 # Register the admin before letting anyone in (only needed on a fresh database)
 kubectl -n mmo port-forward svc/mmo-server 7777:7777   # then the client connects to ws://127.0.0.1:7777
 ```
@@ -518,6 +531,7 @@ kubectl -n mmo create secret generic mmo-server \
   --from-literal=DATABASE_URL="postgres://mmo:$(pass homelab/mmo/db-password)@10.0.30.10:5432/mmo" \
   --from-literal=MMO_SIGNUP_CODE="$(pass homelab/mmo/signup-code)" \
   --from-literal=MMO_ADMINS=cameren
+kubectl -n mmo create secret generic mmo-downloads-token --from-literal=token="$(pass homelab/mmo/downloads-token)"
 kubectl -n mmo create secret generic mmo-backup \
   --from-literal=PGHOST=10.0.30.10 --from-literal=PGUSER=mmo --from-literal=PGDATABASE=mmo \
   --from-literal=PGPASSWORD="$(pass homelab/mmo/db-password)"
