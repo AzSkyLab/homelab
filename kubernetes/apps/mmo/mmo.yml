@@ -14,7 +14,7 @@ spec:
     targetRevision: main
     path: deploy/k8s
     directory:
-      include: "{namespace,deployment,ingress,backup}.yml"
+      include: "{namespace,deployment,ingress,backup,downloads}.yml" # downloads: game installer and auto-update mirror (needs Secret mmo-downloads-token)
   destination:
     server: https://kubernetes.default.svc
     namespace: mmo
