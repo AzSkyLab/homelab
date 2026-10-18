@@ -493,6 +493,10 @@ Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. 
   ```
   Recreate with `kubectl -n kube-system patch configmap coredns-custom --type merge -p '{"data":{"jankmmo.server":"..."}}'`
   then `kubectl -n kube-system rollout restart deploy/coredns`.
+- **Split DNS for LAN clients (in git, since 2026-10-18).** The lab CoreDNS (`coredns-external`, 10.0.20.53) has a
+  `jankmmo.duckdns.org` zone answering `10.0.20.83` (`kubernetes/apps/coredns/coredns.yml`), so home computers that use
+  10.0.20.53 reach the game and its downloads page. A device on a network whose DHCP hands out another DNS server still
+  gets the public IP and the USG login page (`nslookup jankmmo.duckdns.org` tells which).
 - **Testing from the LAN is misleading.** `curl https://<public IP>/` from inside answers with the USG login page for any
   host name (HTTP 200). Test the doors by address (`--resolve host:443:10.0.20.83`) or from a phone on mobile data.
 - **Private repo access.** ArgoCD reads the private videogame repo with a read-only deploy key (GitHub: repo settings ▸
