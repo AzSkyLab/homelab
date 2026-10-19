@@ -15,6 +15,10 @@ Update a pin only after re-reading the licence and re-running a test generation.
 | SDXL base 1.0 | `stabilityai/stable-diffusion-xl-base-1.0` @ `4621659` | Concept images | CreativeML OpenRAIL++-M | Licensor claims no rights in output; use limits (Attachment A) don't touch game art |
 | ControlNet OpenPose SDXL | `xinsir/controlnet-openpose-sdxl-1.0` @ `23f966c` | Holds a character to a drawn skeleton (T-pose) | Apache-2.0 | Thick limb lines work best |
 | ControlNet Depth SDXL | `xinsir/controlnet-depth-sdxl-1.0` @ `961552f` | Draws gear on a depth render of the base body; props from a depth render | Apache-2.0 | |
+| Stable Audio 3 Small SFX | `Comfy-Org/stable-audio-3` @ `75aad88` (`checkpoints/stable_audio_3_small_sfx.safetensors`, 2.3 GB) | Sound effects for the game (`tools/ai_audio`) | Stability AI Community License | Free under USD 1M annual revenue; outputs are ours; <https://stability.ai/license>. Distilled: 8 steps, cfg 1, sampler `lcm`, scheduler `simple`; ComfyUI built-in nodes since v0.40.0 (`CheckpointLoaderSimple`, `CLIPLoader` type `stable_audio`, `EmptyLatentAudio`, `KSampler`, `VAEDecodeAudio`, `SaveAudio`); 0.2 to 0.4 s a take |
+| Stable Audio 3 Medium | `Comfy-Org/stable-audio-3` @ `75aad88` (`checkpoints/stable_audio_3_medium.safetensors`, 9.2 GB) | Sound effects for the game (`tools/ai_audio`) | Stability AI Community License | As above; same graph with another file name |
+| T5Gemma b-b UL2 | `Comfy-Org/stable-audio-3` @ `75aad88` (`text_encoders/t5gemma_b_b_ul2.safetensors`, 1.2 GB) | Text encoder for Stable Audio 3 | Gemma Terms of Use | |
 
 Not installed, considered: Hunyuan3D 2.1 (better textures; Tencent licence excludes the EU, UK and South Korea),
-Rodin and Meshy (cloud; Rodin's MCP is connected in Claude Code but can't force a T-pose).
+Rodin and Meshy (cloud; Rodin's MCP is connected in Claude Code but can't force a T-pose),
+MOSS-SoundEffect v2.0 (Apache-2.0; tried in the 2026-10-19 sound bake-off against Stable Audio 3 and dropped to keep one pipeline).

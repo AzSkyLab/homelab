@@ -15,12 +15,16 @@ NODES=(
   "ComfyUI-TRELLIS2 https://github.com/PozzettiAndrea/ComfyUI-TRELLIS2.git 3e696f2cf174dba141c9efce0205e9a2d87e908a"
   "ComfyUI-GeometryPack https://github.com/PozzettiAndrea/ComfyUI-GeometryPack 1cbd14431bc88df27e5368f3e375b6bafd09006e"
 )
-# repo  revision  file-or-pattern  destination (relative to ComfyUI/models)
+SA3_REV=75aad8836271cb5a5123fb58304fae5d3bb4b0f9            # Stable Audio 3 (sound effects, tools/ai_audio in the game repo)
+# repo  revision  file-or-pattern  destination (relative to ComfyUI/models)  [size in bytes: a file of another size is fetched again]
 MODELS=(
   "stabilityai/stable-diffusion-xl-base-1.0 462165984030d82259a11f4367a4eed129e94a7b sd_xl_base_1.0.safetensors checkpoints/sd_xl_base_1.0.safetensors"
   "xinsir/controlnet-openpose-sdxl-1.0 23f966cd5cfdd3f7729c903e243d87152162d2b7 diffusion_pytorch_model.safetensors controlnet/xinsir_openpose_sdxl.safetensors"
   "xinsir/controlnet-depth-sdxl-1.0 961552fa2913e3aa82cdfb32cb51bf182d95207c diffusion_pytorch_model.safetensors controlnet/xinsir_depth_sdxl.safetensors"
   "PIA-SPACE-LAB/dinov3-vitl-pretrain-lvd1689m de90c8877a44ba5c7aa5a6a7ffd747c367c3dd6a model.safetensors dinov3/model.safetensors"
+  "Comfy-Org/stable-audio-3 $SA3_REV checkpoints/stable_audio_3_small_sfx.safetensors checkpoints/stable_audio_3_small_sfx.safetensors 2270384940"
+  "Comfy-Org/stable-audio-3 $SA3_REV checkpoints/stable_audio_3_medium.safetensors checkpoints/stable_audio_3_medium.safetensors 9222116660"
+  "Comfy-Org/stable-audio-3 $SA3_REV text_encoders/t5gemma_b_b_ul2.safetensors text_encoders/t5gemma_b_b_ul2.safetensors 1187264003"
 )
 TRELLIS_REPO=microsoft/TRELLIS.2-4B
 TRELLIS_REV=af44b45f2e35a493886929c6d786e563ec68364d
@@ -66,9 +70,9 @@ import os, shutil, sys
 from huggingface_hub import hf_hub_download
 models = sys.argv[1]
 for entry in sys.argv[2:]:
-    repo, rev, fname, dest = entry.split()
+    repo, rev, fname, dest, *size = entry.split()
     out = os.path.join(models, dest)
-    if os.path.exists(out):
+    if os.path.exists(out) and (not size or os.path.getsize(out) == int(size[0])):
         print("have", dest); continue
     os.makedirs(os.path.dirname(out), exist_ok=True)
     path = hf_hub_download(repo, fname, revision=rev, local_dir=os.path.join(models, ".dl", repo.replace("/", "--")))

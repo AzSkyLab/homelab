@@ -1,7 +1,8 @@
 # AI 3D service (workstation)
 
 Local image and 3D generation on the workstation's RTX 5090, used by the game repo's art tools
-(`~/github/videogame/tools/ai_assets/`). Nothing here is exposed on the network: ComfyUI listens on 127.0.0.1 only.
+(`~/github/videogame/tools/ai_assets/`). The same service also makes sound effects with Stable Audio 3
+(`~/github/videogame/tools/ai_audio/`). Nothing here is exposed on the network: ComfyUI listens on 127.0.0.1 only.
 
 ## Use
 
