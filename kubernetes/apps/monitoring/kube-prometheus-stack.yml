@@ -140,6 +140,14 @@ spec:
                   editable: true
                   options:
                     path: /var/lib/grafana/dashboards/homelab-network
+                - name: game
+                  orgId: 1
+                  folder: Game
+                  type: file
+                  disableDeletion: false
+                  editable: true
+                  options:
+                    path: /var/lib/grafana/dashboards/game
           dashboards:
             homelab-infra:
               node-exporter-full:
@@ -152,6 +160,9 @@ spec:
                 url: https://raw.githubusercontent.com/azskylab/homelab/main/kubernetes/manifests/grafana-dashboards/proxmox-ve.json
               disk-storage:
                 url: https://raw.githubusercontent.com/azskylab/homelab/main/kubernetes/manifests/grafana-dashboards/disk-storage.json
+            game:
+              mmo-server:
+                url: https://raw.githubusercontent.com/azskylab/homelab/main/kubernetes/manifests/grafana-dashboards/mmo.json
             homelab-network:
               unpoller-network-sites:
                 gnetId: 11311

@@ -39,6 +39,10 @@ spec:
           annotations:
             metallb.universe.tf/address-pool: k8s-vlan-pool
             metallb.universe.tf/loadBalancerIPs: "10.0.20.83"
+          spec:
+            # Local keeps the player's real source address: Traefik then sets X-Forwarded-For / X-Real-Ip
+            # (and drops forged ones from clients by default). MetalLB announces from the node running the pod.
+            externalTrafficPolicy: Local
         ports:
           web:
             redirections:

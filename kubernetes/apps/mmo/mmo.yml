@@ -14,7 +14,7 @@ spec:
     targetRevision: main
     path: deploy/k8s
     directory:
-      include: "{namespace,deployment,ingress,backup,downloads}.yml" # downloads: game installer and auto-update mirror (needs Secret mmo-downloads-token)
+      include: "{namespace,deployment,ingress,backup,downloads,metrics}.yml" # downloads: game installer and auto-update mirror (needs Secret mmo-downloads-token); metrics: ServiceMonitor so Prometheus scrapes the game
   destination:
     server: https://kubernetes.default.svc
     namespace: mmo
