@@ -14,7 +14,7 @@ spec:
     targetRevision: main
     path: deploy/k8s
     directory:
-      include: "{namespace,deployment,ingress,backup,downloads,metrics}.yml" # downloads: game installer and auto-update mirror (needs Secret mmo-downloads-token); metrics: ServiceMonitor so Prometheus scrapes the game
+      include: "{namespace,deployment,ingress,backup,downloads,metrics,admin-ingress}.yml" # admin-ingress: the admin portal on the internal Traefik (mmo-admin.home.lab, lab and WireGuard only); downloads: game installer and auto-update mirror (needs Secret mmo-downloads-token); metrics: ServiceMonitor so Prometheus scrapes the game
   destination:
     server: https://kubernetes.default.svc
     namespace: mmo
