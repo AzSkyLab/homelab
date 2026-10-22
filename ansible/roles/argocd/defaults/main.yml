@@ -1,7 +1,9 @@
 ---
 # ArgoCD
 argocd_namespace: argocd
-argocd_chart_version: "9.4.1"
+argocd_chart_version: "9.5.11"
+# Newest 3.3 patch; no argo-helm chart ships it yet, so the image is pinned on top of the chart
+argocd_image_tag: "v3.3.17"
 argocd_chart_repo: https://argoproj.github.io/argo-helm
 argocd_nodeport: 30443
 
