@@ -86,7 +86,6 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | Speedtest Tracker | [speedtest.home.lab](https://speedtest.home.lab) | Automated speed tests |
 | Workout Tracker | [workout.home.lab](https://workout.home.lab) | Exercise tracking app |
 | CorpoCache | [cache.home.lab](https://cache.home.lab) | Corporate cache tool |
-| Redis | internal | Shared key-value store |
 | WireGuard | [vpn.home.lab](https://vpn.home.lab) | Remote access VPN (wg-easy) |
 | MMO game server | `wss://jankmmo.duckdns.org` (public) | Game server from azskylab/videogame; friends connect from the internet |
 
