@@ -127,7 +127,7 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 | `ws/` + `vm/qwen3-coder:30b` | both | 19GB | Previous coder, load-balanced as `ollama/qwen3-coder:30b` |
 
 Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default
-(32k workstation / 16k VM, `OLLAMA_NUM_PARALLEL=1`) via `zz-context.conf` systemd
+(64k workstation / 16k VM, `OLLAMA_NUM_PARALLEL=1`) via `zz-context.conf` systemd
 drop-ins — the stock default silently truncates agentic prompts.
 
 ### Local coding agent (oh-my-pi)

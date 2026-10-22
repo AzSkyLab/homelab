@@ -381,7 +381,7 @@ systemd drop-in `zz-context.conf` on both backends (the `zz-` prefix matters —
 `override.conf` also sets `OLLAMA_CONTEXT_LENGTH` and drop-ins are applied in filename
 order, last wins):
 
-- Workstation: `OLLAMA_CONTEXT_LENGTH=32768`, `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
+- Workstation: `OLLAMA_CONTEXT_LENGTH=65536` (since 2026-10-22; every model still fits on the 5090, 25-27.4 of 32.6 GB), `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
 - ollama-01 VM: `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_NUM_PARALLEL=1` (24GB card, tighter)
 
 ### oh-my-pi (omp) — local coding agent on the workstation
@@ -391,7 +391,7 @@ order, last wins):
 against local GPUs:
 
 - Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-completions` (omp's Chat Completions transport), apiKey = LiteLLM master key. Until 2026-10-22 it said `api: openai-chat`, which is not a valid value: omp skipped the whole file and quietly used its built-in local Ollama provider instead (the old notes here, that `openai-completions` hangs and that the `homelab/...` form breaks, came from that state). `omp models homelab` lists the models; a schema error there means the file is being ignored.
-- Each model's `contextWindow` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 32768, vm 16384), `maxTokens` 8192. omp's own system prompt is about 17k tokens, so the `vm/` models cannot hold it; use `ws/` models.
+- Each model's `contextWindow` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 65536, vm 16384), `maxTokens` 16384 (ws) / 8192 (vm). omp's own system prompt is about 17k tokens, so the `vm/` models cannot hold it; use `ws/` models.
 - `~/.omp/agent/config.yml`: `modelRoles: default: ws/qwen3.8:27b` (the LiteLLM model name works as is) and `disabledProviders: [ollama]`, so omp does not also list the local Ollama models with their native 262k context.
 - Usage: `omp "prompt"` (interactive) or `omp -p "prompt" </dev/null` (print mode; outside a terminal it waits on stdin without the redirect); `--model ws/qwen3.6:35b-a3b` for the faster model
 
