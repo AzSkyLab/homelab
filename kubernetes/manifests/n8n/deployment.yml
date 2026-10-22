@@ -18,6 +18,9 @@ spec:
       labels:
         app: n8n
     spec:
+      # The Service is also named n8n, so service links would set N8N_PORT=tcp://...:5678,
+      # which n8n rejects as a port number
+      enableServiceLinks: false
       containers:
         - name: n8n
           image: docker.n8n.io/n8nio/n8n:2.44.6
