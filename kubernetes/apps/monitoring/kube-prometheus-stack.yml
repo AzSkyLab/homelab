@@ -97,6 +97,8 @@ spec:
                     labels:
                       instance: postgres-01
         grafana:
+          image:
+            tag: "12.4.13" # chart 72.9.1 ships 12.0.0-security-01; newest patched 12.x
           initChownData:
             enabled: false
           persistence:

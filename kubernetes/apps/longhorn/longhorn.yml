@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: https://charts.longhorn.io
     chart: longhorn
-    targetRevision: "1.12.0"
+    targetRevision: "1.12.1"
     helm:
       valuesObject:
         # Required under ArgoCD: the pre-upgrade hook Job needs a ServiceAccount
