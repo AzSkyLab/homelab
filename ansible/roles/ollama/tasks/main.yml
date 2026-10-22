@@ -26,10 +26,19 @@
   ansible.builtin.debug:
     var: nvidia_smi_output.stdout_lines
 
-- name: Install Ollama
+- name: Read installed Ollama version
+  ansible.builtin.command: /usr/local/bin/ollama --version
+  register: ollama_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install Ollama {{ ollama_version }}
   ansible.builtin.shell: curl -fsSL https://ollama.com/install.sh | sh
-  args:
-    creates: /usr/local/bin/ollama
+  environment:
+    OLLAMA_VERSION: "{{ ollama_version }}"
+  when: (ollama_installed.stdout ~ ollama_installed.stderr) | regex_search('\d+\.\d+\.\d+') != ollama_version
+  notify: Restart Ollama
 
 - name: Create Ollama systemd override directory
   ansible.builtin.file:

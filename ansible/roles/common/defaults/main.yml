@@ -1,0 +1,4 @@
+---
+# us.archive.ubuntu.com ran at ~200 KB/s from the lab on 2026-10-22, kernel.org's mirror at ~30 MB/s.
+# Security updates keep coming straight from security.ubuntu.com (the noble-security entry is left alone).
+ubuntu_mirror: "http://mirrors.edge.kernel.org/ubuntu/"

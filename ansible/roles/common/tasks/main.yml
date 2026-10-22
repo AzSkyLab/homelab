@@ -1,4 +1,10 @@
 ---
+- name: Use a fast Ubuntu archive mirror
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+    regexp: '^URIs: http://(us\.)?archive\.ubuntu\.com/ubuntu/?$'
+    replace: "URIs: {{ ubuntu_mirror }}"
+
 - name: Update apt cache
   ansible.builtin.apt:
     update_cache: true

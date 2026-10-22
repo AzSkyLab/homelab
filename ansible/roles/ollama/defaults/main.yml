@@ -1,7 +1,9 @@
 ---
 ollama_host: "0.0.0.0"
 ollama_port: 11434
-nvidia_driver_version: 550
+# Bump deliberately: install.sh reruns only when the installed version differs
+ollama_version: "0.40.8"
+nvidia_driver_version: 580
 ollama_models:
   - llama3.2
   - qwen2.5-coder:32b
