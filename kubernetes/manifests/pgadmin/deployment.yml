@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: pgadmin
-          image: dpage/pgadmin4:latest
+          image: dpage/pgadmin4:9.18.0
           env:
             - name: PGADMIN_DEFAULT_EMAIL
               valueFrom:

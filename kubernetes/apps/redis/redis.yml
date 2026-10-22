@@ -11,11 +11,13 @@ spec:
   source:
     repoURL: registry-1.docker.io/bitnamicharts
     chart: redis
-    targetRevision: "20.*"
+    targetRevision: "20.13.4"
     helm:
       valuesObject:
         image:
+          # Bitnami publishes only :latest now (no version tags), so pin the running build (Redis 8.10.1) by digest
           tag: latest
+          digest: sha256:a97a9e3e409d77fe8566d049a337eff53ef2941eb9e40f105dd4ad6ca3417810
         architecture: standalone
         auth:
           enabled: false
