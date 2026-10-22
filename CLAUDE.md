@@ -390,9 +390,10 @@ order, last wins):
 (`npm -g --prefix ~/.local`, needs `bun` from extra) and wired to LiteLLM, so it codes
 against local GPUs:
 
-- Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-chat` (NOT `openai-completions` — that endpoint hangs against LiteLLM/Ollama), apiKey = LiteLLM master key
-- Default model: `~/.omp/agent/config.yml` → `modelRoles: default: qwen3.6:35b-a3b` — use the **fuzzy short name**; the full `homelab/ws/qwen3.6:35b-a3b` form breaks omp's provider/model parsing (extra slash) and it silently falls back to another model
-- Usage: `omp "prompt"` (interactive) or `omp -p "prompt"` (print mode); `--model <fuzzy>` to switch
+- Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-completions` (omp's Chat Completions transport), apiKey = LiteLLM master key. Until 2026-10-22 it said `api: openai-chat`, which is not a valid value: omp skipped the whole file and quietly used its built-in local Ollama provider instead (the old notes here, that `openai-completions` hangs and that the `homelab/...` form breaks, came from that state). `omp models homelab` lists the models; a schema error there means the file is being ignored.
+- Each model's `contextWindow` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 32768, vm 16384), `maxTokens` 8192. omp's own system prompt is about 17k tokens, so the `vm/` models cannot hold it; use `ws/` models.
+- `~/.omp/agent/config.yml`: `modelRoles: default: ws/qwen3.8:27b` (the LiteLLM model name works as is) and `disabledProviders: [ollama]`, so omp does not also list the local Ollama models with their native 262k context.
+- Usage: `omp "prompt"` (interactive) or `omp -p "prompt" </dev/null` (print mode; outside a terminal it waits on stdin without the redirect); `--model ws/qwen3.6:35b-a3b` for the faster model
 
 ### Authentication
 

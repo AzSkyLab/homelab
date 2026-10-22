@@ -134,15 +134,15 @@ drop-ins — the stock default silently truncates agentic prompts.
 
 [omp](https://github.com/can1357/oh-my-pi) runs on the workstation against the LiteLLM
 gateway — a terminal coding agent (LSP, subagents, browser tools) powered entirely by
-local GPUs. Default model: `qwen3.6:35b-a3b` on the 5090.
+local GPUs. Default model: `ws/qwen3.8:27b` on the 5090.
 
 ```bash
 omp "refactor this function"       # interactive
 omp -p "explain this error"        # print mode
-omp --model qwen3-coder "..."      # fuzzy model switch
+omp --model ws/qwen3.6:35b-a3b "..."  # switch model (faster MoE)
 ```
 
-Config: `~/.omp/agent/models.yml` (provider → `http://llm.home.lab/v1`, `api: openai-chat`);
+Config: `~/.omp/agent/models.yml` (provider → `http://llm.home.lab/v1`, `api: openai-completions`);
 setup notes and gotchas in [CLAUDE.md](CLAUDE.md#oh-my-pi-omp--local-coding-agent-on-the-workstation).
 
 ## Remote Access (WireGuard VPN)
