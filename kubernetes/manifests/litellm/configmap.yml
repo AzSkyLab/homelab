@@ -7,44 +7,46 @@ metadata:
 data:
   config.yaml: |
     model_list:
+      # ollama_chat/ = Ollama's /api/chat with native tool calls. ollama/ uses /api/generate and fakes tools with
+      # JSON mode, which forced a tool call on every turn once a client (omp, Open WebUI tools) offered any.
       # VM - RTX 3090 (24GB) — explicit models with vm/ prefix
       - model_name: "vm/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/qwen3-coder:30b"
+          model: "ollama_chat/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
       - model_name: "vm/qwen3.8:27b"
         litellm_params:
-          model: "ollama/qwen3.8:27b"
+          model: "ollama_chat/qwen3.8:27b"
           api_base: "http://10.0.20.30:11434"
       # Workstation - RTX 5090 (32GB) — explicit models with ws/ prefix
       - model_name: "ws/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/qwen3-coder:30b"
+          model: "ollama_chat/qwen3-coder:30b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ws/qwen3.6:35b-a3b"
         litellm_params:
-          model: "ollama/qwen3.6:35b-a3b"
+          model: "ollama_chat/qwen3.6:35b-a3b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ws/qwen3.8:27b"
         litellm_params:
-          model: "ollama/qwen3.8:27b"
+          model: "ollama_chat/qwen3.8:27b"
           api_base: "http://10.0.10.40:11434"
       # Load-balanced — same model_name with multiple backends for round-robin
       - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/qwen3-coder:30b"
+          model: "ollama_chat/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
       - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
-          model: "ollama/qwen3-coder:30b"
+          model: "ollama_chat/qwen3-coder:30b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ollama/qwen3.8:27b"
         litellm_params:
-          model: "ollama/qwen3.8:27b"
+          model: "ollama_chat/qwen3.8:27b"
           api_base: "http://10.0.20.30:11434"
       - model_name: "ollama/qwen3.8:27b"
         litellm_params:
-          model: "ollama/qwen3.8:27b"
+          model: "ollama_chat/qwen3.8:27b"
           api_base: "http://10.0.10.40:11434"
 
     general_settings:
