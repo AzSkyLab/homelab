@@ -118,12 +118,12 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 - **`ws/<model>`** — routes to RTX 5090 (Workstation)
 - **`ollama/<model>`** — load-balanced across both
 
-**Current flagship models (2026-08):**
+**Current flagship models (2026-10):**
 
 | Model | Backend | Size | Notes |
 |-------|---------|------|-------|
-| `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes, agentic coding |
-| `vm/qwen3.6:27b` | RTX 3090 | 17GB | Dense, vision-capable |
+| `ws/` + `vm/qwen3.8:27b` | both | 18GB | Dense, vision, thinking; strongest at agentic and coding work; load-balanced as `ollama/qwen3.8:27b` |
+| `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes; about 3x faster than qwen3.8 |
 | `ws/` + `vm/qwen3-coder:30b` | both | 19GB | Previous coder, load-balanced as `ollama/qwen3-coder:30b` |
 
 Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default

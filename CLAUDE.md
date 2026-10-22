@@ -371,7 +371,8 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 
 Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup).
 
-Current headliners (2026-08): `ws/qwen3.6:35b-a3b` (MoE, thinking, 23GB on the 5090) and `vm/qwen3.6:27b` (17GB on the 3090).
+Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
+and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster).
 
 ### Ollama context length (important)
 

@@ -6,5 +6,5 @@ ollama_version: "0.40.8"
 nvidia_driver_version: 580
 # What ollama-01 serves; keep in step with the vm/ entries in kubernetes/manifests/litellm/configmap.yml
 ollama_models:
-  - qwen3.6:27b
+  - qwen3.8:27b
   - qwen3-coder:30b
