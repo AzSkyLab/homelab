@@ -23,3 +23,11 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+  # ArgoCD 3.x adds pre-delete finalizers to Applications whose chart has pre-delete hooks
+  # (longhorn); without this, root strips them, the controller re-adds them, and root stays OutOfSync
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jqPathExpressions:
+        - .metadata.finalizers[] | select(startswith("pre-delete-finalizer.argocd.argoproj.io"))
