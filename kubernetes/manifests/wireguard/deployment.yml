@@ -31,7 +31,7 @@ spec:
             privileged: true
       containers:
         - name: wg-easy
-          image: ghcr.io/wg-easy/wg-easy:latest
+          image: ghcr.io/wg-easy/wg-easy:14  # v15 is a rewrite (no PASSWORD_HASH/WG_* env); migrate deliberately
           ports:
             - name: wireguard
               containerPort: 443
