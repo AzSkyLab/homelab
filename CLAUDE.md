@@ -474,7 +474,9 @@ Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. 
 - **Separate public Traefik.** It only serves Ingresses of class `traefik-public`, so `*.home.lab` hosts return 404 on
   the public door. Check after any change:
   `curl -sk -o /dev/null -w "%{http_code}\n" --resolve grafana.home.lab:443:10.0.20.83 https://grafana.home.lab/` → `404`.
-  (The lab-wide Traefik has no class filter, so it also lists the game's Ingress; harmless, it is internal.)
+  The lab-wide Traefik serves only class `traefik` (since 2026-10-22; before that both doors claimed the game's
+  Ingresses and kept overwriting their status). Both doors strip aliasing headers (`aliasHeadersStrategy: delete`,
+  CVE-2026-88879) and set `core.strictTLSOptions`; the public door also refuses encoded characters in paths.
 - **HTTP-01 behind an https redirect.** The public Traefik redirects port 80 to https for everything, so the Let's
   Encrypt issuers give the solver Ingress `router.entrypoints: web,websecure` and `router.tls: "true"`
   (`letsencrypt-issuers.yml`, `ingressTemplate`). Let's Encrypt follows the redirect and does not check the

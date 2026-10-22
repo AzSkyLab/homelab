@@ -16,10 +16,29 @@ spec:
     targetRevision: "42.1.2"
     helm:
       valuesObject:
+        core:
+          # On a TLS options conflict, fail closed instead of falling back to the defaults (GHSA-g55h-rg46-x9c5)
+          strictTLSOptions: true
         providers:
           kubernetesIngress:
+            # Only class traefik: without it this door also served the game's traefik-public Ingresses and both doors
+            # kept overwriting their status
+            ingressClass: traefik
             publishedService:
               enabled: true
+        ports:
+          web:
+            http:
+              # Strip request headers whose names alias a managed one (X_Forwarded_For for X-Forwarded-For): PHP, CGI and
+              # nginx backends read them as the real header (CVE-2026-88879). The default is keep.
+              aliasHeadersStrategy: delete
+              encodedCharacters:
+                allowEncodedNullCharacter: false
+          websecure:
+            http:
+              aliasHeadersStrategy: delete
+              encodedCharacters:
+                allowEncodedNullCharacter: false
         service:
           type: LoadBalancer
           spec:

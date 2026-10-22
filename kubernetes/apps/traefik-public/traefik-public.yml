@@ -43,6 +43,9 @@ spec:
             # Local keeps the player's real source address: Traefik then sets X-Forwarded-For / X-Real-Ip
             # (and drops forged ones from clients by default). MetalLB announces from the node running the pod.
             externalTrafficPolicy: Local
+        core:
+          # On a TLS options conflict, fail closed instead of falling back to the defaults (GHSA-g55h-rg46-x9c5)
+          strictTLSOptions: true
         ports:
           web:
             http:
@@ -50,6 +53,22 @@ spec:
                 entryPoint:
                   to: websecure
                   scheme: https
+              # Strip request headers whose names alias a managed one (X_Forwarded_For for X-Forwarded-For): the game
+              # and nginx trust X-Forwarded-For from Traefik (CVE-2026-88879). The default is keep.
+              aliasHeadersStrategy: delete
+              # The game and its downloads never use encoded characters in paths, so refuse them all
+              encodedCharacters: &no-encoded
+                allowEncodedSlash: false
+                allowEncodedBackSlash: false
+                allowEncodedNullCharacter: false
+                allowEncodedSemicolon: false
+                allowEncodedPercent: false
+                allowEncodedQuestionMark: false
+                allowEncodedHash: false
+          websecure:
+            http:
+              aliasHeadersStrategy: delete
+              encodedCharacters: *no-encoded
         resources:
           requests:
             cpu: 100m
