@@ -12,14 +12,6 @@ data:
         litellm_params:
           model: "ollama/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/deepseek-r1:32b"
-        litellm_params:
-          model: "ollama/deepseek-r1:32b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "vm/gemma4:26b"
-        litellm_params:
-          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
-          api_base: "http://10.0.20.30:11434"
       - model_name: "vm/qwen3.6:27b"
         litellm_params:
           model: "ollama/qwen3.6:27b"
@@ -28,14 +20,6 @@ data:
       - model_name: "ws/qwen3-coder:30b"
         litellm_params:
           model: "ollama/qwen3-coder:30b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ws/deepseek-r1:32b"
-        litellm_params:
-          model: "ollama/deepseek-r1:32b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ws/gemma4:26b"
-        litellm_params:
-          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ws/qwen3.6:35b-a3b"
         litellm_params:
@@ -49,22 +33,6 @@ data:
       - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
           model: "ollama/qwen3-coder:30b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ollama/deepseek-r1:32b"
-        litellm_params:
-          model: "ollama/deepseek-r1:32b"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/deepseek-r1:32b"
-        litellm_params:
-          model: "ollama/deepseek-r1:32b"
-          api_base: "http://10.0.10.40:11434"
-      - model_name: "ollama/gemma4:26b"
-        litellm_params:
-          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
-          api_base: "http://10.0.20.30:11434"
-      - model_name: "ollama/gemma4:26b"
-        litellm_params:
-          model: "ollama/gemma4:26b-a4b-it-q4_K_M"
           api_base: "http://10.0.10.40:11434"
 
     general_settings:
