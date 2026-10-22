@@ -4,10 +4,9 @@ ollama_port: 11434
 # Bump deliberately: install.sh reruns only when the installed version differs
 ollama_version: "0.40.8"
 nvidia_driver_version: 580
+# What ollama-01 serves; keep in step with the vm/ entries in kubernetes/manifests/litellm/configmap.yml
 ollama_models:
-  - llama3.2
-  - qwen2.5-coder:32b
+  - qwen3.6:27b
+  - qwen3-coder:30b
   - deepseek-r1:32b
-  - mistral-small:24b
-  - gemma3:27b
-  - phi4:14b
+  - gemma4:26b-a4b-it-q4_K_M
