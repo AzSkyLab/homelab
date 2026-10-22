@@ -213,7 +213,7 @@ spec:
 |---------|-----------|------|--------|
 | ArgoCD | argocd | Helm (argo-helm) | https://argocd.home.lab |
 | Traefik | traefik | Helm | LB at 10.0.20.80 |
-| Traefik (public) | traefik-public | Helm (same chart 34.5.0) | LB at 10.0.20.83; serves only Ingresses of class `traefik-public` |
+| Traefik (public) | traefik-public | Helm (same chart 42.1.2) | LB at 10.0.20.83; serves only Ingresses of class `traefik-public` |
 | CoreDNS | coredns | Helm | LB at 10.0.20.53 |
 | cert-manager | cert-manager | Helm | Internal CA (`home-lab-ca`); Let's Encrypt (`letsencrypt-staging`, `letsencrypt-prod`) for public hosts |
 | MetalLB | metallb-system | Helm | IP pool: `k8s-vlan-pool` |
