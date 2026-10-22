@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: speedtest-tracker
-          image: lscr.io/linuxserver/speedtest-tracker:latest
+          image: lscr.io/linuxserver/speedtest-tracker:v1.15.0-ls176  # PHP 8.5.12: fixes CVE-2026-109618/109619
           ports:
             - name: http
               containerPort: 80
