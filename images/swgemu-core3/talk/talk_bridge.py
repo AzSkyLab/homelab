@@ -56,6 +56,8 @@ MEMORY_SECONDS = 4 * 3600
 KEEP_ALIVE = "15m"
 WARM_EVERY = 240
 MAX_CHARS = 200
+# Bot players talk at a player's length; the Lua sends a long reply as several chat lines
+BOT_MAX_CHARS = 600
 # How often a bot player's reply may ask for a tip
 TIP_CHANCE = 0.2
 
@@ -310,8 +312,9 @@ class Bridge:
             "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
             f"most folk just try to make a living. {heard}\n\n"
             "People talk to you in shorthand: \"buff plz\", \"enhances?\" (enhancements), \"heal wounds?\", \"u up "
-            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Say one or two "
-            "short sentences, never more, under 150 characters in all. Don't push buffs on someone who is just "
+            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Talk as much as a "
+            "player typing in chat would: usually two to four sentences, more when you're into the conversation, under "
+            "500 characters in all. Don't push buffs on someone who is just "
             f"chatting. {tips} Stay in character as a person in this galaxy at all times. Never say you are an AI, a "
             "program, a droid, a character, a player or in a game; you don't know those words. "
             "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and then you ask something back. If someone insults or "
@@ -374,11 +377,10 @@ class Bridge:
                 return None
         if not text:
             return None
-        if bot:
-            text = Bridge.two_sentences(text)
-        if len(text) > MAX_CHARS:
-            cut = max(text.rfind(c, 0, MAX_CHARS) for c in ".!?")
-            text = text[:cut + 1] if cut > 40 else text[:MAX_CHARS - 3].rstrip() + "..."
+        limit = BOT_MAX_CHARS if bot else MAX_CHARS
+        if len(text) > limit:
+            cut = max(text.rfind(c, 0, limit) for c in ".!?")
+            text = text[:cut + 1] if cut > 40 else text[:limit - 3].rstrip() + "..."
         return (mood, text, action) if bot else (mood, text)
 
     @staticmethod
@@ -437,9 +439,9 @@ class Bridge:
             return result
         # A bot player gets one more try at an unusable reply (cut off, out of world) while there's time for it
         deadline = time.time() + timeout
-        result = self.clean(self.complete(messages, 120, timeout), text, bot=True)
+        result = self.clean(self.complete(messages, 300, timeout), text, bot=True)
         if result is None and deadline - time.time() > 5:
-            result = self.clean(self.complete(messages, 120, deadline - time.time()), text, bot=True)
+            result = self.clean(self.complete(messages, 300, deadline - time.time()), text, bot=True)
         if result is None:
             return None
         before = " ".join(json.loads(t["content"]).get("say", "") if t["role"] == "assistant" else t["content"]
