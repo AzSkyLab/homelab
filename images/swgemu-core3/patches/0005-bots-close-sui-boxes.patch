@@ -1,0 +1,26 @@
+diff --git a/MMOCoreORB/src/server/zone/objects/player/PlayerObjectImplementation.cpp b/MMOCoreORB/src/server/zone/objects/player/PlayerObjectImplementation.cpp
+index d440c0a..e0e8aae 100644
+--- a/MMOCoreORB/src/server/zone/objects/player/PlayerObjectImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/player/PlayerObjectImplementation.cpp
+@@ -38,6 +38,7 @@
+ #include "server/zone/objects/waypoint/WaypointObject.h"
+ #include "server/zone/objects/creature/CreatureObject.h"
+ #include "server/zone/objects/transaction/TransactionLog.h"
++#include "server/zone/managers/bot/BotManager.h"
+ #include "server/chat/StringIdChatParameter.h"
+ #include "server/zone/objects/area/ActiveArea.h"
+ #include "server/zone/objects/player/events/PlayerDisconnectEvent.h"
+@@ -2236,7 +2237,12 @@ void PlayerObjectImplementation::giveCoaBonus(const String& factionName, float a
+ }
+ 
+ uint32 PlayerObjectImplementation::getNewSuiBoxID(uint32 type) {
+-	return (++suiBoxNextID << 16) + (uint16)type;
++	uint32 boxID = (++suiBoxNextID << 16) + (uint16)type;
++
++	// A bot player has no client to answer a window: it closes it (our patch)
++	BotManager::instance()->onSuiBoxCreated(parent.getSavedObjectID(), boxID);
++
++	return boxID;
+ }
+ 
+ void PlayerObjectImplementation::removeSuiBox(unsigned int boxID, bool closeWindowToClient) {

@@ -1,0 +1,18 @@
+diff --git a/MMOCoreORB/src/server/zone/objects/player/sui/SuiPageData.cpp b/MMOCoreORB/src/server/zone/objects/player/sui/SuiPageData.cpp
+index c994c75..037d1b7 100644
+--- a/MMOCoreORB/src/server/zone/objects/player/sui/SuiPageData.cpp
++++ b/MMOCoreORB/src/server/zone/objects/player/sui/SuiPageData.cpp
+@@ -145,9 +145,11 @@ bool SuiPageData::parseFromBinaryStream(ObjectInputStream* stream) {
+ 
+ void SuiPageData::sendTo(CreatureObject* creo) {
+ 	PlayerObject* playerObject = creo->getPlayerObject();
++	auto client = creo->getClient();
+ 
+-	if (playerObject != nullptr) {
+-		creo->getClient()->sendMessage(new SuiCreatePageMessage(this));
++	// A bot player has no client (our patch)
++	if (playerObject != nullptr && client != nullptr) {
++		client->sendMessage(new SuiCreatePageMessage(this));
+ 	}
+ }
+ 

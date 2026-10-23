@@ -599,7 +599,8 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
 |---------|-------|
 | Image | `ghcr.io/azskylab/swgemu-core3:<core3 sha8>-<homelab sha7>` (private; the homelab part is the last commit touching `images/swgemu-core3/`), built on the workstation, tag in `core3.yml` |
 | Core3 commit | `CORE3_REF` build arg in the Dockerfile (unstable branch) |
-| Our scripts | `images/swgemu-core3/custom_scripts/`, copied over Core3's empty `bin/scripts/custom_scripts/` hooks (Living Cities: player-looking city crowds). Specs in `~/github/swgemu/specs/` |
+| Our scripts | `images/swgemu-core3/custom_scripts/`, copied over Core3's empty `bin/scripts/custom_scripts/` hooks (Living Cities: player-looking city crowds; bot players' jobs and roster). Specs in `~/github/swgemu/specs/` |
+| Our C++ | `images/swgemu-core3/patches/` (bot players), applied at image build |
 | Clock | `TZ=America/New_York` (scripts read the local hour) |
 | Galaxy | `Homelab`, id 2; address from `GALAXY_ADDRESS` (written into the `galaxy` table at every start) |
 | Registration | Closed (`AUTOREG=0`); make accounts with `add-account` |
@@ -652,6 +653,26 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
   only in `DEBUG_AI` builds, and a Release build leaves every NPC standing until a player comes. Production leaves the
   arg empty. Copy the three planets' navmeshes from the cluster into its data dir first, or the first boot builds
   them.
+- **Our C++ (bot players).** `images/swgemu-core3/patches/` holds:
+  - `bots/`: our own files, copied into `MMOCoreORB/src/server/zone/managers/bot/`;
+  - six hook patches (`NNNN-*.patch`), applied with `git apply`.
+
+  The Dockerfile applies both after the checkout, and a patch that doesn't apply fails the build. After a
+  `CORE3_REF` bump, fix the patches first. `patches/README.md` lists the hooks and how to write one.
+- **Dev builds of the C++.** `bash images/swgemu-core3/dev/build-core3.sh`:
+  - builds incrementally in `~/.cache/swgemu-scratch/core3-dev`, with production's toolchain plus `-DDEBUG_AI`;
+  - tags `dev-bots` for the local test server (`CORE3_IMAGE=ghcr.io/azskylab/swgemu-core3:dev-bots docker compose
+    up -d`);
+  - the first build takes about 20 minutes, the rest only what changed.
+- **Bot players.** Six characters the server plays itself, with no client: a master doctor and a master dancer in Mos
+  Eisley, Coronet and Theed.
+  - **Roster:** `custom_scripts/bots/roster.lua`.
+  - **Accounts and characters:** `bot_<firstname>` accounts with unusable passwords, made on first boot.
+  - **When they're online:** they log in a minute after the first human and out 10 minutes after the last.
+  - **Status port:** never counts them, so `scripts/swgemu-deploy.sh`'s players check still means humans.
+  - **A stuck bot:** `BotJobs:logout:<first>` then `login:<first>`. A restart also puts every bot back at its
+    station.
+  - Spec: `~/github/swgemu/specs/2026-10-23-bot-players/`.
 
 ### Common Tasks
 
@@ -670,6 +691,10 @@ bash scripts/swgemu-talk-key.sh   # once: LiteLLM key for the talk bridge into p
 kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:report
 kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:restart
 kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:dump
+# Bot players (every bot and its job state; force one in or out; a bot's buffs, wounds and HAM)
+kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:list
+kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:login:Hesk
+kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:devBuffs:Hesk
 ```
 
 ### Recreating K8s Secrets

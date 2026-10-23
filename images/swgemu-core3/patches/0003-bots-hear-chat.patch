@@ -1,0 +1,32 @@
+diff --git a/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp b/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
+index 1c65ee1..c0f83d6 100644
+--- a/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
++++ b/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
+@@ -50,6 +50,7 @@
+ #include "server/chat/room/ChatRoomMap.h"
+ #include "templates/string/StringFile.h"
+ #include "templates/faction/Factions.h"
++#include "server/zone/managers/bot/BotChat.h"
+ 
+ ChatManagerImplementation::ChatManagerImplementation(ZoneServer* serv, int initsize) : ManagedServiceImplementation() {
+ 	server = serv;
+@@ -1446,6 +1447,9 @@ void ChatManagerImplementation::handleSpatialChatInternalMessage(CreatureObject*
+ 
+ 		broadcastChatMessage(player, formattedMessage, targetID, spatialChatType, moodType, chatFlags, languageID);
+ 
++		// Bot players within earshot hear it (our patch)
++		BotChat::onSpatialChat(player, formattedMessage);
++
+ 		ManagedReference<ChatMessage*> cm = new ChatMessage();
+ 		cm->setString(formattedMessage.toString());
+ 		player->notifyObservers(ObserverEventType::CHAT, cm, 0);
+@@ -1557,6 +1561,9 @@ void ChatManagerImplementation::handleChatInstantMessageToCharacter(ChatInstantM
+ 	BaseMessage* msg = new ChatInstantMessageToClient("SWG", sender->getZoneServer()->getGalaxyName(), name, text);
+ 	receiver->sendMessage(msg);
+ 
++	// A bot player has no client to show the tell: it hears it (our patch)
++	BotChat::onTell(receiver, sender, text);
++
+ 	BaseMessage* amsg = new ChatOnSendInstantMessage(message->getSequence(), IM_SUCCESS);
+ 	sender->sendMessage(amsg);
+ }

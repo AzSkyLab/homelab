@@ -1,0 +1,22 @@
+diff --git a/MMOCoreORB/src/server/zone/ZoneServerImplementation.cpp b/MMOCoreORB/src/server/zone/ZoneServerImplementation.cpp
+index 0e1705d..4ca37ba 100644
+--- a/MMOCoreORB/src/server/zone/ZoneServerImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/ZoneServerImplementation.cpp
+@@ -2,6 +2,7 @@
+ 				Copyright <SWGEmu>
+ 		See file COPYING for copying conditions.*/
+ 
++#include "server/zone/managers/bot/BotManager.h"
+ #include "server/zone/ZoneServer.h"
+ 
+ #include "server/zone/ZoneClientSession.h"
+@@ -229,6 +230,9 @@ void ZoneServerImplementation::initialize() {
+ 
+ 	startManagers();
+ 
++	// Bot players (our patch, see images/swgemu-core3/patches/README.md in homelab)
++	BotManager::instance()->start(_this.getReferenceUnsafeStaticCast());
++
+ 	//serverState = LOCKED;
+ 	serverState = ONLINE; //Test Center does not need to apply this change, but would be convenient for Dev Servers.
+ 

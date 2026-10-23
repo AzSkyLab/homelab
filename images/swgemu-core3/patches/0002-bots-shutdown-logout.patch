@@ -1,0 +1,22 @@
+diff --git a/MMOCoreORB/src/server/ServerCore.cpp b/MMOCoreORB/src/server/ServerCore.cpp
+index 86e5fd7..8a5dc8c 100644
+--- a/MMOCoreORB/src/server/ServerCore.cpp
++++ b/MMOCoreORB/src/server/ServerCore.cpp
+@@ -25,6 +25,7 @@
+ #include "templates/manager/TemplateManager.h"
+ #include "server/zone/managers/player/PlayerManager.h"
+ #include "server/zone/managers/director/DirectorManager.h"
++#include "server/zone/managers/bot/BotManager.h"
+ #include "server/zone/managers/collision/NavMeshManager.h"
+ #include "server/zone/managers/name/NameManager.h"
+ #include "server/zone/managers/frs/FrsManager.h"
+@@ -906,6 +907,9 @@ void ServerCore::shutdown() {
+ 
+ 		Thread::sleep(2000);
+ 
++		// Bot players have no session for disconnectAllPlayers to close: log them out cleanly first (our patch)
++		BotManager::instance()->shutdown();
++
+ 		if (nextShutdownFlags & ShutdownFlags::FAST) {
+ 			info(true) << "Skip disconnecting players";
+ 		} else {

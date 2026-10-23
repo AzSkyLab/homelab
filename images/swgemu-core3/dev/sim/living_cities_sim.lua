@@ -6,9 +6,12 @@
 -- Scenarios: evening (players everywhere for 3 h), night (03:00, nobody near), midnight (23:00 to 03:00, nobody near),
 -- watchleave (players watch an hour, then leave for three), clock (a day, players near), restart
 -- (restart twice mid-evening), stuck (some walks never arrive), talk (Phase 2 requests and replies, bridge faked).
+-- The bot players' scenarios (Phase 3: bots, botbrain) and their mock API are in bots_sim.lua next to this file.
+-- talk and botbrain need SIM_TALK_DIR: an empty directory with req/ and rep/.
 -- Exits non-zero if an invariant broke or a Lua error happened. Plain Lua 5.3/5.4.
 
 local scriptDir = arg[1] or "../../custom_scripts"
+local simDir = (arg[0] or ""):match("^(.*)/") or "."
 local wanted = {}
 for i = 2, #arg do
 	wanted[arg[i]] = true
@@ -323,6 +326,11 @@ function includeFile(path)
 	end
 	local chunk, err = loadfile(file)
 	if chunk == nil then
+		-- The bot roster may not be written yet: bots_sim.lua then uses a test roster
+		local missing = io.open(file) == nil
+		if missing and path:match("bots/roster%.lua$") then
+			return
+		end
 		error("includeFile " .. path .. ": " .. tostring(err))
 	end
 	chunk()
@@ -756,6 +764,17 @@ function scenarios.talk()
 end
 
 local order = {"evening", "night", "midnight", "watchleave", "clock", "restart", "stuck", "talk"}
+
+-- Bot players (Phase 3): their mock API and scenarios, given this simulator's clock, world and checks
+local botsChunk = loadfile(simDir .. "/bots_sim.lua")
+if botsChunk ~= nil then
+	botsChunk()({
+		sim = sim, Obj = Obj, newObject = newObject, objects = objects, fail = fail, realPrint = realPrint,
+		setHour = setHour, checkAll = checkAll, scenarios = scenarios, order = order, stats = function() return stats end,
+		players = function() return players end, addPlayer = function(p) table.insert(players, p) end,
+	})
+end
+
 math.randomseed(tonumber(os.getenv("SIM_SEED") or "") or 42)
 
 for _, name in ipairs(order) do

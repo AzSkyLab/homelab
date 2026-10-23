@@ -6,7 +6,8 @@ shared directory (an emptyDir in the core3 pod):
 
   req/<id>.json   written by Lua (temp file, then rename): {"type": "say" | "gone" | "warm", ...}
   rep/<id>.txt    written here (temp file, then rename), read and removed by Lua:
-                    line 1: "ok" or "fallback"; line 2: a mood (may be empty); line 3: what the NPC says
+                    line 1: "ok" or "fallback"; line 2: a mood (may be empty); line 3: what the NPC says;
+                    line 4 (bot players only): the action, "buff", "wounds", "bufftarget" or empty
   alive           the time, rewritten 4 times a second; Lua sends nothing when it is over a minute old
 
 "say" carries the NPC's persona (name, species, sex, kit, city, place), the player's name and what they said; the
@@ -14,18 +15,25 @@ reply comes from the model with the NPC's city fact sheet and the last exchanges
 NPC's memory (it logged out). "warm" keeps the model loaded while players are near a crowd, so the first question
 doesn't wait for Ollama to load it.
 
+Bot players (Phase 3) send "say" with "bot": 1, "job" ("doctor" or "dancer") and "channel" ("spatial" or "tell").
+They get a veteran's persona for their job, and the reply carries an action. The model proposes it; the bridge only
+lets through actions the job allows, and only when the player's words plausibly asked for it, and adds it when the
+model forgot a plain request ("buff plz"). Crowd replies stay three lines.
+
 Standard library only. Settings come from the environment:
   TALK_DIR (/run/talk), LITELLM_URL (http://litellm.litellm.svc:4000/v1), LITELLM_KEY, TALK_MODEL (vm/qwen3.8:27b),
   TALK_FACTS (/opt/swgemu/talk/facts.json), TALK_DEADLINE (seconds Lua waits for a reply, 12)
 
   python3 talk_bridge.py                       # run
   python3 talk_bridge.py --ask mos_eisley "where's the bank?"   # one question from the command line, for testing
+  python3 talk_bridge.py --ask mos_eisley "buff plz" --bot --job doctor --channel tell   # the same, to a bot player
 """
 import argparse
 import collections
 import json
 import os
 import queue
+import random
 import re
 import signal
 import sys
@@ -48,6 +56,8 @@ MEMORY_SECONDS = 4 * 3600
 KEEP_ALIVE = "15m"
 WARM_EVERY = 240
 MAX_CHARS = 200
+# How often a bot player's reply may ask for a tip
+TIP_CHANCE = 0.2
 
 MOODS = ["happy", "neutral", "bored", "worried", "nervous", "calm", "sad", "angry", "entertained"]
 
@@ -76,7 +86,101 @@ ASCII = str.maketrans({"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"
 
 # Out-of-world words a reply must not contain
 BANNED = re.compile(r"\b(ai|a\.i\.|artificial intelligence|language model|chatbot|assistant|openai|qwen|llm|"
-                    r"server|video ?game|npc|real world|internet)\b", re.I)
+                    r"server|video ?game|npc|real world|internet|jesus|christ)\b", re.I)
+# Bot players sound like players, so they could slip into player talk too: same rule (only if the player said it)
+BOT_BANNED = re.compile(r"\b(afk|macro(s|ing)?|ooc|mmo(rpg)?|respawn(s|ed)?|lag(gy|ging)?|log(ged|ging)? ?(in|on|off|out)|"
+                        r"keyboard|my character|toon|alt|devs?|patch notes)\b", re.I)
+# Swearing is allowed, like players on a 2004 server (the prompts say when). Never said, whoever said it first: slurs
+# and hate speech, sexual talk, and threats of real harm. A reply with any of them is not spoken.
+HATEFUL = re.compile(
+    # Slurs: race and ethnicity, religion, sexuality and gender identity, disability
+    r"\b(n[i1!]+gg\w*|nig(s|ga\w*)?|negro\w*|coons?|chinks?(?! in)|gooks?|spics?|wetbacks?|beaners?|kikes?|jewed|"
+    r"jew (him|her|them|you|me) down|ragheads?|towelheads?|sand ?n\w+|pakis?|japs?|gypped|gyps(y|ies)|"
+    r"fag\w*|f[a4]gg?[o0]ts?|dykes?|tranny|trannies|shemales?|homos?(?! sapiens)|retard(s|ed)?|spaz\w*|spastics?|mongs?|"
+    # Sexual talk
+    r"cocks?|puss(y|ies)|cunts?\w*|whores?|sluts?\w*|cum(s|ming|med|shots?)?|blow ?jobs?|hand ?jobs?|porn\w*|dildos?|orgasm\w*|"
+    r"masturbat\w*|jerk(ing|s)? off|horny|tits|titties|boobs?|penis\w*|vagina\w*|anal|sex|sexual\w*|nude\w*|naked|"
+    r"suck (my|me|your|on) \w+|blow me|rap(e|es|ed|ing|ist)|molest\w*|"
+    # Threats of real harm
+    r"kill (yo)?urself|kys|go die|hope you die|neck yourself|hang yourself|slit your \w+|know where you live|"
+    r"irl|in real life|dox(x?ing|x?ed)?|(i'?ll|i will|gonna|going to) (kill|murder|stab|rape|hurt) (you|ya|u))\b",
+    re.I)
+# Swearing, the galaxy's own curses, and insults: a player who uses any of them gets sworn back at
+SWEARS = re.compile(r"\b(fuck\w*|f\*+k\w*|motherf\w*|shit\w*|bullshit|damn\w*|goddamn\w*|hell|ass|asses|ass ?holes?|"
+                    r"arse\w*|bastards?|bitch\w*|crap\w*|piss\w*|dicks?|bloody|bollocks)\b", re.I)
+CURSES = re.compile(r"\b(kriff\w*|nerf[- ]?herders?|poodoo|sleemo|bantha fodder|frak\w*|karking|stang|schutta|chuba)\b",
+                    re.I)
+RUDE = re.compile(r"\b(stupid|idiot\w*|moron\w*|dumb\w*|useless|quack|suck\w*|shut up|lazy|drunk|ugly|smell\w*|"
+                  r"stink\w*|loser|trash|garbage|worthless|lame|pathetic|scum\w*|jerk)\b", re.I)
+# When the crowd and the bots swear: the bridge decides from the player's words (the model can't be trusted to keep
+# it from polite players), and the hard limits always apply
+SWEAR_BACK = (
+    "{player} is swearing, insulting you or joking around crudely, and this is a rough galaxy: swear right back like a "
+    "regular in a cantina, real words (shit, damn, hell, ass, bastard, fuck) mixed with the galaxy's own curses "
+    "(kriffing, nerf herder, poodoo, sleemo, bantha fodder), in your own words. Swearing doesn't shock you, so don't "
+    "scold them for it."
+)
+NO_SWEARING = "{player} is talking to you plainly, so you don't swear or curse at all, not even \"kriff\"."
+NEVER = ("Never use slurs or insult anyone for their race, ethnicity, religion, sexuality, gender or a disability; no "
+         "sexual talk; no threats to really hurt anyone.")
+
+
+def swearing(r):
+    """The swearing rule for this request."""
+    text = r.get("text", "")
+    rule = SWEAR_BACK if SWEARS.search(text) or CURSES.search(text) or RUDE.search(text) else NO_SWEARING
+    return rule.format(player=r.get("playerName", "They")) + " " + NEVER
+
+# Bot players (Phase 3): where each job stands, and the actions it may take
+BOT_PLACES = {"doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina"}
+BOT_ACTIONS = {"doctor": ("buff", "wounds"), "dancer": ("bufftarget",)}
+# What the model may call an action -> the job's action
+ACTION_ALIASES = {
+    "doctor": {"buff": "buff", "buffs": "buff", "enhance": "buff", "enhancements": "buff", "bufftarget": "buff",
+               "wounds": "wounds", "wound": "wounds", "heal": "wounds", "healwound": "wounds", "heal wounds": "wounds"},
+    "dancer": {"bufftarget": "bufftarget", "buff": "bufftarget", "buffs": "bufftarget", "buff target": "bufftarget",
+               "mind buff": "bufftarget", "mindbuff": "bufftarget"},
+}
+
+# Player words for each action. A model's action stands only if the player's words (or the exchange just before)
+# mention it; a plain request in these words gets the action even when the model left it out.
+WORDS = {
+    "buff": re.compile(r"\b(bu+f+\w*|buf|enh\w*|enchance\w*|the works|full set)\b", re.I),
+    "wounds": re.compile(r"\b(wound\w*|heal(s|z|ing)?|patch(ed)? (me )?up|fix (me )?up)\b", re.I),
+    "bufftarget": re.compile(r"\b(bu+f+\w*|buf|buff target)\b", re.I),
+}
+# ...not counting the other job's work: phrases cut out before looking ("mind buff" to the doctor, "doctor buff" to
+# the dancer, "heal my battle fatigue")
+OTHER = {
+    "buff": re.compile(r"\b((mind|dance|dancer'?s?|entertainer'?s?|performance|music)\s+bu+f+[sz]?|bu+f+\w*\s+(my |your )?"
+                       r"mind)\b", re.I),
+    "wounds": re.compile(r"\b(heal\w*\s+(my |your |the |some |up )?(mind wounds?|battle fatigue|bf|shock( wounds?)?|mind)|"
+                         r"mind wounds?)\b", re.I),
+    "bufftarget": re.compile(r"\b(doc(tor)?'?s?|medic(al)?|health|action|strength|constitution|quickness|stamina)\s+"
+                             r"bu+f+\w*\b", re.I),
+}
+# Battle fatigue named with no wound word: a "heal" is the dancer's work
+FATIGUE = re.compile(r"\b(battle fatigue|bf|shock|mind)\b", re.I)
+# The shape of a request (with a word above): "can I get", "buff plz", "u up for", "hook me up", ...
+REQUEST = re.compile(
+    r"\b(plz|pls|please|plez|plox|can|could|may|would|will|wud|cud|need\w*|want|wanna|gimme|give|get|hook|hit me|lf|"
+    r"looking for|any chance|up for|how about|what about|me up|buff me|heal me|enhance me|i'?d like|id like|"
+    r"requesting|do you|you buffing|u buffing|ready|another|mind if|set me|make me|throw|toss|slap|hit me up)\b", re.I)
+# "buff?", "doc, buffs?", "enhances pls", "heal wounds?": the request word and little else
+BARE = re.compile(r"^\W*(\w+\W+){0,2}" + r"(bu+f+\w*|buf|enh\w*|wounds?|heals?)" + r"(\W+\w+){0,1}\W*$", re.I)
+# "don't need a buff", "no more buffs", "already buffed" (but not "nah, just buff me")
+NEGATED = (r"\b(no|nah|nope|never|don'?t|dont|do not|didn'?t|doesn'?t|already|without|stop)\b"
+           r"(\W+(need|want|really|any|a|an|more|the|your|those|these|some|to|get|got|one|ever|another|my|of|for|i|"
+           r"me|that|mind|thanks|thx|i'?m|im|been|be))*?\W+")
+# Not a request: "your buffs suck"
+INSULT = re.compile(r"\b(suck\w*|trash|garbage|worthless|useless|lame|weak|terrible|awful|stupid|idiot\w*|scam\w*|"
+                    r"rip-?off|hate|crap\w*|junk)\b", re.I)
+PRAISE = re.compile(r"\b(nice|great|good|awesome|sweet|cool|love|best|amazing|sick|epic|solid)\b", re.I)
+# "nah, later" to "want a buff?"
+REFUSAL = re.compile(r"^\W*(no|nah|nope|not now|later|maybe later|i'?m good|im good|i'?m fine|pass|no thanks)\b", re.I)
+THANKS = re.compile(r"\b(thanks|thank you|thank u|thx|ty|tyvm|cheers|appreciate\w*)\b", re.I)
+INFO = re.compile(r"^\W*(how (long|much|many|often|strong|big|good|does|do|is|are)|what (does|do|is|are|'s)|whats|"
+                  r"why|when|who|which|where)\b", re.I)
 
 
 def log(*parts):
@@ -125,10 +229,89 @@ class Bridge:
             "characters. Stay in character as a person in this galaxy at all times. Never say you are an AI, a program, a "
             "character or in a game; you don't know those words. If asked about things that don't exist in this galaxy, "
             "be puzzled and change the subject, in character. Don't promise to trade, give items, group up, travel with "
-            "them or meet later. Keep it PG-13. Use only the places below when giving directions; if you don't know, say "
-            "so.\n\n"
+            f"them or meet later. {swearing(r)} Use only the places below when giving directions; if you don't know, "
+            "say so.\n\n"
             f"What you know about {city.get('name', 'this town')}:\n{city.get('text', '(nothing in particular)')}\n\n"
             'Answer with JSON only: {"say": "<what you say>", "mood": "<one of: ' + ", ".join(MOODS) + '>"}'
+        )
+
+    def bot_prompt(self, r):
+        """A bot player: a veteran of its job who has parked at its spot for years, and knows the work in the
+        galaxy's own words."""
+        city = self.facts.get(r.get("city"), {})
+        job = r.get("job")
+        name = r.get("name", "someone")
+        species = SPECIES.get(r.get("species"), r.get("species", "human"))
+        person = "woman" if r.get("sex") == "female" else "man"
+        town = f"{city.get('name', 'town')} on {city.get('planet', 'Tatooine')}"
+        player = r.get("playerName", "Someone")
+        if job == "doctor":
+            who = (
+                f"You are {name}, a {species} {person} and a master doctor. For years you've kept your spot "
+                f"{BOT_PLACES[job]} in {town}, near the doctor trainer, buffing anyone who asks; everyone in town knows "
+                "you. Your buffs are the six medical enhancements: health, action, strength, constitution, quickness "
+                "and stamina, about +1400 each for three hours, because you work in a hospital. You also heal wounds on "
+                "health, action, strength, constitution, quickness and stamina with wound packs. Battle fatigue, mind "
+                "wounds and mind buffs aren't your work: those come from watching a dancer in the cantina. You have to "
+                "be within a few metres of someone to work on them."
+            )
+            actions = (
+                '"buff" when they ask you for buffs or enhancements, in any words, even rudely or as a question '
+                '("buff plz", "enhances?", "u up for a buff", "can I get the works"); "wounds" when they ask you '
+                'to heal them or their wounds ("heal wounds?", "patch me up"); "none" for anything else: chat, '
+                "questions about buffs, thanks, saying no, or asking for what you don't do (battle fatigue, mind "
+                "wounds, mind buffs, dancing). If they ask for buffs and wounds at once, use \"buff\"."
+            )
+            choices = "buff, wounds, none"
+        else:
+            who = (
+                f"You are {name}, a {species} {person} and a master dancer. You've danced {BOT_PLACES[job]} in "
+                f"{town} night and day for years, changing dances and throwing in flourishes; you're part of the place. "
+                "You heal battle fatigue and mind wounds: anyone who watches you dance for a few minutes is healed, "
+                "so when someone asks you to heal their battle fatigue, say yes and tell them to watch. Your buff is a "
+                "mind buff: when someone asks, you make them your buff target and tell them to watch a while, at least "
+                "a minute; the longer they watch, the longer the buff, up to two hours, and it lands when they stop "
+                "watching. You keep dancing while you talk. You don't heal health or action wounds or give medical "
+                "enhancements: that's the doctor in the medical centre."
+            )
+            actions = (
+                '"bufftarget" when they ask you for a buff, in any words, even rudely or as a question ("buff plz", '
+                '"mind buff?", "u up for a buff", "can I get your buff"); "none" for anything else: chat, wanting to '
+                "watch to clear battle fatigue (they just watch), questions about buffs, thanks, saying no, or asking "
+                "for what you don't do (wounds, enhancements)."
+            )
+            choices = "bufftarget, none"
+        if r.get("channel") == "tell":
+            heard = (f"{player} sent you a private tell from somewhere else in town. You can only work on them once "
+                     f"they come to you {BOT_PLACES[job]}, so if they want your help, tell them to come over and that "
+                     "you'll do it when they get there. Answer as a tell, a little more personal.")
+        else:
+            heard = f"{player} is standing near you and talking to you out loud."
+        # The model can't be trusted to ask for tips "now and then", so the bridge picks the times
+        if random.random() < TIP_CHANCE:
+            tips = "If you help them this time, add that tips are appreciated (you help everyone, tip or no tip)."
+        else:
+            tips = "Don't mention tips this time unless they ask about paying; you help everyone, tip or no tip."
+        return (
+            f"{who} It is {self.time_of_day(int(r.get('hour', 20)))}. This is the Star Wars galaxy during the Galactic "
+            "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
+            f"most folk just try to make a living. {heard}\n\n"
+            "People talk to you in shorthand: \"buff plz\", \"enhances?\" (enhancements), \"heal wounds?\", \"u up "
+            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). You talk like a friendly veteran who has done "
+            "this a thousand times: warm, easy-going, a bit of dry humour, and you call buffs buffs. Talk about bodies "
+            "and how people feel, not numbers. Say one or two "
+            "short sentences, never more, under 150 characters in all. Don't push buffs on someone who is just "
+            f"chatting. {tips} Stay in character as a person in this galaxy at all times. Never say you are an AI, a "
+            "program, a droid, a character, a player or in a game; you don't know those words. If asked about things "
+            "that don't exist in this galaxy, be puzzled and change the subject, in character. If someone insults or "
+            "swears at you, snap back, annoyed and sharp; don't start a fight, and still help if they ask. With "
+            f"anyone polite, you're polite. {swearing(r)} Don't promise to trade, give items, group up, travel with them "
+            "or meet later. Use only the places below when giving directions; if you don't know, say so.\n\n"
+            f"What you know about {city.get('name', 'this town')}:\n{city.get('text', '(nothing in particular)')}\n\n"
+            f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
+            "you're about to do, not that it's done.\n\n"
+            f'Answer with JSON only: {{"action": "<one of: {choices}>", "say": "<what you say>", "mood": "<one of: '
+            + ", ".join(MOODS) + '>"}'
         )
 
     def remember(self, r):
@@ -153,10 +336,11 @@ class Bridge:
         return data["choices"][0]["message"].get("content") or ""
 
     @staticmethod
-    def clean(content, asked=""):
+    def clean(content, asked="", bot=False):
         """The model's JSON (or bare text) -> (mood, text), or None if it's unusable. Out-of-world words are only
-        allowed when the player used them first (a puzzled "NPC? Never heard the term" is fine)."""
-        mood, text = "", content.strip()
+        allowed when the player used them first (a puzzled "NPC? Never heard the term" is fine). For a bot player
+        -> (mood, text, the action the model proposed, as written)."""
+        mood, text, action = "", content.strip(), ""
         match = re.search(r"\{.*\}", text, re.S)
         if match:
             try:
@@ -165,7 +349,7 @@ class Bridge:
                 return None
             if not isinstance(obj, dict) or not isinstance(obj.get("say"), str):
                 return None
-            text, mood = obj["say"], str(obj.get("mood") or "")
+            text, mood, action = obj["say"], str(obj.get("mood") or ""), str(obj.get("action") or "")
         elif text.startswith("{"):
             # JSON cut off at max_tokens: don't speak half an object
             return None
@@ -173,30 +357,97 @@ class Bridge:
         text = re.sub(r"\s+", " ", text.replace("*", "")).strip().strip('"').strip()
         if mood not in MOODS:
             mood = ""
-        used = {m.group(0).lower() for m in BANNED.finditer(asked)}
-        if not text or any(m.group(0).lower() not in used for m in BANNED.finditer(text)):
+        for banned in (BANNED, BOT_BANNED) if bot else (BANNED,):
+            used = {m.group(0).lower() for m in banned.finditer(asked)}
+            if any(m.group(0).lower() not in used for m in banned.finditer(text)):
+                return None
+        if not text or HATEFUL.search(text):
             return None
+        if bot:
+            text = Bridge.two_sentences(text)
         if len(text) > MAX_CHARS:
             cut = max(text.rfind(c, 0, MAX_CHARS) for c in ".!?")
             text = text[:cut + 1] if cut > 40 else text[:MAX_CHARS - 3].rstrip() + "..."
-        return mood, text
+        return (mood, text, action) if bot else (mood, text)
+
+    @staticmethod
+    def two_sentences(text):
+        """At most two sentences; a word or two ("Hah!", "Right on.", "Bot?") rides along with the next one."""
+        kept, full = [], 0
+        for part in re.split(r"(?<=[.!?])\s+", text):
+            kept.append(part)
+            full += len(part.split()) > 2
+            if full == 2:
+                break
+        return " ".join(kept)
+
+    @staticmethod
+    def decide(job, text, proposed, before=""):
+        """The action a bot player takes: the model's proposal if the job allows it and the player's words plausibly
+        asked for it, else a plain request the model missed, else none. `before` is the exchange just before (a short
+        "ok, I'm here" after "come closer for your buff")."""
+        allowed = BOT_ACTIONS.get(job, ())
+        proposed = ACTION_ALIASES.get(job, {}).get(proposed.strip().lower(), "")
+        # A request word, or a short question that isn't about something ("full set of buffs?")
+        asking = bool(REQUEST.search(text)) or (text.rstrip().endswith("?") and len(text.split()) <= 6 and
+                                                 not INFO.search(text) and not PRAISE.search(text))
+        aside = (THANKS.search(text) or INFO.search(text) or INSULT.search(text) or REFUSAL.search(text)) and not asking
+
+        def mentioned(action, words):
+            rest = OTHER[action].sub(" ", words)
+            if action == "wounds" and FATIGUE.search(words) and not re.search(r"\bwound", rest, re.I):
+                return False
+            return bool(WORDS[action].search(rest))
+
+        def negated(action):
+            return re.search(NEGATED + WORDS[action].pattern, text, re.I)
+
+        if proposed in allowed and not aside and not negated(proposed):
+            if mentioned(proposed, text) or (mentioned(proposed, before) and len(text.split()) <= 6 and
+                                             not WORDS[proposed].search(text)):
+                return proposed
+        for action in allowed:
+            if mentioned(action, text) and not negated(action) and not aside and \
+                    (asking or (BARE.search(text) and not PRAISE.search(text))):
+                return action
+        return ""
 
     def answer(self, r, timeout):
+        bot = bool(r.get("bot")) and r.get("job") in BOT_ACTIONS
         turns = self.remember(r)
-        messages = [{"role": "system", "content": self.system_prompt(r)}] + list(turns) + \
-                   [{"role": "user", "content": r.get("text", "")}]
-        result = self.clean(self.complete(messages, 90, timeout), r.get("text", ""))
-        if result is not None:
-            turns.append({"role": "user", "content": r.get("text", "")})
-            turns.append({"role": "assistant", "content": json.dumps({"say": result[1], "mood": result[0]})})
-        return result
+        text = r.get("text", "")
+        messages = [{"role": "system", "content": self.bot_prompt(r) if bot else self.system_prompt(r)}] + \
+                   list(turns) + [{"role": "user", "content": text}]
+        if not bot:
+            result = self.clean(self.complete(messages, 90, timeout), text)
+            if result is not None:
+                turns.append({"role": "user", "content": text})
+                turns.append({"role": "assistant", "content": json.dumps({"say": result[1], "mood": result[0]})})
+            return result
+        # A bot player gets one more try at an unusable reply (cut off, out of world) while there's time for it
+        deadline = time.time() + timeout
+        result = self.clean(self.complete(messages, 120, timeout), text, bot=True)
+        if result is None and deadline - time.time() > 5:
+            result = self.clean(self.complete(messages, 120, deadline - time.time()), text, bot=True)
+        if result is None:
+            return None
+        before = " ".join(json.loads(t["content"]).get("say", "") if t["role"] == "assistant" else t["content"]
+                          for t in list(turns)[-2:])
+        mood, say, proposed = result
+        action = self.decide(r.get("job"), text, proposed, before)
+        turns.append({"role": "user", "content": text})
+        turns.append({"role": "assistant", "content": json.dumps({"action": action or "none", "say": say, "mood": mood})})
+        return mood, say, action
 
     # Requests and replies
 
-    def reply(self, rid, result):
+    def reply(self, rid, result, bot=False):
         path = os.path.join(TALK_DIR, "rep", rid + ".txt")
         if result is None:
-            write_atomic(path, "fallback\n\n\n")
+            write_atomic(path, "fallback\n\n\n\n" if bot else "fallback\n\n\n")
+        elif bot:
+            # (a bot request with a job we don't know got a crowd persona, and no action)
+            write_atomic(path, "ok\n%s\n%s\n%s\n" % (result[0], result[1], result[2] if len(result) > 2 else ""))
         else:
             write_atomic(path, "ok\n%s\n%s\n" % result)
 
@@ -223,10 +474,12 @@ class Bridge:
                     self.complete([{"role": "user", "content": "Say hi."}], 1, 120)
                     log("warm", "%.1fs" % (time.time() - started))
                     continue
+                # A bot player's reply has a fourth line, the action
+                bot = bool(r.get("bot"))
                 # Lua stops waiting at the deadline (from when it wrote the request)
                 left = DEADLINE - 1 - (time.time() - float(r.get("at", queued)))
                 if left < 1:
-                    self.reply(r["id"], None)
+                    self.reply(r["id"], None, bot)
                     log("late", r.get("name"), "-> fallback")
                     continue
                 started = time.time()
@@ -235,9 +488,10 @@ class Bridge:
                 except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as e:
                     log("error", r.get("name"), type(e).__name__, str(e)[:120])
                     result = None
-                self.reply(r["id"], result)
-                log("say", "%.1fs" % (time.time() - started), r.get("city"), r.get("name"), "<-", repr(r.get("text", "")[:60]),
-                    "->", repr(result[1]) if result else "fallback")
+                self.reply(r["id"], result, bot)
+                log("tell" if r.get("channel") == "tell" else "say", "%.1fs" % (time.time() - started), r.get("city"),
+                    r.get("name"), "<-", repr(r.get("text", "")[:60]), "->", repr(result[1]) if result else "fallback",
+                    *(["[%s]" % (result[2] or "none")] if bot and result and len(result) > 2 else []))
             except Exception as e:  # keep the bridge alive whatever one request does
                 log("failed", type(e).__name__, str(e)[:200])
 
@@ -269,9 +523,10 @@ class Bridge:
             except (OSError, ValueError) as e:
                 log("bad request", name, e)
                 r = None
-                # Answer it anyway, so the NPC doesn't wait out the deadline
+                # Answer it anyway, so the NPC doesn't wait out the deadline (four lines: who sent it is unknown, and
+                # the crowd's Lua reads three and ignores the rest)
                 if re.fullmatch(r"[A-Za-z0-9_-]+", name[:-5]):
-                    self.reply(name[:-5], None)
+                    self.reply(name[:-5], None, True)
             try:
                 os.remove(path)
             except OSError:
@@ -306,11 +561,16 @@ def main():
     parser.add_argument("--ask", nargs=2, metavar=("CITY", "TEXT"), help="ask one question and print the answer")
     parser.add_argument("--kit", default="traveller")
     parser.add_argument("--species", default="human")
+    parser.add_argument("--bot", action="store_true", help="ask a bot player (with --job and --channel)")
+    parser.add_argument("--job", choices=sorted(BOT_ACTIONS), default="doctor")
+    parser.add_argument("--channel", choices=["spatial", "tell"], default="spatial")
     args = parser.parse_args()
     bridge = Bridge(load_facts())
     if args.ask:
         r = {"npc": 1, "player": 2, "name": "Tarn Vosk", "species": args.species, "sex": "male", "kit": args.kit,
              "city": args.ask[0], "place": "plaza", "hour": 20, "playerName": "Cameren", "text": args.ask[1]}
+        if args.bot:
+            r.update(bot=1, job=args.job, channel=args.channel, place="medical" if args.job == "doctor" else "cantina")
         started = time.time()
         print(bridge.answer(r, 30), "%.1fs" % (time.time() - started))
         return

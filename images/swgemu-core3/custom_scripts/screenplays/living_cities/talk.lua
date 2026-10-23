@@ -7,6 +7,10 @@
 --   /run/talk/rep/<id>.txt    "ok" or "fallback", a mood, the line
 -- The NPC checks for its reply once a second (an event on the NPC, so it holds the NPC's lock) and gives up after
 -- `deadline` seconds with a canned line.
+--
+-- The bot players (screenplays/bots/, Phase 3) use the same mailbox: send, newId, canAsk/asked/answered (the
+-- per-player limits), the quiet minute and readReply. Their replies carry a fourth line, the action, which the crowd
+-- ignores. The crowd never answers a bot.
 
 local TALKING = 4
 local LINGERING = 2
@@ -137,6 +141,72 @@ function LivingTalk:newId(oid)
 	return oid .. "-" .. getTimestampMilli() .. "-" .. getRandomNumber(1000, 9999)
 end
 
+-- After a timeout or a failed answer nobody talks for quietAfterTimeout seconds (the crowd and the bots)
+function LivingTalk:isQuiet()
+	return readData("lc:talk:quietUntil") > os.time()
+end
+
+function LivingTalk:startQuiet()
+	writeData("lc:talk:quietUntil", os.time() + self.quietAfterTimeout)
+end
+
+-- May this player ask now? One question at a time per player, not too fast, and not in the quiet minute
+function LivingTalk:canAsk(playerOid)
+	local now = getTimestampMilli()
+
+	return readData(talkKey(playerOid, "pending")) <= now and now - readData(talkKey(playerOid, "last")) >= self.minGapMs and
+		not self:isQuiet()
+end
+
+-- A question from this player went out: nothing more from them until its reply or the deadline
+function LivingTalk:asked(playerOid)
+	local now = getTimestampMilli()
+
+	writeData(talkKey(playerOid, "pending"), now + (self.deadline + 2) * 1000)
+	writeData(talkKey(playerOid, "last"), now)
+end
+
+function LivingTalk:answered(playerOid)
+	deleteData(talkKey(playerOid, "pending"))
+end
+
+-- The reply to a request, once the bridge has written it (the file is removed): status ("ok" or "fallback"), mood,
+-- line and action. A bot's reply always has the action line (empty for none, and on a fallback); a crowd reply has
+-- three lines, so its action reads as "".
+function LivingTalk:readReply(id)
+	local path = self.dir .. "/rep/" .. id .. ".txt"
+	local f = io.open(path, "r")
+
+	if f == nil then
+		return nil
+	end
+
+	local status = f:read("l") or ""
+	local mood = f:read("l") or ""
+	local line = f:read("l") or ""
+	local action = f:read("l") or ""
+	f:close()
+	os.remove(path)
+
+	return status, mood, line, action
+end
+
+-- A line fit for chat: no control characters, at most maxChars
+function LivingTalk:cleanLine(line)
+	line = (tostring(line or ""):gsub("[%c]", " "))
+
+	if #line > self.maxChars then
+		line = line:sub(1, self.maxChars - 3) .. "..."
+	end
+
+	return line
+end
+
+-- A bot player (Phase 3)? Guarded, so the crowd works the same on a server without the bot patch
+local function isBotObject(pObject)
+	return isBot ~= nil and pObject ~= nil and isBot(pObject) == true
+end
+
 -- Called by LivingCities for every NPC it spawns
 function LivingTalk:setupNpc(pNpc)
 	createObserver(SPATIALCHAT, "LivingTalk", "onHeard", pNpc)
@@ -157,7 +227,8 @@ function LivingTalk:warm()
 	end
 end
 
--- Did the player mean this NPC? Their target, or its first name in the line (unless they target another of ours)
+-- Did the player mean this NPC? Their target, or its first name in the line (unless they target another of ours: a
+-- crowd NPC or a bot player)
 function LivingTalk:addressed(oid, pPlayer, text)
 	local target = CreatureObject(pPlayer):getTargetID()
 
@@ -165,7 +236,7 @@ function LivingTalk:addressed(oid, pPlayer, text)
 		return true
 	end
 
-	if target ~= 0 and readStringData(npcKey(target, "city")) ~= "" then
+	if target ~= 0 and (readStringData(npcKey(target, "city")) ~= "" or isBotObject(getSceneObject(target))) then
 		return false
 	end
 
@@ -188,7 +259,8 @@ function LivingTalk:onHeard(pNpc, pChatMessage, speakerId)
 
 	local pPlayer = getSceneObject(speakerId)
 
-	if pPlayer == nil or not SceneObject(pPlayer):isPlayerCreature() then
+	-- Bot players are player characters too, but the crowd only answers people
+	if pPlayer == nil or not SceneObject(pPlayer):isPlayerCreature() or isBotObject(pPlayer) then
 		return 0
 	end
 
@@ -213,11 +285,8 @@ end
 
 -- Send what the player said to the bridge and start waiting for the reply
 function LivingTalk:ask(pNpc, oid, key, playerOid, playerName, text)
-	local now = getTimestampMilli()
-
 	-- One question at a time per player, not too fast, and quiet for a while after the model timed out
-	if readData(talkKey(playerOid, "pending")) > now or now - readData(talkKey(playerOid, "last")) < self.minGapMs or
-		readData("lc:talk:quietUntil") > os.time() then
+	if not self:canAsk(playerOid) then
 		return false
 	end
 
@@ -236,8 +305,7 @@ function LivingTalk:ask(pNpc, oid, key, playerOid, playerName, text)
 		return false
 	end
 
-	writeData(talkKey(playerOid, "pending"), now + (self.deadline + 2) * 1000)
-	writeData(talkKey(playerOid, "last"), now)
+	self:asked(playerOid)
 
 	-- Turn to the player now, then wait for the reply (both in events that hold the NPC's lock)
 	createEvent(10, "LivingTalk", "startTalk", pNpc, packArgs(readData(npcKey(oid, "gen")), playerOid))
@@ -306,25 +374,18 @@ end
 function LivingTalk:poll(pNpc, args)
 	local a = unpackArgs(args)
 	local id, playerOid, tries = a[1], tonumber(a[2]), tonumber(a[3])
-	local path = self.dir .. "/rep/" .. id .. ".txt"
 	local alive = pNpc ~= nil and SceneObject(pNpc):getZoneName() ~= ""
-	local f = io.open(path, "r")
+	local status, mood, line = self:readReply(id)
 
-	if f ~= nil then
-		local status = f:read("l")
-		local mood = f:read("l") or ""
-		local line = f:read("l") or ""
-		f:close()
-		os.remove(path)
-
-		deleteData(talkKey(playerOid, "pending"))
+	if status ~= nil then
+		self:answered(playerOid)
 
 		if alive then
 			if status == "ok" and line ~= "" then
 				self:say(pNpc, line, mood)
 			else
 				-- The bridge couldn't get an answer (no key, LiteLLM down, the GPU busy): one canned line, then quiet
-				writeData("lc:talk:quietUntil", os.time() + self.quietAfterTimeout)
+				self:startQuiet()
 				self:fallback(pNpc)
 			end
 		end
@@ -333,14 +394,14 @@ function LivingTalk:poll(pNpc, args)
 	end
 
 	if not alive then
-		deleteData(talkKey(playerOid, "pending"))
+		self:answered(playerOid)
 		return
 	end
 
 	if tries >= self.deadline then
 		-- No answer in time: one canned line, then the crowd keeps quiet for a minute
-		deleteData(talkKey(playerOid, "pending"))
-		writeData("lc:talk:quietUntil", os.time() + self.quietAfterTimeout)
+		self:answered(playerOid)
+		self:startQuiet()
 		self:fallback(pNpc)
 		return
 	end
@@ -351,11 +412,7 @@ end
 function LivingTalk:say(pNpc, line, mood)
 	local oid = SceneObject(pNpc):getObjectID()
 
-	line = line:gsub("[%c]", " ")
-
-	if #line > self.maxChars then
-		line = line:sub(1, self.maxChars - 3) .. "..."
-	end
+	line = self:cleanLine(line)
 
 	writeData(npcKey(oid, "talkUntil"), os.time() + self.holdSeconds)
 
