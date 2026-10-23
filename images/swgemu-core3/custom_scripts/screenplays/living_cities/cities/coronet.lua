@@ -71,14 +71,14 @@ LivingCitiesData.coronet = {
 			{x = -55.56, y = -4594.03, cell = 0, heading = 180, act = "terminal"},
 			{x = -50.29, y = -4599.36, cell = 0, heading = 270, act = "terminal"},
 			{x = -55.61, y = -4604.63, cell = 0, heading = 0, act = "terminal"},
-			{x = -47, y = -4590.5, cell = 0, heading = 45, act = "pair", pair = 5},
-			{x = -46.01, y = -4589.51, cell = 0, heading = 225, act = "pair", pair = 4},
+			{x = -47, y = -4590.5, z = 28.65, cell = 0, heading = 45, act = "pair", pair = 5},
+			{x = -46.01, y = -4589.51, z = 28.65, cell = 0, heading = 225, act = "pair", pair = 4},
 		}},
 		-- Bazaar terminals on the north, west and east sides of the bank square
 		{id = "bazaar", place = "shops", slots = {
-			{x = -55.34, y = -4578.81, cell = 0, heading = 0, act = "terminal"},
+			{x = -55.34, y = -4578.81, z = 28.65, cell = 0, heading = 0, act = "terminal"},
 			{x = -76.09, y = -4599.34, cell = 0, heading = 270, act = "terminal"},
-			{x = -35.1, y = -4599.37, cell = 0, heading = 90, act = "terminal"},
+			{x = -35.1, y = -4599.37, z = 28.65, cell = 0, heading = 90, act = "terminal"},
 			{x = -66, y = -4610, cell = 0, heading = 315, act = "stand"},
 		}},
 		-- The big square north of the Capitol, round the fountain

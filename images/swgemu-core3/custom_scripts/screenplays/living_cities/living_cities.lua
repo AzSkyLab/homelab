@@ -94,6 +94,9 @@ LivingCities = ScreenPlay:new {
 	-- (NPCs walk at about 1.5 m/s), or walkTimeoutIndoors when a building is involved (cell positions aren't world ones)
 	walkTimeout = 60,
 	walkTimeoutIndoors = 360,
+	-- Seconds between walk checks, and how close (m) to the spot counts as there
+	walkCheckSeconds = 15,
+	arriveRange = 2,
 	-- Players within this range of an NPC see it arrive or leave; otherwise it just appears in a slot or vanishes
 	seenRange = 100,
 }
@@ -450,10 +453,15 @@ function LivingCities:makeName(key, species)
 	return nil, nil
 end
 
--- Floor height for a slot: given for cells, asked of the world outdoors
+-- Floor height for a slot: from the city data where given (always inside cells; outdoors where a probe measured it),
+-- otherwise asked of the world
 function LivingCities:slotZ(city, pos)
+	if pos.z ~= nil then
+		return pos.z
+	end
+
 	if pos.cell ~= nil and pos.cell ~= 0 then
-		return pos.z or 0
+		return 0
 	end
 
 	return getWorldFloor(pos.x, pos.y, city.planet)
@@ -604,7 +612,7 @@ function LivingCities:forget(key, oid)
 		LivingTalk:npcGone(oid)
 	end
 
-	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout"}) do
+	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout", "walkStart"}) do
 		deleteData(npcKey(oid, field))
 	end
 
@@ -739,7 +747,8 @@ function LivingCities:walkTo(pNpc, key, gen, pos, state)
 	end
 
 	writeData(npcKey(oid, "walkTimeout"), timeout)
-	createEvent(timeout * 1000, "LivingCities", "walkWatchdog", pNpc, packArgs(gen, seq))
+	writeData(npcKey(oid, "walkStart"), os.time())
+	createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc, packArgs(gen, seq))
 end
 
 function LivingCities:onArrived(pNpc)
@@ -754,6 +763,13 @@ function LivingCities:onArrived(pNpc)
 		return 0
 	end
 
+	self:arrived(pNpc, oid, gen)
+
+	return 0
+end
+
+-- The walk is over (Core3's DESTINATIONREACHED, or walkCheck found it standing on the spot)
+function LivingCities:arrived(pNpc, oid, gen)
 	local key = readStringData(npcKey(oid, "city"))
 	local state = readData(npcKey(oid, "state"))
 
@@ -761,16 +777,17 @@ function LivingCities:onArrived(pNpc)
 		writeData(npcKey(oid, "stuck"), 0)
 		self:startLinger(pNpc, key, gen)
 	elseif state == LEAVING then
-		-- Destroy it outside this observer's lock
+		-- Destroy it outside the current lock
+		writeData(npcKey(oid, "state"), 0)
 		createEvent(1000, "LivingCities", "despawnLater", nil, tostring(oid))
 		self:count(key, "left")
 	end
-
-	return 0
 end
 
--- A walk that hasn't arrived: if nobody is near, the AI is simply asleep; otherwise the NPC is stuck
-function LivingCities:walkWatchdog(pNpc, args)
+-- Every walkCheckSeconds while walking: standing on the spot counts as arrived (Core3 only reports arrival when the
+-- height matches too); past the timeout with a player near, the NPC is stuck. With nobody near, the AI is asleep and
+-- the clock restarts.
+function LivingCities:walkCheck(pNpc, args)
 	local a = unpackArgs(args)
 	local gen, seq = a[1], tonumber(a[2])
 
@@ -785,14 +802,30 @@ function LivingCities:walkWatchdog(pNpc, args)
 		return
 	end
 
+	local key = readStringData(npcKey(oid, "city"))
+	local city = LivingCitiesData[key]
+	local spot, slot = self:slotOf(key, oid)
+	local target = state == LEAVING and city.arrival or slot
+
+	if target ~= nil and SceneObject(pNpc):getParentID() == (target.cell or 0) then
+		local dx = target.x - SceneObject(pNpc):getPositionX()
+		local dy = target.y - SceneObject(pNpc):getPositionY()
+
+		if dx * dx + dy * dy <= self.arriveRange * self.arriveRange then
+			self:arrived(pNpc, oid, tonumber(gen))
+			return
+		end
+	end
+
 	if AiAgent(pNpc):getNumberOfPlayersInRange() == 0 and not self:awake() then
-		createEvent(readData(npcKey(oid, "walkTimeout")) * 1000, "LivingCities", "walkWatchdog", pNpc, args)
+		writeData(npcKey(oid, "walkStart"), os.time())
+	end
+
+	if os.time() - readData(npcKey(oid, "walkStart")) < readData(npcKey(oid, "walkTimeout")) then
+		createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc, args)
 		return
 	end
 
-	local key = readStringData(npcKey(oid, "city"))
-	local city = LivingCitiesData[key]
-	local spot = self:slotOf(key, oid)
 	local stuck = readData(npcKey(oid, "stuck")) + 1
 
 	print(string.format("LivingCities: %s stuck in %s at %.1f %.1f cell %d on the way to %s", readStringData(npcKey(oid, "name")),
@@ -1289,4 +1322,55 @@ function LivingCities:devProbeClear()
 	end
 
 	print("LivingCities: probes removed")
+end
+
+-- Development (DEBUG_AI builds): turn on Core3's AI debug log for the first probe per city that hasn't arrived
+function LivingCities:devProbeDebug()
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+		local done = false
+
+		if city ~= nil then
+			for spotIndex, spot in ipairs(city.spots) do
+				for slotIndex = 1, #spot.slots do
+					local id = key .. ":" .. spotIndex .. ":" .. slotIndex
+					local pProbe = getSceneObject(readData("lcp:oid:" .. id))
+
+					if not done and pProbe ~= nil and readData("lcp:ok:" .. id) == 0 then
+						AiAgent(pProbe):setAIDebug(true)
+						print("LivingCities: AI debug on for the probe to " .. city.name .. " " .. spot.id .. " slot " .. slotIndex ..
+							" (" .. SceneObject(pProbe):getObjectID() .. ")")
+						done = true
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Development: the standing height of each probe that sits on its slot without Core3 reporting arrival (the world
+-- floor there is a terminal or an awning, not the ground), as "probe-z <city> <spot> <slot> <z>" for the city data
+function LivingCities:devProbeZ()
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		if city ~= nil then
+			for spotIndex, spot in ipairs(city.spots) do
+				for slotIndex, slot in ipairs(spot.slots) do
+					local id = key .. ":" .. spotIndex .. ":" .. slotIndex
+					local pProbe = getSceneObject(readData("lcp:oid:" .. id))
+
+					if pProbe ~= nil and readData("lcp:ok:" .. id) == 0 and SceneObject(pProbe):getParentID() == (slot.cell or 0) then
+						local dx = slot.x - SceneObject(pProbe):getPositionX()
+						local dy = slot.y - SceneObject(pProbe):getPositionY()
+
+						if dx * dx + dy * dy <= 1 then
+							print(string.format("probe-z %s %s %d %.2f (world floor %.2f)", key, spot.id, slotIndex,
+								SceneObject(pProbe):getPositionZ(), getWorldFloor(slot.x, slot.y, city.planet)))
+						end
+					end
+				end
+			end
+		end
+	end
 end

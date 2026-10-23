@@ -69,19 +69,19 @@ LivingCitiesData.mos_eisley = {
 		}},
 		-- Bank: the four terminals on the central pillar of the bank plaza, plus a pair in the plaza
 		{id = "bank", place = "bank", slots = {
-			{x = 3502.45, y = -4940.15, cell = 0, heading = 219, act = "terminal"},
+			{x = 3502.45, y = -4940.15, z = 5.54, cell = 0, heading = 219, act = "terminal"},
 			{x = 3503.28, y = -4947.6, cell = 0, heading = 309, act = "terminal"},
 			{x = 3495.83, y = -4948.42, cell = 0, heading = 39, act = "terminal"},
-			{x = 3495, y = -4940.97, cell = 0, heading = 129, act = "terminal"},
-			{x = 3490.5, y = -4934.8, cell = 0, heading = 45, act = "pair", pair = 6},
-			{x = 3491.49, y = -4933.81, cell = 0, heading = 225, act = "pair", pair = 5},
+			{x = 3495, y = -4940.97, z = 5.54, cell = 0, heading = 129, act = "terminal"},
+			{x = 3490.5, y = -4934.8, z = 5.54, cell = 0, heading = 45, act = "pair", pair = 6},
+			{x = 3491.49, y = -4933.81, z = 5.54, cell = 0, heading = 225, act = "pair", pair = 5},
 		}},
 		-- Bazaar terminals at the inner corners of the bank plaza
 		{id = "bazaar", place = "shops", slots = {
-			{x = 3483.16, y = -4931.47, cell = 0, heading = 309, act = "terminal"},
-			{x = 3511.99, y = -4928.3, cell = 0, heading = 39, act = "terminal"},
-			{x = 3515.06, y = -4957.06, cell = 0, heading = 129, act = "terminal"},
-			{x = 3509, y = -4934, cell = 0, heading = 230, act = "stand"},
+			{x = 3483.16, y = -4931.47, z = 5.54, cell = 0, heading = 309, act = "terminal"},
+			{x = 3511.99, y = -4928.3, z = 5.54, cell = 0, heading = 39, act = "terminal"},
+			{x = 3515.06, y = -4957.06, z = 5.54, cell = 0, heading = 129, act = "terminal"},
+			{x = 3509, y = -4934, z = 5.54, cell = 0, heading = 230, act = "stand"},
 		}},
 		-- The open square south of the cantina, between the cantina, the bank and the starport
 		{id = "square", place = "plaza", slots = {

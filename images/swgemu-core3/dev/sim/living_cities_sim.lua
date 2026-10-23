@@ -517,7 +517,7 @@ function scenarios.stuck()
 		end
 	end
 	if stuck == 0 then
-		fail("stuck: the watchdog never fired")
+		fail("stuck: the walk check never caught a stuck walk")
 	end
 	report("stuck")
 end
@@ -533,6 +533,9 @@ function scenarios.talk()
 		return
 	end
 	LivingTalk.dir = dir
+	-- Only replies in the chat log: no ambient chatter or greetings during this scenario
+	local saved = {LivingCities.chatterEvery, LivingCities.greetChance}
+	LivingCities.chatterEvery, LivingCities.greetChance = 1e12, 0
 	setHour(20)
 	LivingCities:start()
 	local key = "mos_eisley"
@@ -624,6 +627,7 @@ function scenarios.talk()
 		realPrint("         " .. sim.chatLog[i])
 	end
 	sim.chatLog = nil
+	LivingCities.chatterEvery, LivingCities.greetChance = saved[1], saved[2]
 end
 
 local order = {"evening", "night", "midnight", "clock", "restart", "stuck", "talk"}
