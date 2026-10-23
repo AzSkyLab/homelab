@@ -8,4 +8,3 @@ nvidia_driver_version: 580
 # (qwen3.6-abliterated:27b is served too but built from a Hugging Face GGUF, not pulled; see CLAUDE.md, LiteLLM)
 ollama_models:
   - qwen3.8:27b
-  - qwen3-coder:30b

@@ -421,7 +421,7 @@ so it also runs on the 3090's 16k context (omp could not).
   native 262k context; `opencode` is OpenCode's hosted free-model service, which would send code off the LAN.
   `share: disabled`, `update: disable` (pacman updates it).
 - A background server (127.0.0.1 only) runs the sessions; after editing the config run `opencode service restart`.
-  `opencode models` should list exactly the four `homelab/...` models.
+  `opencode models` should list exactly the three `homelab/...` models.
 - Usage: `opencode` (TUI) in a project folder, or `opencode run --auto "prompt"` (one-shot, auto-approves tools);
   `-m homelab/ws/qwen3.6:35b-a3b` for the faster model, `-m homelab/vm/qwen3.8:27b` for the 3090.
 - omp's leftover config and sessions are in `~/.omp` (796K); `rm -rf ~/.omp` once it is no longer wanted.
@@ -439,6 +439,12 @@ The LiteLLM admin UI is at `https://llm.home.lab/ui` (login with the master key)
 Open WebUI connects to LiteLLM via env vars in `kubernetes/manifests/open-webui/deployment.yml`:
 - `OPENAI_API_BASE_URLS` → `http://litellm.litellm.svc.cluster.local:4000/v1`
 - `OPENAI_API_KEYS` → from Secret `litellm-api-key` in `open-webui` namespace
+- `ENABLE_OLLAMA_API=False`: every model comes through LiteLLM (since 2026-10-23)
+
+These env vars only seed a fresh install. After that the saved settings in `webui.db` (table `config`, keys
+`openai.*`/`ollama.*`) win, so change connections in Admin ▸ Settings ▸ Connections. The `ollama/` load-balanced
+routes are switched off in Admin ▸ Models (`is_active` 0), so the picker shows only `vm/` and `ws/`. A new
+`ollama/` route shows up until it is switched off the same way.
 
 ### Network Requirements
 

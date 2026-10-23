@@ -26,8 +26,9 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            - name: OLLAMA_BASE_URL
-              value: http://10.0.20.30:11434
+            # Every model comes through LiteLLM; a direct Ollama connection only listed the VM's models a second time
+            - name: ENABLE_OLLAMA_API
+              value: "False"
             - name: OPENAI_API_BASE_URLS
               value: http://litellm.litellm.svc.cluster.local:4000/v1
             - name: OPENAI_API_KEYS

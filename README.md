@@ -125,7 +125,7 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 |-------|---------|------|-------|
 | `ws/` + `vm/qwen3.8:27b` | both | 18GB | Dense, vision, thinking; strongest at agentic and coding work; load-balanced as `ollama/qwen3.8:27b` |
 | `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes; about 3x faster than qwen3.8 |
-| `ws/` + `vm/qwen3-coder:30b` | both | 19GB | Previous coder, load-balanced as `ollama/qwen3-coder:30b` |
+| `ws/` + `vm/qwen3.6-abliterated:27b` | both | 18GB | huihui-ai's abliterated (refusals removed) Qwen3.6 27B, vision, MTP drafting; load-balanced as `ollama/qwen3.6-abliterated:27b` |
 
 Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default
 (64k workstation / 16k VM, `OLLAMA_NUM_PARALLEL=1`) via `zz-context.conf` systemd
