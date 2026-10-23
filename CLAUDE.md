@@ -580,6 +580,9 @@ The database was made with `ansible-playbook playbooks/create-app-db.yml -e app_
 own MariaDB. Upstream only ships a dev container (gdb, screen, interactive shell), so the image is our own:
 `images/swgemu-core3/`.
 
+The Linux client, the scripts that built the TRE set (`tools/fetch-tre.sh`) and our game settings live in the local
+repo `~/github/swgemu` on the workstation (not on GitHub). Server changes go here, client and tooling there.
+
 ### Architecture
 
 ```
@@ -600,7 +603,7 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
 | Admin account | `cameren`, admin level 15 (`pass homelab/swgemu/admin-password`) |
 | Storage | `local-path`: `mariadb-data` 5Gi, `core3-data` 20Gi, `core3-tre` 5Gi (all landed on k3s-agent-01) |
 | Resources | ~3–4 GiB RSS with all 12 ground + 10 space zones; limits 2 CPU / 12Gi; boot ≈ 1 min |
-| TRE files (source) | `~/Games/swg-original/tre` on the workstation (51 needed + 2 hotfix, 2.8 GB) |
+| TRE files (source) | `~/Games/swg-original/tre` on the workstation (51 needed + 2 hotfix, 2.8 GB); rebuild with `~/github/swgemu/tools/fetch-tre.sh` |
 
 ### Important Design Decisions and Gotchas
 
