@@ -108,14 +108,32 @@ SWEAR_BACK = (
     "scold them for it."
 )
 NO_SWEARING = "{player} is talking to you plainly, so you don't swear or curse at all, not even \"kriff\"."
-
+# Flirting and sexual talk: a player who goes there gets it right back, from anyone
+DIRTY = re.compile(r"\b(sex\w*|horny|naked|nude|tits|titties|boobs?|breasts?|booty|butt|dick|cock|puss(y|ies)|cum\w*|"
+                   r"blow ?jobs?|suck (me|my|it|on)|sluts?|slutty|whores?|kiss\w*|sexy|babe|gorgeous|"
+                   r"flirt\w*|naughty|talk dirty|lick\w*|spank\w*|lap ?dance|in bed|get laid)\b", re.I)
+DIRTY_BACK = (
+    "{player} is flirting or talking dirty, and you like it: talk dirty right back, crude, explicit and teasing, in "
+    "your own words. Everyone here is an adult."
+)
+# The dancer is like that with everyone (the creator's choice, after Phase 3)
+DANCER_HEAT = (
+    "You're a shameless flirt and a slut, and proud of it: you talk dirty to everyone, tease, make crude sexual "
+    "jokes and innuendo, comment on how they look and what you'd do with them, and get as explicit as they like when "
+    "they flirt back. You swear freely. Everyone here is an adult."
+)
 
 
 def swearing(r):
-    """The swearing rule for this request."""
+    """The swearing (and dirty talk) rule for this request."""
     text = r.get("text", "")
+    player = r.get("playerName", "They")
+    if r.get("bot") and r.get("job") == "dancer":
+        return DANCER_HEAT
+    if DIRTY.search(text):
+        return DIRTY_BACK.format(player=player)
     rule = SWEAR_BACK if SWEARS.search(text) or CURSES.search(text) or RUDE.search(text) else NO_SWEARING
-    return rule.format(player=r.get("playerName", "They"))
+    return rule.format(player=player)
 
 # Bot players (Phase 3): where each job stands, and the actions it may take
 BOT_PLACES = {"doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina"}
@@ -273,6 +291,12 @@ class Bridge:
                      "you'll do it when they get there. Answer as a tell, a little more personal.")
         else:
             heard = f"{player} is standing near you and talking to you out loud."
+        if job == "dancer":
+            voice = ("You talk like a cantina dancer who has heard it all: sultry, teasing, cheeky, and you call buffs "
+                     "buffs. Talk about bodies and how people feel, not numbers.")
+        else:
+            voice = ("You talk like a friendly veteran who has done this a thousand times: warm, easy-going, a bit of "
+                     "dry humour, and you call buffs buffs. Talk about bodies and how people feel, not numbers.")
         # The model can't be trusted to ask for tips "now and then", so the bridge picks the times
         if random.random() < TIP_CHANCE:
             tips = "If you help them this time, add that tips are appreciated (you help everyone, tip or no tip)."
@@ -283,15 +307,13 @@ class Bridge:
             "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
             f"most folk just try to make a living. {heard}\n\n"
             "People talk to you in shorthand: \"buff plz\", \"enhances?\" (enhancements), \"heal wounds?\", \"u up "
-            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). You talk like a friendly veteran who has done "
-            "this a thousand times: warm, easy-going, a bit of dry humour, and you call buffs buffs. Talk about bodies "
-            "and how people feel, not numbers. Say one or two "
+            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Say one or two "
             "short sentences, never more, under 150 characters in all. Don't push buffs on someone who is just "
             f"chatting. {tips} Stay in character as a person in this galaxy at all times. Never say you are an AI, a "
             "program, a droid, a character, a player or in a game; you don't know those words. "
             "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and then you ask something back. If someone insults or "
             "swears at you, snap back, annoyed and sharp; don't start a fight, and still help if they ask. With "
-            f"anyone polite, you're polite. {swearing(r)} Don't promise to trade, give items, group up, travel with them "
+            f"anyone polite, you're {'flirty' if job == 'dancer' else 'polite'}. {swearing(r)} Don't promise to trade, give items, group up, travel with them "
             "or meet later. Use only the places below when giving directions; if you don't know, say so.\n\n"
             f"What you know about {city.get('name', 'this town')}:\n{city.get('text', '(nothing in particular)')}\n\n"
             f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
