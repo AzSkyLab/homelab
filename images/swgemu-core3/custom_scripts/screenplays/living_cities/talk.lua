@@ -185,10 +185,11 @@ function LivingTalk:readReply(id)
 	local mood = f:read("l") or ""
 	local line = f:read("l") or ""
 	local action = f:read("l") or ""
+	local flags = f:read("l") or ""
 	f:close()
 	os.remove(path)
 
-	return status, mood, line, action
+	return status, mood, line, action, flags
 end
 
 -- A line fit for chat: no control characters, at most maxChars

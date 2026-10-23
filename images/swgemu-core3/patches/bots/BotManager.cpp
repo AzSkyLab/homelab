@@ -16,6 +16,7 @@
 #include "server/zone/packets/creature/CreatureObjectDeltaMessage6.h"
 #include "server/chat/ChatManager.h"
 #include "templates/params/creature/CreaturePosture.h"
+#include "server/zone/objects/player/sui/SuiWindowType.h"
 
 namespace {
 
@@ -296,6 +297,43 @@ bool BotManager::countHumans() const {
 	return false;
 }
 
+void BotManager::notePlanets() {
+	PlayerManager* playerManager = zoneServer->getPlayerManager();
+
+	if (playerManager == nullptr)
+		return;
+
+	Vector<uint64> online = playerManager->getOnlinePlayerList();
+	uint64 now = System::getMiliTime();
+
+	for (int i = 0; i < online.size(); ++i) {
+		uint64 oid = online.get(i);
+
+		if (isBotOid(oid))
+			continue;
+
+		ManagedReference<SceneObject*> object = zoneServer->getObject(oid);
+		Zone* zone = object != nullptr ? object->getZone() : nullptr;
+
+		if (zone != nullptr)
+			planetSeen.put(zone->getZoneName(), now);
+	}
+
+	if (isDevHuman()) {
+		// The dev switch stands in for a human everywhere
+		for (int i = 0; i < bots.size(); ++i)
+			planetSeen.put(bots.get(i)->entry->planet, now);
+	}
+}
+
+bool BotManager::planetOccupied(const String& planet) const {
+	if (!planetSeen.contains(planet))
+		return false;
+
+	// Like the global rule's logout delay: a planet counts until the last human has been gone that long
+	return System::getMiliTime() - planetSeen.get(planet) < (uint64)settings.logoutDelay * 1000;
+}
+
 void BotManager::updateRule() {
 	// pre: stateMutex locked
 	bool want = ruleOnline;
@@ -340,6 +378,7 @@ void BotManager::tick() {
 		}
 
 		updateRule();
+		notePlanets();
 
 		for (int i = 0; i < bots.size(); ++i) {
 			BotRuntime* bot = bots.get(i);
@@ -347,7 +386,8 @@ void BotManager::tick() {
 			if (bot->oid == 0)
 				continue;
 
-			bool desired = bot->forced ? bot->forcedOnline : ruleOnline;
+			bool desired = bot->forced ? bot->forcedOnline
+				: ruleOnline && (bot->entry->online != "planet" || planetOccupied(bot->entry->planet));
 
 			if (desired && bot->state == BotRuntime::OFFLINE) {
 				if (!bot->nextAttempt.isPast())
@@ -869,6 +909,13 @@ void BotManager::checkOnlineBot(BotRuntime* bot) {
 
 void BotManager::onSuiBoxCreated(uint64 playerOid, uint32 boxID) {
 	if (!isBotOid(playerOid))
+		return;
+
+	// Windows a bot answers itself, so they stay open: cloning after death (BotCombat) and the slicing menu (BotSlice)
+	uint32 windowType = boxID & 0xFFFF;
+
+	if (windowType == SuiWindowType::CLONE_REQUEST || windowType == SuiWindowType::CLONE_REQUEST_FACTIONAL
+		|| windowType == SuiWindowType::SLICING_MENU)
 		return;
 
 	ZoneServer* server = zoneServer;

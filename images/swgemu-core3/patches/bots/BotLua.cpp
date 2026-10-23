@@ -3,6 +3,10 @@
  */
 
 #include "BotLua.h"
+#include "BotMoverLua.h"
+#include "BotCombatLua.h"
+#include "BotTradeLua.h"
+#include "BotCityLua.h"
 #include "BotManager.h"
 #include "BotChat.h"
 #include "BotItems.h"
@@ -93,9 +97,38 @@ void BotLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botGetWounds", botGetWounds);
 	lua->registerFunction("botGetShockWounds", botGetShockWounds);
 	lua->registerFunction("botGetBuffs", botGetBuffs);
+
+	// Phases 4-6: each part registers its own
+	BotMoverLua::registerFunctions(lua);
+	BotCombatLua::registerFunctions(lua);
+	BotTradeLua::registerFunctions(lua);
+	BotCityLua::registerFunctions(lua);
 }
 
 // --- Events ---
+
+void BotLua::callEvent(CreatureObject* bot, const String& name, SceneObject* other, const String& detail) {
+	Lua* lua = DirectorManager::instance()->getLuaInstance();
+	lua_State* L = lua->getLuaState();
+	int top = lua_gettop(L);
+
+	if (hasJobsFunction(L, "onEvent")) {
+		try {
+			LuaFunction call(L, "BotJobs", "onEvent", 0);
+			call << bot;
+			call << name.toCharArray();
+
+			call << (void*)other;	// nil in Lua when null
+
+			call << detail.toCharArray();
+			call.callFunction();
+		} catch (const Exception& e) {
+			BotManager::instance()->error() << "BotManager: exception in BotJobs:onEvent(" << name << "): " << e.getMessage();
+		}
+	}
+
+	lua_settop(L, top);
+}
 
 void BotLua::callJobsEvent(const char* fn, CreatureObject* bot) {
 	Lua* lua = DirectorManager::instance()->getLuaInstance();

@@ -77,8 +77,23 @@ String BotFactory::getStartingProfession(const String& job) {
 	if (job == "doctor")
 		return "science_medic";
 
-	if (job == "dancer")
+	if (job == "dancer" || job == "musician")
 		return "social_entertainer";
+
+	if (job == "smuggler" || job == "rifleman")
+		return "combat_marksman";
+
+	if (job == "tank")
+		return "combat_brawler";
+
+	if (job == "medic")
+		return "science_medic";
+
+	if (job == "ranger")
+		return "outdoors_scout";
+
+	if (job == "mayor" || job == "citizen")
+		return "crafting_artisan";
 
 	return "";
 }
@@ -156,6 +171,7 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 		entry->hair = bot.getStringField("hair").trim();
 		entry->job = bot.getStringField("job").trim().toLowerCase();
 		entry->city = bot.getStringField("city").trim();
+		entry->online = bot.getStringField("online").trim().toLowerCase();
 
 		int space = entry->name.indexOf(" ");
 		entry->firstName = space == -1 ? entry->name : entry->name.subString(0, space);
@@ -229,7 +245,7 @@ bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accep
 	}
 
 	if (getStartingProfession(entry.job).isEmpty()) {
-		reason = "unknown job '" + entry.job + "' (doctor or dancer)";
+		reason = "unknown job '" + entry.job + "' (doctor, dancer, musician, smuggler, tank, rifleman, medic, ranger, mayor or citizen)";
 		return false;
 	}
 

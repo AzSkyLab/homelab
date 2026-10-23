@@ -22,6 +22,7 @@ public:
 	String hair;		// hair object template, or empty
 	String job;			// "doctor" or "dancer"
 	String city;		// Living Cities city key, e.g. "mos_eisley"
+	String online;		// "" (online while a human is) or "planet" (only while a human is on its station's planet)
 	Vector<String> skills;	// each awarded with every skill it requires
 	Vector<String> outfit;	// wearable templates, equipped
 

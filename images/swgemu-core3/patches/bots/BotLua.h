@@ -14,6 +14,9 @@
 namespace server {
 namespace zone {
 namespace objects {
+namespace scene {
+class SceneObject;
+}
 namespace creature {
 class CreatureObject;
 }
@@ -28,6 +31,11 @@ public:
 
 	// BotJobs:<fn>(pBot) on this thread's screenplay Lua state, if the jobs screenplay defines it. Bot locked
 	static void callJobsEvent(const char* fn, server::zone::objects::creature::CreatureObject* bot);
+
+	// BotJobs:onEvent(pBot, name, pOther, detail): what the C++ parts tell the jobs (Phases 4-6), e.g. "trade",
+	// "duel", "groupInvite", "fightEnded", "cloned". other may be null. Call it in a task with the bot locked.
+	static void callEvent(server::zone::objects::creature::CreatureObject* bot, const String& name,
+		server::zone::objects::scene::SceneObject* other, const String& detail);
 
 	// BotJobs:onHeard(pBot, pSpeaker, text, channel). Bot locked
 	static void callJobsHeard(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* speaker,

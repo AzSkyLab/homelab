@@ -228,3 +228,39 @@ function BotDancer:state(pBot, oid)
 
 	return state
 end
+
+-- The job module interface (bot_jobs.lua)
+
+-- "bufftarget", "watchHint" for battle fatigue or wounds, or nil
+function BotDancer:intent(text)
+	local t = text:lower()
+
+	if t:find("buff", 1, true) ~= nil then
+		return "bufftarget"
+	elseif t:find("fatigue", 1, true) ~= nil or t:find("wound", 1, true) ~= nil or t:find("heal", 1, true) ~= nil then
+		return "watchHint"
+	end
+
+	return nil
+end
+
+function BotDancer:isAction(intent)
+	return intent == "bufftarget"
+end
+
+function BotDancer:allowed(action)
+	if action == "bufftarget" or action == "buff" then
+		return "bufftarget"
+	end
+
+	return nil
+end
+
+function BotDancer:act(pBot, pPlayer, action, channel, brainLine)
+	if action == "bufftarget" then
+		self:buffTarget(pBot, pPlayer, channel, brainLine)
+	end
+end
+
+BotJobModules = BotJobModules or {}
+BotJobModules.dancer = BotDancer

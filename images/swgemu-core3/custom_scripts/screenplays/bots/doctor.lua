@@ -687,3 +687,51 @@ function BotDoctor:state(pBot, oid)
 
 	return state
 end
+
+-- The job module interface (bot_jobs.lua): keywords, the brain's actions, what to do, being spoken to
+
+-- "buff" or "wounds" (a buff heals any wounds as well), "notMine" for battle fatigue, or nil
+function BotDoctor:intent(text)
+	local t = text:lower()
+	local buff = t:find("buff", 1, true) ~= nil or t:find("enhanc", 1, true) ~= nil
+
+	if buff then
+		return "buff"
+	elseif t:find("wound", 1, true) ~= nil then
+		return "wounds"
+	elseif t:find("fatigue", 1, true) ~= nil then
+		return "notMine"
+	end
+
+	return nil
+end
+
+function BotDoctor:isAction(intent)
+	return intent == "buff" or intent == "wounds"
+end
+
+function BotDoctor:allowed(action)
+	if action == "buff" or action == "wounds" then
+		return action
+	elseif action == "wound" then
+		return "wounds"
+	end
+
+	return nil
+end
+
+function BotDoctor:act(pBot, pPlayer, action, channel, brainLine)
+	if action == "buff" or action == "wounds" then
+		self:request(pBot, pPlayer, action, channel, brainLine)
+	end
+end
+
+-- The doctor turns to whoever talks to it in the room, unless it's working on someone
+function BotDoctor:onSpoken(pBot, oid, pSpeaker, channel)
+	if channel == "spatial" then
+		self:faceIfFree(pBot, oid, pSpeaker)
+	end
+end
+
+BotJobModules = BotJobModules or {}
+BotJobModules.doctor = BotDoctor

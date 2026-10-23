@@ -79,6 +79,7 @@ class BotManager : public Singleton<BotManager>, public Object, public Logger {
 	bool humansOnline = false;	// as of the last tick
 	Time humansChanged;			// when humansOnline last flipped
 	bool ruleOnline = false;	// what the online rule says now
+	VectorMap<String, uint64> planetSeen;	// zone name -> when a human was last on it (ms), for "planet" bots
 
 	Reference<Task*> tickTask;
 
@@ -119,6 +120,8 @@ public:
 
 private:
 	bool countHumans() const;
+	void notePlanets();				// pre: stateMutex locked
+	bool planetOccupied(const String& planet) const;	// pre: stateMutex locked
 	void updateRule();
 	void scheduleLogin(BotRuntime* bot);
 	void scheduleLogout(BotRuntime* bot, bool fromShutdown);

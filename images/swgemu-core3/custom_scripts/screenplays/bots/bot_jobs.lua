@@ -27,9 +27,23 @@
 --   runLuaFunction BotJobs:devWatch:<first>:<dancer>      /watch a dancer (devStopWatch:<first>: stop watching)
 --   runLuaFunction BotJobs:devTip:<first>:<to>:<credits>  a real /tip from one bot to another
 
+-- Job modules. Each file defines a screenplay table and registers it in BotJobModules under its job name(s):
+--   BotJobModules = BotJobModules or {}; BotJobModules.doctor = BotDoctor
+-- A module provides start(pBot, oid), clear(oid), tick(pBot, oid, now), state(pBot, oid) -> string,
+-- intent(text) -> an intent or nil (keywords, used without the brain), isAction(intent) -> bool,
+-- allowed(action) -> the action or nil (checks the brain's line 4), act(pBot, pPlayer, action, channel, brainLine),
+-- and optionally onSpoken(pBot, oid, pSpeaker, channel), groupAddressed(pBot, pSpeaker, text) -> bool,
+-- and the fields kit and place (what the brain knows the job as). Missing functions are skipped.
+-- BotFight (fight.lua) isn't a job: it runs for every bot (provoked fights, duels).
 includeFile("../custom_scripts/screenplays/bots/lines.lua")
 includeFile("../custom_scripts/screenplays/bots/doctor.lua")
 includeFile("../custom_scripts/screenplays/bots/dancer.lua")
+includeFile("../custom_scripts/screenplays/bots/musician.lua")
+includeFile("../custom_scripts/screenplays/bots/smuggler.lua")
+includeFile("../custom_scripts/screenplays/bots/crew.lua")
+includeFile("../custom_scripts/screenplays/bots/fight.lua")
+includeFile("../custom_scripts/screenplays/bots/mayor.lua")
+includeFile("../custom_scripts/screenplays/bots/citizen.lua")
 
 BotJobs = ScreenPlay:new {
 	screenplayName = "BotJobs",
@@ -53,6 +67,11 @@ BotJobs = ScreenPlay:new {
 }
 
 registerScreenPlay("BotJobs", true)
+
+-- The module for a job (see the top of this file), or nil
+function BotJobs:module(job)
+	return BotJobModules ~= nil and job ~= nil and BotJobModules[job] or nil
+end
 
 -- Helpers
 
@@ -197,8 +216,10 @@ function BotJobs:onLogin(pBot)
 		end
 	end
 
-	if job ~= "doctor" and job ~= "dancer" then
-		print("BotJobs: " .. first .. " logged in with no job in the roster")
+	local module = self:module(job)
+
+	if module == nil then
+		print("BotJobs: " .. first .. " logged in with no job module for '" .. tostring(job) .. "'")
 		return
 	end
 
@@ -213,10 +234,8 @@ function BotJobs:onLogin(pBot)
 	writeStringData(key(oid, "city"), city or "")
 	writeData(key(oid, "cash"), self:cash(pBot))
 
-	if job == "doctor" then
-		BotDoctor:start(pBot, oid)
-	else
-		BotDancer:start(pBot, oid)
+	if module.start ~= nil then
+		module:start(pBot, oid)
 	end
 
 	print("BotJobs: " .. (name or first) .. " logged in, " .. job .. " in " .. (city or "?") .. ", generation " .. gen)
@@ -234,10 +253,14 @@ function BotJobs:onLogout(pBot)
 	writeData(key(oid, "gen"), readData(key(oid, "gen")) + 1)
 	writeData(key(oid, "online"), 0)
 
-	if self:job(oid) == "doctor" then
-		BotDoctor:clear(oid)
-	elseif self:job(oid) == "dancer" then
-		BotDancer:clear(oid)
+	local module = self:module(self:job(oid))
+
+	if module ~= nil and module.clear ~= nil then
+		module:clear(oid)
+	end
+
+	if BotFight ~= nil and BotFight.clear ~= nil then
+		BotFight:clear(oid)
 	end
 
 	-- The bridge forgets its conversations
@@ -246,6 +269,25 @@ function BotJobs:onLogout(pBot)
 	end
 
 	print("BotJobs: " .. self:name(oid) .. " logged out")
+end
+
+-- What the C++ parts tell the jobs (Phases 4-6): name is e.g. "trade", "duel", "groupInvite", "fightEnded",
+-- "cloned"; pOther may be nil; detail is a string. Goes to the bot's job module and to BotFight.
+function BotJobs:onEvent(pBot, name, pOther, detail)
+	if pBot == nil then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local module = self:module(self:job(oid))
+
+	if module ~= nil and module.onEvent ~= nil then
+		module:onEvent(pBot, oid, name, pOther, detail or "")
+	end
+
+	if BotFight ~= nil and BotFight.onEvent ~= nil then
+		BotFight:onEvent(pBot, oid, name, pOther, detail or "")
+	end
 end
 
 function BotJobs:onHeard(pBot, pSpeaker, text, channel)
@@ -268,10 +310,14 @@ function BotJobs:tick(pBot, gen)
 
 	self:checkTips(pBot, oid)
 
-	if self:job(oid) == "doctor" then
-		BotDoctor:tick(pBot, oid, now)
-	elseif self:job(oid) == "dancer" then
-		BotDancer:tick(pBot, oid, now)
+	local module = self:module(self:job(oid))
+
+	if module ~= nil and module.tick ~= nil then
+		module:tick(pBot, oid, now)
+	end
+
+	if BotFight ~= nil and BotFight.tick ~= nil then
+		BotFight:tick(pBot, oid, now)
 	end
 
 	createEvent(self.tickMs, "BotJobs", "tick", pBot, gen)
@@ -356,56 +402,48 @@ function BotJobs:addressed(pBot, pSpeaker, text)
 	return string.find(words, " " .. first .. " ", 1, true) ~= nil
 end
 
--- What the words ask for, without the language model: an action ("buff" or "wounds" for the doctor, "bufftarget" for
--- the dancer), a hint (a line pointing to the other job), or nil. A doctor's buff heals any wounds as well.
-function BotJobs:intent(job, text)
-	local t = text:lower()
-	local buff = t:find("buff", 1, true) ~= nil
+-- Is the bot's first name a word in the text?
+function BotJobs:namedIn(pBot, text)
+	local first = (readStringData(key(SceneObject(pBot):getObjectID(), "first")):lower():gsub("[^%a]", " "))
 
-	if job == "doctor" then
-		local wounds = t:find("wound", 1, true) ~= nil
-
-		buff = buff or t:find("enhanc", 1, true) ~= nil
-
-		if buff then
-			return "buff"
-		elseif wounds then
-			return "wounds"
-		elseif t:find("fatigue", 1, true) ~= nil then
-			return "notMine"
-		end
-	elseif job == "dancer" then
-		if buff then
-			return "bufftarget"
-		elseif t:find("fatigue", 1, true) ~= nil or t:find("wound", 1, true) ~= nil or t:find("heal", 1, true) ~= nil then
-			return "watchHint"
-		end
+	if first:match("^%s*$") then
+		return false
 	end
 
-	return nil
+	local words = " " .. (tostring(text or ""):lower():gsub("[^%a]", " ")) .. " "
+
+	return string.find(words, " " .. first .. " ", 1, true) ~= nil
+end
+
+-- What the words ask for, without the language model: an action, a hint (e.g. a line pointing to another job), or
+-- nil. Each job module decides.
+function BotJobs:intent(job, text)
+	local module = self:module(job)
+
+	if module == nil or module.intent == nil then
+		return nil
+	end
+
+	return module:intent(text)
 end
 
 function BotJobs:isAction(job, intent)
-	if job == "doctor" then
-		return intent == "buff" or intent == "wounds"
-	end
+	local module = self:module(job)
 
-	return job == "dancer" and intent == "bufftarget"
+	return intent ~= nil and module ~= nil and module.isAction ~= nil and module:isAction(intent) == true
 end
 
 -- The brain's action (reply line 4), checked against the job; nil for none
 function BotJobs:allowed(job, action)
+	local module = self:module(job)
+
 	action = tostring(action or ""):lower():gsub("%s", "")
 
-	if job == "doctor" and (action == "buff" or action == "wounds") then
-		return action
-	elseif job == "doctor" and action == "wound" then
-		return "wounds"
-	elseif job == "dancer" and (action == "bufftarget" or action == "buff") then
-		return "bufftarget"
+	if action == "" or module == nil or module.allowed == nil then
+		return nil
 	end
 
-	return nil
+	return module:allowed(action)
 end
 
 -- Someone spoke to the bot. dev: a pretend human (another bot) from the console, which skips the addressing check.
@@ -420,22 +458,31 @@ function BotJobs:heard(pBot, pSpeaker, text, channel, dev)
 		return
 	end
 
-	channel = channel == "tell" and "tell" or "spatial"
+	if channel ~= "tell" and channel ~= "group" then
+		channel = "spatial"
+	end
+
+	local job = self:job(oid)
+	local module = self:module(job)
 
 	if channel == "spatial" and not dev and not self:addressed(pBot, pSpeaker, text) then
 		return
 	end
 
-	local job = self:job(oid)
+	-- Group chat: answered when the bot is named, or when its job says so (one crew member speaks for the group)
+	if channel == "group" and not dev and not self:namedIn(pBot, text) and
+		not (module ~= nil and module.groupAddressed ~= nil and module:groupAddressed(pBot, pSpeaker, text)) then
+		return
+	end
 	local intent = self:intent(job, text)
 	local playerOid = SceneObject(pSpeaker):getObjectID()
 	local playerName = CreatureObject(pSpeaker):getFirstName()
 
 	print("BotJobs: " .. self:name(oid) .. " hears " .. playerName .. " (" .. channel .. "): " .. short(text, self.logChars))
 
-	-- The doctor turns to whoever talks to it in the room, unless it's working on someone
-	if job == "doctor" and channel == "spatial" then
-		BotDoctor:faceIfFree(pBot, oid, pSpeaker)
+	-- The job may react to being spoken to (the doctor turns to whoever talks to it in the room)
+	if module ~= nil and module.onSpoken ~= nil then
+		module:onSpoken(pBot, oid, pSpeaker, channel)
 	end
 
 	local result = self:ask(pBot, oid, playerOid, playerName, text, channel, intent)
@@ -486,7 +533,8 @@ function BotJobs:ask(pBot, oid, playerOid, playerName, text, channel, intent)
 		bot = 1, job = job, channel = channel,
 		npc = oid, name = self:name(oid), first = readStringData(key(oid, "first")),
 		species = entry.species or "human", sex = entry.sex or "male",
-		kit = self.kits[job] or "traveller", city = city, place = self.places[job] or "plaza", hour = hour,
+		kit = (self:module(job) or {}).kit or self.kits[job] or "traveller", city = city,
+		place = (self:module(job) or {}).place or self.places[job] or "plaza", hour = hour,
 		player = playerOid, playerName = playerName, text = text,
 	})
 
@@ -506,7 +554,7 @@ function BotJobs:poll(pBot, args)
 	local a = unpackArgs(args)
 	local gen, id, playerOid, tries, channel, intent = a[1], a[2], tonumber(a[3]), tonumber(a[4]), a[5], a[6]
 	local alive = self:current(pBot, gen)
-	local status, mood, line, action = LivingTalk:readReply(id)
+	local status, mood, line, action, flags = LivingTalk:readReply(id)
 
 	if intent == "-" then
 		intent = nil
@@ -530,6 +578,11 @@ function BotJobs:poll(pBot, args)
 
 			if todo ~= nil then
 				self:act(pBot, playerOid, todo, channel, line)
+			end
+
+			-- Reply line 5: flags about the player's words (e.g. "insult"), for provoked fights
+			if BotFight ~= nil and BotFight.onReply ~= nil then
+				BotFight:onReply(pBot, playerOid, flags or "", channel)
 			end
 		else
 			-- The bridge couldn't get an answer: the job by keyword, or one canned line; then the quiet minute
@@ -598,10 +651,10 @@ function BotJobs:act(pBot, playerOid, action, channel, brainLine)
 		return
 	end
 
-	if job == "doctor" and (action == "buff" or action == "wounds") then
-		BotDoctor:request(pBot, pPlayer, action, channel, brainLine)
-	elseif job == "dancer" and action == "bufftarget" then
-		BotDancer:buffTarget(pBot, pPlayer, channel, brainLine)
+	local module = self:module(job)
+
+	if module ~= nil and module.act ~= nil then
+		module:act(pBot, pPlayer, action, channel, brainLine)
 	end
 end
 
@@ -617,7 +670,10 @@ function BotJobs:reply(pBot, playerOid, channel, line, mood)
 
 	local name = self:name(SceneObject(pBot):getObjectID())
 
-	if channel == "tell" then
+	if channel == "group" then
+		botEnqueue(pBot, "groupchat", 0, line)
+		print("BotJobs: " .. name .. " (group): " .. line)
+	elseif channel == "tell" then
 		local pPlayer = getSceneObject(playerOid)
 		local to = pPlayer ~= nil and CreatureObject(pPlayer):getFirstName() or ""
 
@@ -655,10 +711,10 @@ function BotJobs:list()
 			local pBot = botGetCreature(bot.firstName)
 			local job = self:job(oid)
 
-			if job == "doctor" then
-				state = state .. ", " .. BotDoctor:state(pBot, oid)
-			elseif job == "dancer" then
-				state = state .. ", " .. BotDancer:state(pBot, oid)
+			local module = self:module(job)
+
+			if module ~= nil and module.state ~= nil then
+				state = state .. ", " .. module:state(pBot, oid)
 			else
 				state = state .. ", no job"
 			end
