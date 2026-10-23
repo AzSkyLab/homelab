@@ -3,7 +3,8 @@
 --
 --   lua living_cities_sim.lua [custom_scripts dir] [scenario ...]
 --
--- Scenarios: evening (players everywhere for 3 h), night (03:00, nobody near), midnight (23:00 to 03:00, nobody near), clock (a day, players near), restart
+-- Scenarios: evening (players everywhere for 3 h), night (03:00, nobody near), midnight (23:00 to 03:00, nobody near),
+-- watchleave (players watch an hour, then leave for three), clock (a day, players near), restart
 -- (restart twice mid-evening), stuck (some walks never arrive), talk (Phase 2 requests and replies, bridge faked).
 -- Exits non-zero if an invariant broke or a Lua error happened. Plain Lua 5.3/5.4.
 
@@ -151,8 +152,19 @@ function Obj:moveOn()
 	local ms = math.floor(dist / walkOptions.speed * 1000) + 500
 	local nowMs = sim.now * 1000 + (sim.subMs or 0)
 	self.walk = {x0 = self.x, y0 = self.y, cell0 = self.cell, x1 = x, y1 = y, cell1 = cell, t0 = nowMs, t1 = nowMs + ms}
-	sim.schedule(ms, function()
-		if self.inWorld and self.walkId == id then
+	local function finish()
+		if not (self.inWorld and self.walkId == id) then
+			return
+		end
+		-- Core3 pauses the AI when every player has gone: the walk freezes until someone comes back
+		if #self:getPlayersInRange(128) == 0 and readData("lc:awake") ~= 1 then
+			if self.walk ~= nil then
+				self.walk.t0, self.walk.t1 = self.walk.t0 + 5000, self.walk.t1 + 5000
+			end
+			sim.schedule(5000, finish)
+			return
+		end
+		do
 			self.walk = nil
 			self.x, self.z, self.y, self.cell = x, z, y, cell
 			table.remove(self.patrol, 1)
@@ -161,7 +173,8 @@ function Obj:moveOn()
 				self:moveOn()
 			end
 		end
-	end)
+	end
+	sim.schedule(ms, finish)
 end
 function Obj:fire(event, a1, a2)
 	for _, ob in ipairs(self.observers) do
@@ -512,6 +525,33 @@ function scenarios.night()
 	report("night")
 end
 
+-- Players watch for an hour, then all leave: NPCs sent away while watched must not keep their seats forever
+function scenarios.watchleave()
+	setHour(18)
+	addPlayerEverywhere(allPlanets())
+	LivingCities:start()
+	sim.run(3600)
+	players = {}
+	sim.run(3 * 3600)
+	checkAll("watchleave")
+	for _, key in ipairs(LivingCities.cities) do
+		local leaving = 0
+		for _, p in ipairs(LivingCities:members(key)) do
+			if readData("lc:npc:" .. p:getObjectID() .. ":state") == 3 then
+				leaving = leaving + 1
+			end
+		end
+		local n, target = #LivingCities:members(key), LivingCities:target(key)
+		if leaving > 0 then
+			fail("watchleave " .. key .. ": " .. leaving .. " NPCs still leaving 3 h after the players went")
+		end
+		if n > target + 2 then
+			fail("watchleave " .. key .. ": " .. n .. " members, target " .. target)
+		end
+	end
+	report("watchleave")
+end
+
 -- The crowd thins after midnight even with nobody around to see it (Core3 pauses AI with no player near)
 function scenarios.midnight()
 	setHour(23)
@@ -619,8 +659,14 @@ function scenarios.talk()
 		other:fire("SPATIALCHAT", {text = text}, player:getObjectID())
 	end
 
-	-- Fake bridge: answer every request after 2 s
+	-- Fake bridge: a heartbeat, and an answer to every request after 2 s
+	local function heartbeat()
+		local f = io.open(dir .. "/alive", "w")
+		f:write(tostring(sim.now) .. "\n")
+		f:close()
+	end
 	local function bridgeTick()
+		heartbeat()
 		local handle = io.popen('ls "' .. dir .. '/req" 2>/dev/null')
 		for name in handle:lines() do
 			if name:match("%.json$") then
@@ -644,6 +690,7 @@ function scenarios.talk()
 	end
 	sim.tick = nil
 
+	heartbeat()
 	local before = #sim.chatLog
 	say("hello there", npc)
 	for i = 1, 6 do bridgeTick(); sim.run(1) end
@@ -677,10 +724,21 @@ function scenarios.talk()
 	-- No bridge answer: one fallback after the deadline
 	before = #sim.chatLog
 	sim.run(4)
+	heartbeat()
 	say("are you there?", npc)
 	sim.run(LivingTalk.deadline + 2)
 	if #sim.chatLog - before ~= 1 then
 		fail("talk: timeout gave " .. (#sim.chatLog - before) .. " lines, expected one fallback")
+	end
+
+	-- No bridge at all (stale heartbeat): no request written, no reply, no fallback
+	sim.run(LivingTalk.quietAfterTimeout + 5)
+	os.remove(dir .. "/alive")
+	before = #sim.chatLog
+	say("anyone home?", npc)
+	sim.run(LivingTalk.deadline + 2)
+	if #sim.chatLog ~= before then
+		fail("talk: with no bridge an addressed line still got " .. (#sim.chatLog - before) .. " lines")
 	end
 
 	-- Back to errands after the hold
@@ -697,7 +755,7 @@ function scenarios.talk()
 	LivingCities.chatterEvery, LivingCities.greetChance = saved[1], saved[2]
 end
 
-local order = {"evening", "night", "midnight", "clock", "restart", "stuck", "talk"}
+local order = {"evening", "night", "midnight", "watchleave", "clock", "restart", "stuck", "talk"}
 math.randomseed(tonumber(os.getenv("SIM_SEED") or "") or 42)
 
 for _, name in ipairs(order) do

@@ -1096,6 +1096,14 @@ function LivingCities:walkCheck(pNpc, args)
 	end
 
 	if AiAgent(pNpc):getNumberOfPlayersInRange() == 0 and not self:awake() then
+		-- Core3 has paused this NPC's AI; a leaver nobody can see any more just goes (else it would keep its seat)
+		if readData(npcKey(oid, "state")) == LEAVING and self:nobodyNear(pNpc, self.seenRange) then
+			writeData(npcKey(oid, "state"), 0)
+			createEvent(100, "LivingCities", "despawnLater", nil, tostring(oid))
+			self:count(key, "left")
+			return
+		end
+
 		writeData(npcKey(oid, "walkStart"), os.time())
 		writeData(npcKey(oid, "stall"), 0)
 		self:rememberSpot(pNpc, oid)
@@ -1220,14 +1228,27 @@ function LivingCities:sendAway(key, gen)
 		return
 	end
 
-	-- Nobody watching: just go
+	-- Nobody watching: just go (records cleared in an event holding the NPC's lock, so none of its own events can
+	-- write them back)
 	if self:nobodyNear(pNpc, self.seenRange) then
-		self:despawn(SceneObject(pNpc):getObjectID())
-		self:count(key, "left")
+		createEvent(100, "LivingCities", "leaveUnseen", pNpc, tostring(gen))
 		return
 	end
 
 	createEvent(100, "LivingCities", "leaveNow", pNpc, tostring(gen))
+end
+
+function LivingCities:leaveUnseen(pNpc, gen)
+	if not self:current(pNpc, gen) then
+		return
+	end
+
+	local oid = SceneObject(pNpc):getObjectID()
+	local key = readStringData(npcKey(oid, "city"))
+
+	self:forget(key, oid)
+	self:count(key, "left")
+	createEvent(100, "LivingCities", "despawnLater", nil, tostring(oid))
 end
 
 function LivingCities:leaveNow(pNpc, args)
