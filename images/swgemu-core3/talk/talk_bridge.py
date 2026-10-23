@@ -48,6 +48,10 @@ LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
 MODEL = os.environ.get("TALK_MODEL", "vm/qwen3.8:27b")
 FACTS_FILE = os.environ.get("TALK_FACTS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "facts.json"))
 DEADLINE = float(os.environ.get("TALK_DEADLINE", "12"))
+# Bot players may talk at any length (the creator: "uncapped"), so their Lua waits longer (BotJobs.deadline)
+BOT_DEADLINE = float(os.environ.get("TALK_BOT_DEADLINE", "40"))
+# Tokens a bot reply may use: a long paragraph, with room for the JSON around it
+BOT_MAX_TOKENS = 900
 
 # Exchanges remembered per NPC and player, and for how long
 MEMORY_TURNS = 8
@@ -56,8 +60,8 @@ MEMORY_SECONDS = 4 * 3600
 KEEP_ALIVE = "15m"
 WARM_EVERY = 240
 MAX_CHARS = 200
-# Bot players talk at a player's length; the Lua sends a long reply as several chat lines
-BOT_MAX_CHARS = 600
+# No length cap on bot replies beyond this safety net; the Lua sends a long reply as several chat lines
+BOT_MAX_CHARS = 3000
 # How often a bot player's reply may ask for a tip
 TIP_CHANCE = 0.2
 
@@ -312,9 +316,9 @@ class Bridge:
             "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
             f"most folk just try to make a living. {heard}\n\n"
             "People talk to you in shorthand: \"buff plz\", \"enhances?\" (enhancements), \"heal wounds?\", \"u up "
-            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Talk as much as a "
-            "player typing in chat would: usually two to four sentences, more when you're into the conversation, under "
-            "500 characters in all. Don't push buffs on someone who is just "
+            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Talk as much as you "
+            "like: a quick line when that's all it needs, or whole paragraphs when you're into the conversation, telling "
+            "stories, or they ask for detail. Don't push buffs on someone who is just "
             f"chatting. {tips} Stay in character as a person in this galaxy at all times. Never say you are an AI, a "
             "program, a droid, a character, a player or in a game; you don't know those words. "
             "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and then you ask something back. If someone insults or "
@@ -439,9 +443,9 @@ class Bridge:
             return result
         # A bot player gets one more try at an unusable reply (cut off, out of world) while there's time for it
         deadline = time.time() + timeout
-        result = self.clean(self.complete(messages, 300, timeout), text, bot=True)
+        result = self.clean(self.complete(messages, BOT_MAX_TOKENS, timeout), text, bot=True)
         if result is None and deadline - time.time() > 5:
-            result = self.clean(self.complete(messages, 300, deadline - time.time()), text, bot=True)
+            result = self.clean(self.complete(messages, BOT_MAX_TOKENS, deadline - time.time()), text, bot=True)
         if result is None:
             return None
         before = " ".join(json.loads(t["content"]).get("say", "") if t["role"] == "assistant" else t["content"]
@@ -490,7 +494,7 @@ class Bridge:
                 # A bot player's reply has a fourth line, the action
                 bot = bool(r.get("bot"))
                 # Lua stops waiting at the deadline (from when it wrote the request)
-                left = DEADLINE - 1 - (time.time() - float(r.get("at", queued)))
+                left = (BOT_DEADLINE if bot else DEADLINE) - 1 - (time.time() - float(r.get("at", queued)))
                 if left < 1:
                     self.reply(r["id"], None, bot)
                     log("late", r.get("name"), "-> fallback")

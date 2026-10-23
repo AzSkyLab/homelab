@@ -50,6 +50,9 @@ BotJobs = ScreenPlay:new {
 	sayRange = 40,
 	-- Lines shown in the log are cut to this length
 	logChars = 120,
+	-- Seconds to wait for the brain: bots may talk at any length, so longer than the crowd's 12 (the bridge's
+	-- TALK_BOT_DEADLINE must match)
+	deadline = 40,
 	-- A long reply's next chat line follows this long after the last (ms), like someone typing
 	moreLineMs = 2500,
 }
@@ -547,7 +550,7 @@ function BotJobs:poll(pBot, args)
 		return
 	end
 
-	if tries >= LivingTalk.deadline then
+	if tries >= self.deadline then
 		-- No answer in time
 		LivingTalk:answered(playerOid)
 		self:startQuiet()
