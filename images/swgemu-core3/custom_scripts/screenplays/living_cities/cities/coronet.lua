@@ -9,6 +9,19 @@ LivingCitiesData.coronet = {
 	center = {x = -210, y = -4450, radius = 450},
 	-- where NPCs log in and out: in front of the starport's west door, outdoors
 	arrival = {x = -134, y = -4723, cell = 0, heading = 278},
+	-- buildings with indoor slots: every cell id of the building, and the way out through the main door
+	buildings = {
+		-- Starport: main (west) door, into foyer1; outside past the foot of the entrance ramp
+		{id = "starport", cells = {1855672, 1855673, 1855674, 1855675, 1855676, 1855677, 1855678, 1855679, 1855680, 1855681, 1855682, 1855683, 1855684, 1855685, 1855686, 5625466}, exit = {
+			inside = {x = -0.18, y = 76.11, z = 0.639, cell = 1855672, heading = 0},
+			outside = {x = -133.05, y = -4723.1, heading = 278},
+		}},
+		-- Cantina: front (south-west) door, into foyer1
+		{id = "cantina", cells = {8105494, 8105495, 8105496, 8105497, 8105498, 8105499, 8105500, 8105501, 8105502, 8105503, 8105504, 8105505, 8105506, 8105507, 8105508}, exit = {
+			inside = {x = 46.57, y = -2.49, z = 0.101, cell = 8105494, heading = 135},
+			outside = {x = -347.87, y = -4543.87, heading = 225},
+		}},
+	},
 	spots = {
 		-- place: starport | cantina | bank | shops | plaza | medical | hotel
 		-- act: stand | pair | sit | dance | terminal | drink
@@ -20,7 +33,7 @@ LivingCitiesData.coronet = {
 			{x = -142.5, y = -4735.5, cell = 0, heading = 300, act = "stand"},
 		}},
 		-- Starport lobby (foyer4): travel terminals on the south wall, rows of couches in the middle
-		{id = "starport_lobby", place = "starport", slots = {
+		{id = "starport_lobby", place = "starport", building = "starport", slots = {
 			{x = -2.74, y = 49.97, z = 0.639, cell = 1855675, heading = 180, act = "terminal"},
 			{x = 11.44, y = 52.58, z = 0.639, cell = 1855675, heading = 131, act = "terminal"},
 			{x = 2.55, y = 49.97, z = 0.639, cell = 1855675, heading = 180, act = "terminal"},
@@ -30,7 +43,7 @@ LivingCitiesData.coronet = {
 			{x = 13.4, y = 61.2, z = 0.639, cell = 1855675, heading = 180, act = "pair", pair = 6},
 		}},
 		-- Coronet cantina, main room: standing at the bar (south and north sides of the counter)
-		{id = "cantina_bar", place = "cantina", slots = {
+		{id = "cantina_bar", place = "cantina", building = "cantina", slots = {
 			{x = -4.5, y = -4.9, z = -0.895, cell = 8105496, heading = 0, act = "drink"},
 			{x = -2.7, y = -4.9, z = -0.895, cell = 8105496, heading = 0, act = "drink"},
 			{x = -0.9, y = -4.9, z = -0.895, cell = 8105496, heading = 0, act = "drink"},
@@ -38,7 +51,7 @@ LivingCitiesData.coronet = {
 			{x = 4.4, y = 5.7, z = -0.895, cell = 8105496, heading = 180, act = "drink"},
 		}},
 		-- Coronet cantina, main room: chairs at the two tables east of the bar
-		{id = "cantina_tables", place = "cantina", slots = {
+		{id = "cantina_tables", place = "cantina", building = "cantina", slots = {
 			{x = 14.15, y = 4.25, z = -0.895, cell = 8105496, heading = 53, act = "sit"},
 			{x = 17.16, y = 7.75, z = -0.895, cell = 8105496, heading = 226, act = "sit"},
 			{x = 14.42, y = 7.4, z = -0.895, cell = 8105496, heading = 140, act = "sit"},
@@ -47,14 +60,14 @@ LivingCitiesData.coronet = {
 			{x = 16.24, y = -5.51, z = -0.895, cell = 8105496, heading = 320, act = "sit"},
 		}},
 		-- Coronet cantina, main room: open floor south-west of the bar, by the stage alcove
-		{id = "cantina_dance", place = "cantina", slots = {
+		{id = "cantina_dance", place = "cantina", building = "cantina", slots = {
 			{x = -6.8, y = -8.3, z = -0.895, cell = 8105496, heading = 150, act = "dance"},
 			{x = -5.3, y = -8.7, z = -0.895, cell = 8105496, heading = 180, act = "dance"},
 			{x = -6.4, y = -9.9, z = -0.895, cell = 8105496, heading = 120, act = "dance"},
 			{x = -4.9, y = -10.3, z = -0.895, cell = 8105496, heading = 200, act = "dance"},
 		}},
 		-- Coronet cantina, main room: standing room in the north-east and north-west corners
-		{id = "cantina_floor", place = "cantina", slots = {
+		{id = "cantina_floor", place = "cantina", building = "cantina", slots = {
 			{x = 21, y = 9.6, z = -0.895, cell = 8105496, heading = 90, act = "pair", pair = 2},
 			{x = 22.4, y = 9.6, z = -0.895, cell = 8105496, heading = 270, act = "pair", pair = 1},
 			{x = -11.8, y = 10.4, z = -0.895, cell = 8105496, heading = 90, act = "pair", pair = 4},

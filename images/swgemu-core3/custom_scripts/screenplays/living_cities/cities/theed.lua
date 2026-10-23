@@ -9,6 +9,19 @@ LivingCitiesData.theed = {
 	center = {x = -5050, y = 4200, radius = 450},
 	-- where NPCs log in and out: in front of the spaceport's south-west door, outdoors
 	arrival = {x = -4853.7, y = 4170.3, cell = 0, heading = 221},
+	-- buildings with indoor slots: every cell id of the building, and the way out through the main door
+	buildings = {
+		-- Spaceport: main (south-west) door, into the foyer; outside on the landing above the front steps
+		{id = "spaceport", cells = {1692100, 1692101, 1692102, 1692103, 1692104}, exit = {
+			inside = {x = -0.01, y = -82.52, z = 0.747, cell = 1692100, heading = 180},
+			outside = {x = -4852.1, y = 4172.16, heading = 221},
+		}},
+		-- Cantina: front (east) door, into foyer1
+		{id = "cantina", cells = {89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103}, exit = {
+			inside = {x = 46.57, y = -2.49, z = 0.101, cell = 89, heading = 135},
+			outside = {x = -5155.12, y = 4293.4, heading = 83},
+		}},
+	},
 	spots = {
 		-- place: starport | cantina | bank | shops | plaza | medical | hotel
 		-- act: stand | pair | sit | dance | terminal | drink
@@ -20,7 +33,7 @@ LivingCitiesData.theed = {
 			{x = -4849, y = 4163, cell = 0, heading = 250, act = "stand"},
 		}},
 		-- Spaceport lobby and the west hall (hall1): travel terminal, couches
-		{id = "spaceport_lobby", place = "starport", slots = {
+		{id = "spaceport_lobby", place = "starport", building = "spaceport", slots = {
 			{x = -26.95, y = -68.94, z = 0.749, cell = 1692102, heading = 0, act = "terminal"},
 			{x = -19, y = -77, z = 0.749, cell = 1692102, heading = 0, act = "sit"},
 			{x = -8, y = -65, z = 0.749, cell = 1692101, heading = 90, act = "sit"},
@@ -28,7 +41,7 @@ LivingCitiesData.theed = {
 			{x = -16.2, y = -71.5, z = 0.749, cell = 1692102, heading = 270, act = "pair", pair = 4},
 		}},
 		-- Theed cantina, main room: standing at the bar (south and north sides of the counter)
-		{id = "cantina_bar", place = "cantina", slots = {
+		{id = "cantina_bar", place = "cantina", building = "cantina", slots = {
 			{x = -4.5, y = -4.9, z = -0.895, cell = 91, heading = 0, act = "drink"},
 			{x = -2.7, y = -4.9, z = -0.895, cell = 91, heading = 0, act = "drink"},
 			{x = -0.9, y = -4.9, z = -0.895, cell = 91, heading = 0, act = "drink"},
@@ -36,7 +49,7 @@ LivingCitiesData.theed = {
 			{x = 4.4, y = 5.7, z = -0.895, cell = 91, heading = 180, act = "drink"},
 		}},
 		-- Theed cantina, main room: chairs at the two tables east of the bar
-		{id = "cantina_tables", place = "cantina", slots = {
+		{id = "cantina_tables", place = "cantina", building = "cantina", slots = {
 			{x = 14.15, y = 4.25, z = -0.895, cell = 91, heading = 53, act = "sit"},
 			{x = 17.16, y = 7.75, z = -0.895, cell = 91, heading = 226, act = "sit"},
 			{x = 14.42, y = 7.4, z = -0.895, cell = 91, heading = 140, act = "sit"},
@@ -45,7 +58,7 @@ LivingCitiesData.theed = {
 			{x = 16.24, y = -5.51, z = -0.895, cell = 91, heading = 320, act = "sit"},
 		}},
 		-- Theed cantina, main room: the floor in front of the band's alcove
-		{id = "cantina_dance", place = "cantina", slots = {
+		{id = "cantina_dance", place = "cantina", building = "cantina", slots = {
 			{x = 4, y = -10.2, z = -0.895, cell = 91, heading = 200, act = "dance"},
 			{x = 5.5, y = -9.4, z = -0.895, cell = 91, heading = 210, act = "dance"},
 			{x = 6.8, y = -10.6, z = -0.895, cell = 91, heading = 220, act = "dance"},
@@ -53,7 +66,7 @@ LivingCitiesData.theed = {
 			{x = 3, y = -11.6, z = -0.895, cell = 91, heading = 190, act = "dance"},
 		}},
 		-- Theed cantina, main room: standing room in the north-east and north-west corners
-		{id = "cantina_floor", place = "cantina", slots = {
+		{id = "cantina_floor", place = "cantina", building = "cantina", slots = {
 			{x = 21, y = 9.6, z = -0.895, cell = 91, heading = 90, act = "pair", pair = 2},
 			{x = 22.4, y = 9.6, z = -0.895, cell = 91, heading = 270, act = "pair", pair = 1},
 			{x = -11.8, y = 10.4, z = -0.895, cell = 91, heading = 90, act = "pair", pair = 4},

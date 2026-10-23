@@ -9,6 +9,19 @@ LivingCitiesData.mos_eisley = {
 	center = {x = 3480, y = -4810, radius = 450},
 	-- where NPCs log in and out: in front of the starport's west door, outdoors
 	arrival = {x = 3534, y = -4803, cell = 0, heading = 270},
+	-- buildings with indoor slots: every cell id of the building, and the way out through the main door
+	buildings = {
+		-- Starport: main (west) door, into foyer1; outside past the foot of the entrance ramp
+		{id = "starport", cells = {1106369, 1106370, 1106371, 1106372, 1106373, 1106374, 1106375, 1106376, 1106377, 1106378, 1106379, 1106380, 1106381, 1106382, 1106383, 6595536}, exit = {
+			inside = {x = -0.18, y = 76.11, z = 0.639, cell = 1106369, heading = 0},
+			outside = {x = 3536.4, y = -4802.89, heading = 269},
+		}},
+		-- Chalmun's cantina: front door, into foyer1
+		{id = "cantina", cells = {1082875, 1082876, 1082877, 1082878, 1082879, 1082880, 1082881, 1082882, 1082883, 1082884, 1082885, 1082886, 1082887, 1082888, 1082889}, exit = {
+			inside = {x = 46.57, y = -2.49, z = 0.101, cell = 1082875, heading = 135},
+			outside = {x = 3467.9, y = -4852.78, heading = 173},
+		}},
+	},
 	spots = {
 		-- place: starport | cantina | bank | shops | plaza | medical | hotel
 		-- act: stand | pair | sit | dance | terminal | drink
@@ -20,7 +33,7 @@ LivingCitiesData.mos_eisley = {
 			{x = 3531, y = -4812.4, cell = 0, heading = 300, act = "stand"},
 		}},
 		-- Starport lobby (foyer4): travel terminals on the south wall, chairs round the tables
-		{id = "starport_lobby", place = "starport", slots = {
+		{id = "starport_lobby", place = "starport", building = "starport", slots = {
 			{x = -2.74, y = 49.97, z = 0.639, cell = 1106372, heading = 180, act = "terminal"},
 			{x = 11.29, y = 52.36, z = 0.639, cell = 1106372, heading = 131, act = "terminal"},
 			{x = 2.55, y = 49.97, z = 0.639, cell = 1106372, heading = 180, act = "terminal"},
@@ -31,14 +44,14 @@ LivingCitiesData.mos_eisley = {
 			{x = -9.8, y = 60.5, z = 0.639, cell = 1106372, heading = 270, act = "pair", pair = 7},
 		}},
 		-- Chalmun's cantina, main room: standing at the bar (south and north sides of the counter)
-		{id = "cantina_bar", place = "cantina", slots = {
+		{id = "cantina_bar", place = "cantina", building = "cantina", slots = {
 			{x = -6.8, y = -4.9, z = -0.895, cell = 1082877, heading = 0, act = "drink"},
 			{x = -5, y = -4.9, z = -0.895, cell = 1082877, heading = 0, act = "drink"},
 			{x = -3.2, y = -4.9, z = -0.895, cell = 1082877, heading = 0, act = "drink"},
 			{x = -6.7, y = 5.7, z = -0.895, cell = 1082877, heading = 180, act = "drink"},
 		}},
 		-- Chalmun's cantina, main room: chairs at the two free tables east of the bar
-		{id = "cantina_tables", place = "cantina", slots = {
+		{id = "cantina_tables", place = "cantina", building = "cantina", slots = {
 			{x = 12.25, y = -8.98, z = -0.895, cell = 1082877, heading = 174, act = "sit"},
 			{x = 10.89, y = -10.45, z = -0.895, cell = 1082877, heading = 94, act = "sit"},
 			{x = 13.51, y = -10.58, z = -0.895, cell = 1082877, heading = 283, act = "sit"},
@@ -47,7 +60,7 @@ LivingCitiesData.mos_eisley = {
 			{x = 12.12, y = 9.66, z = -0.895, cell = 1082877, heading = 353, act = "sit"},
 		}},
 		-- Chalmun's cantina, main room: the floor in front of the band's alcove
-		{id = "cantina_dance", place = "cantina", slots = {
+		{id = "cantina_dance", place = "cantina", building = "cantina", slots = {
 			{x = 5, y = -10, z = -0.895, cell = 1082877, heading = 205, act = "dance"},
 			{x = 6.5, y = -9.2, z = -0.895, cell = 1082877, heading = 215, act = "dance"},
 			{x = 6.6, y = -10.8, z = -0.895, cell = 1082877, heading = 220, act = "dance"},
@@ -55,7 +68,7 @@ LivingCitiesData.mos_eisley = {
 			{x = 3.6, y = -11, z = -0.895, cell = 1082877, heading = 195, act = "dance"},
 		}},
 		-- Chalmun's cantina, main room: standing room west of the band and east of the bar
-		{id = "cantina_floor", place = "cantina", slots = {
+		{id = "cantina_floor", place = "cantina", building = "cantina", slots = {
 			{x = -6.4, y = -8.2, z = -0.895, cell = 1082877, heading = 90, act = "pair", pair = 2},
 			{x = -5, y = -8.2, z = -0.895, cell = 1082877, heading = 270, act = "pair", pair = 1},
 			{x = 21.2, y = -1.9, z = -0.895, cell = 1082877, heading = 90, act = "pair", pair = 4},

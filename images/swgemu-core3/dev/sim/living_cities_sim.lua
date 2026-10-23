@@ -59,7 +59,9 @@ function Obj:setCustomObjectName(n) self.name = n end
 function Obj:updateDirection(a) self.heading = a end
 function Obj:faceObject(o) self.facing = o.oid end
 function Obj:getDistanceTo(o)
-	return math.sqrt((self.x - o.x) ^ 2 + (self.y - o.y) ^ 2)
+	local x, y = self:now()
+	local ox, oy = o:now()
+	return math.sqrt((x - ox) ^ 2 + (y - oy) ^ 2)
 end
 function Obj:getPlayersInRange(r)
 	local out = {}
@@ -70,17 +72,32 @@ function Obj:getPlayersInRange(r)
 	end
 	return out
 end
-function Obj:teleport(x, z, y, cell) self.x, self.z, self.y, self.cell = x, z, y, cell end
+function Obj:teleport(x, z, y, cell) self.walk = nil; self.x, self.z, self.y, self.cell = x, z, y, cell; self.teleports = (self.teleports or 0) + 1 end
 function Obj:destroyObjectFromWorld()
 	if self.inWorld then
 		self.inWorld = false
 		destroyed = destroyed + 1
 	end
 end
-function Obj:getPositionX() return self.x end
-function Obj:getPositionY() return self.y end
+-- Where a walking NPC is now: part way along its walk (same cell), or across the door half way through
+function Obj:now()
+	local w = self.walk
+	if w == nil then
+		return self.x, self.y, self.cell
+	end
+	local t = math.min(1, math.max(0, (sim.now * 1000 + (sim.subMs or 0) - w.t0) / math.max(1, w.t1 - w.t0)))
+	if (w.cell0 or 0) == (w.cell1 or 0) then
+		return w.x0 + (w.x1 - w.x0) * t, w.y0 + (w.y1 - w.y0) * t, w.cell0
+	end
+	if t < 0.5 then
+		return w.x0, w.y0, w.cell0
+	end
+	return w.x1, w.y1, w.cell1
+end
+function Obj:getPositionX() local x = self:now() return x end
+function Obj:getPositionY() local _, y = self:now() return y end
 function Obj:getPositionZ() return self.z end
-function Obj:getParentID() return self.cell end
+function Obj:getParentID() local _, _, c = self:now() return c end
 function Obj:isPlayerCreature() return self.isPlayer == true end
 function Obj:setPvpStatusBitmask(b) self.pvp = b end
 function Obj:setMoodString(m) self.mood = m end
@@ -88,10 +105,36 @@ function Obj:doAnimation(a) stats.anim = stats.anim + 1 end
 function Obj:getTargetID() return self.target or 0 end
 function Obj:getFirstName() return self.first or "Player" end
 function Obj:addObjectFlag(f) end
+function Obj:setHomeLocation(x, z, y, cell) self.home = {x, z, y, cell} end
 function Obj:getNumberOfPlayersInRange() return #self:getPlayersInRange(128) end
+-- Like Core3: setNextPosition puts the point in FRONT of any older ones (patrolPoints.add(0, point)) and the agent
+-- keeps walking its queue, reporting DESTINATIONREACHED at each point; clearPatrolPoints empties it
 function Obj:setNextPosition(x, z, y, cell)
+	self.patrol = self.patrol or {}
+	table.insert(self.patrol, 1, {x, z, y, cell})
+	self:moveOn()
+end
+function Obj:settle()
+	if self.walk ~= nil then
+		self.x, self.y, self.cell = self:now()
+		self.walk = nil
+	end
+end
+function Obj:clearPatrolPoints()
+	self:settle()
+	self.patrol = {}
+	self.walkId = (self.walkId or 0) + 1
+end
+function Obj:clearCurrentPath() end
+function Obj:moveOn()
+	self:settle()
 	self.walkId = (self.walkId or 0) + 1
 	local id = self.walkId
+	local point = self.patrol[1]
+	if point == nil then
+		return
+	end
+	local x, z, y, cell = point[1], point[2], point[3], point[4]
 	-- Cell positions are cell-local, so a walk into, out of or between buildings counts as a nominal 60 m
 	local dist = 60
 	if (cell or 0) == 0 and (self.cell or 0) == 0 then
@@ -103,13 +146,20 @@ function Obj:setNextPosition(x, z, y, cell)
 	local awake = #self:getPlayersInRange(128) > 0 or readData("lc:awake") == 1
 	if not awake then
 		-- Core3 stops the AI with nobody near: the walk waits
-		self.pendingWalk = {x, z, y, cell}
 		return
 	end
-	sim.schedule(math.floor(dist / walkOptions.speed * 1000) + 500, function()
+	local ms = math.floor(dist / walkOptions.speed * 1000) + 500
+	local nowMs = sim.now * 1000 + (sim.subMs or 0)
+	self.walk = {x0 = self.x, y0 = self.y, cell0 = self.cell, x1 = x, y1 = y, cell1 = cell, t0 = nowMs, t1 = nowMs + ms}
+	sim.schedule(ms, function()
 		if self.inWorld and self.walkId == id then
+			self.walk = nil
 			self.x, self.z, self.y, self.cell = x, z, y, cell
+			table.remove(self.patrol, 1)
 			self:fire("DESTINATIONREACHED")
+			if self.walkId == id then
+				self:moveOn()
+			end
 		end
 	end)
 end
@@ -327,6 +377,16 @@ local function checkCity(key, label)
 		if not p.inWorld then
 			fail(label .. ": member " .. oid .. " not in the world")
 		end
+		-- A lingering NPC stands at its slot (a leftover Core3 move queue would walk it elsewhere)
+		if spot ~= 0 and readData("lc:npc:" .. oid .. ":state") == 2 then
+			local s = city.spots[spot].slots[slot]
+			local px, py, pc = p:now()
+			local d = math.sqrt((px - s.x) ^ 2 + (py - s.y) ^ 2)
+			if (pc or 0) ~= (s.cell or 0) or d > 2.5 then
+				fail(string.format("%s: %d lingers %.1f m from its slot %d:%d (cell %s, slot cell %s)", label, oid, d, spot, slot,
+					tostring(p.cell), tostring(s.cell)))
+			end
+		end
 	end
 
 	-- Every slot record points at a live member
@@ -397,9 +457,9 @@ local function report(name)
 	local line = string.format("%-8s spawned %d, destroyed %d, chat lines %d, animations %d", name, spawned, destroyed, stats.chat, stats.anim)
 	realPrint(line)
 	for _, key in ipairs(LivingCities.cities) do
-		realPrint(string.format("         %s: %d members, target %d; arrived %d, left %d, stuck %d", key, #LivingCities:members(key),
+		realPrint(string.format("         %s: %d members, target %d; arrived %d, left %d, rerouted %d, stuck %d", key, #LivingCities:members(key),
 			LivingCities:target(key), readData("lc:" .. key .. ":stat:arrived"), readData("lc:" .. key .. ":stat:left"),
-			readData("lc:" .. key .. ":stat:stuck")))
+			readData("lc:" .. key .. ":stat:rerouted"), readData("lc:" .. key .. ":stat:stuck")))
 	end
 end
 
@@ -518,6 +578,13 @@ function scenarios.stuck()
 	end
 	if stuck == 0 then
 		fail("stuck: the walk check never caught a stuck walk")
+	end
+	local rerouted = 0
+	for _, key in ipairs(LivingCities.cities) do
+		rerouted = rerouted + readData("lc:" .. key .. ":stat:rerouted")
+	end
+	if rerouted == 0 then
+		fail("stuck: no walk was rerouted by the hub")
 	end
 	report("stuck")
 end

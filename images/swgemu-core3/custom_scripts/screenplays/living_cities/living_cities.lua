@@ -96,7 +96,11 @@ LivingCities = ScreenPlay:new {
 	walkTimeoutIndoors = 360,
 	-- Seconds between walk checks, and how close (m) to the spot counts as there
 	walkCheckSeconds = 15,
+	-- Spot choice: a spot this many metres away is half as likely as one next door
+	nearbyMetres = 150,
 	arriveRange = 2,
+	-- Seconds to reach a building's door from inside before stepping out anyway
+	exitTimeout = 45,
 	-- Players within this range of an NPC see it arrive or leave; otherwise it just appears in a slot or vanishes
 	seenRange = 100,
 }
@@ -237,9 +241,13 @@ function LivingCities:restart()
 
 	for _, key in ipairs(self.cities) do
 		self:clearCity(key)
+
+		for _, stat in ipairs({"arrived", "left", "rerouted", "stuck"}) do
+			deleteData(cityKey(key, "stat:" .. stat))
+		end
 	end
 
-	print("LivingCities: restarted, generation " .. gen)
+	print("LivingCities: restarted, generation " .. gen .. " (counters reset)")
 
 	for _, key in ipairs(self.cities) do
 		self:startCity(key, gen)
@@ -394,14 +402,50 @@ function LivingCities:kitByName(name)
 	return self.kits[1]
 end
 
--- A free slot in a spot other than the current one, weighted by the kit's liking for the place and the act
-function LivingCities:pickSlot(key, kit, currentSpot)
+-- A spot's position on the street: its building's door for an indoor spot, else the middle of its slots
+function LivingCities:spotWhere(city, spot)
+	if spot.building ~= nil then
+		for _, building in ipairs(city.buildings or {}) do
+			if building.id == spot.building and building.exit ~= nil then
+				return building.exit.outside.x, building.exit.outside.y
+			end
+		end
+	end
+
+	local x, y, n = 0, 0, 0
+
+	for _, slot in ipairs(spot.slots) do
+		if (slot.cell or 0) == 0 then
+			x, y, n = x + slot.x, y + slot.y, n + 1
+		end
+	end
+
+	if n == 0 then
+		return nil, nil
+	end
+
+	return x / n, y / n
+end
+
+-- A free slot in a spot other than the current one, weighted by the kit's liking for the place and the act, and by
+-- distance: near spots are likelier (people don't cross the whole city every few minutes, and Core3's pathing is
+-- least reliable on the longest walks). fromX/fromY may be nil (spawning).
+function LivingCities:pickSlot(key, kit, currentSpot, fromX, fromY)
 	local city = LivingCitiesData[key]
 	local choices = {}
 
 	for spotIndex, spot in ipairs(city.spots) do
 		if spotIndex ~= currentSpot then
 			local placeWeight = kit.places[spot.place] or 0
+
+			if fromX ~= nil then
+				local x, y = self:spotWhere(city, spot)
+
+				if x ~= nil then
+					local d = math.sqrt((x - fromX) ^ 2 + (y - fromY) ^ 2)
+					placeWeight = placeWeight / (1 + d / self.nearbyMetres)
+				end
+			end
 			local free = {}
 
 			for slotIndex, slot in ipairs(spot.slots) do
@@ -612,11 +656,11 @@ function LivingCities:forget(key, oid)
 		LivingTalk:npcGone(oid)
 	end
 
-	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout", "walkStart"}) do
+	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout", "walkStart", "leg", "legNo", "viaHub", "stall", "lastX", "lastY", "lastCell"}) do
 		deleteData(npcKey(oid, field))
 	end
 
-	for _, field in ipairs({"city", "kit", "species", "sex", "first", "name"}) do
+	for _, field in ipairs({"city", "kit", "species", "sex", "first", "name", "greeted"}) do
 		deleteStringData(npcKey(oid, field))
 	end
 end
@@ -643,6 +687,7 @@ function LivingCities:startLinger(pNpc, key, gen, shorten)
 	end
 
 	writeData(npcKey(oid, "state"), LINGERING)
+	self:homeHere(pNpc)
 
 	if slot.heading ~= nil then
 		SceneObject(pNpc):updateDirection(math.rad(slot.heading))
@@ -674,6 +719,21 @@ function LivingCities:startLinger(pNpc, key, gen, shorten)
 
 	local seq = readData(npcKey(oid, "seq"))
 	createEvent(seconds * 1000, "LivingCities", "nextErrand", pNpc, packArgs(gen, seq))
+end
+
+-- Where the NPC is, on the street: its building's door if it's inside one of ours
+function LivingCities:streetPosition(pNpc, city)
+	local building = self:buildingOf(city, SceneObject(pNpc):getParentID())
+
+	if building ~= nil and building.exit ~= nil then
+		return building.exit.outside.x, building.exit.outside.y
+	end
+
+	if SceneObject(pNpc):getParentID() ~= 0 then
+		return nil, nil
+	end
+
+	return SceneObject(pNpc):getPositionX(), SceneObject(pNpc):getPositionY()
 end
 
 function LivingCities:faceTowards(pNpc, args)
@@ -714,7 +774,8 @@ function LivingCities:nextErrand(pNpc, args)
 	end
 
 	local kit = self:kitByName(readStringData(npcKey(oid, "kit")))
-	local choice = self:pickSlot(key, kit, readData(npcKey(oid, "spot")))
+	local fromX, fromY = self:streetPosition(pNpc, LivingCitiesData[key])
+	local choice = self:pickSlot(key, kit, readData(npcKey(oid, "spot")), fromX, fromY)
 
 	if choice == nil then
 		-- Everywhere is taken: stay a while longer
@@ -727,30 +788,178 @@ function LivingCities:nextErrand(pNpc, args)
 	self:walkTo(pNpc, key, gen, LivingCitiesData[key].spots[choice.spot].slots[choice.slot], WALKING)
 end
 
+-- The building (from the city's buildings table) that a cell belongs to, or nil outdoors
+function LivingCities:buildingOf(city, cell)
+	if cell == nil or cell == 0 or city.buildings == nil then
+		return nil
+	end
+
+	for _, building in ipairs(city.buildings) do
+		for _, id in ipairs(building.cells) do
+			if id == cell then
+				return building
+			end
+		end
+	end
+
+	return nil
+end
+
+-- Walking, in legs. Core3 can't path from one building into another, out of some interiors (the generic cantina) at
+-- all, or between some pairs of outdoor points; but every slot and door can reach the city's arrival point and the
+-- arrival point can reach every slot (devProbe, devProbeFrom). So a walk goes:
+--   leg 1, out of the building: to just inside its door, then a step outside (exitHop), when leaving the building
+--   leg 0, direct: to the slot (or the arrival point when leaving)
+-- and when a direct walk stalls (no movement for two checks with a player near), once more by the hub:
+--   leg 1 if indoors, then leg 2 to the arrival point, then leg 0 from there.
+-- Every leg bumps "legNo"; checks and hops from an earlier leg see the change and stop.
+local LEG_DIRECT = 0
+local LEG_EXIT = 1
+local LEG_HUB = 2
+
 function LivingCities:walkTo(pNpc, key, gen, pos, state)
-	local city = LivingCitiesData[key]
 	local oid = SceneObject(pNpc):getObjectID()
 	local seq = readData(npcKey(oid, "seq")) + 1
 
 	writeData(npcKey(oid, "seq"), seq)
 	writeData(npcKey(oid, "state"), state)
+	writeData(npcKey(oid, "viaHub"), 0)
 
 	CreatureObject(pNpc):setMoodString("neutral")
+	self:startLeg(pNpc, oid, key, gen)
+end
+
+-- Where this walk ends: the claimed slot, or the arrival point when leaving
+function LivingCities:walkTarget(key, oid)
+	if readData(npcKey(oid, "state")) == LEAVING then
+		return LivingCitiesData[key].arrival
+	end
+
+	local spot, slot = self:slotOf(key, oid)
+
+	return slot
+end
+
+-- The next leg from where the NPC stands now
+function LivingCities:startLeg(pNpc, oid, key, gen)
+	local city = LivingCitiesData[key]
+	local final = self:walkTarget(key, oid)
+
+	if final == nil then
+		writeData(npcKey(oid, "state"), LINGERING)
+		self:nextErrand(pNpc, packArgs(gen, readData(npcKey(oid, "seq"))))
+		return
+	end
+
+	local viaHub = readData(npcKey(oid, "viaHub")) == 1
+	local here = self:buildingOf(city, SceneObject(pNpc):getParentID())
+
+	if here ~= nil and here.exit ~= nil and (viaHub or self:buildingOf(city, final.cell) ~= here) then
+		self:go(pNpc, oid, city, gen, LEG_EXIT, here.exit.inside, self.exitTimeout)
+	elseif viaHub and final ~= city.arrival then
+		self:go(pNpc, oid, city, gen, LEG_HUB, city.arrival)
+	else
+		self:go(pNpc, oid, city, gen, LEG_DIRECT, final)
+	end
+end
+
+-- One leg: clear Core3's move queue, set the point, start the checks
+function LivingCities:go(pNpc, oid, city, gen, leg, pos, timeout)
+	local legNo = readData(npcKey(oid, "legNo")) + 1
+
+	writeData(npcKey(oid, "legNo"), legNo)
+	writeData(npcKey(oid, "leg"), leg)
+	writeData(npcKey(oid, "stall"), 0)
+	self:rememberSpot(pNpc, oid)
+
+	-- Core3 can't path between two buildings; startLeg should never ask it to (a log line here means a bug)
+	local fromCell = SceneObject(pNpc):getParentID()
+
+	if fromCell ~= 0 and (pos.cell or 0) ~= 0 and self:buildingOf(city, fromCell) ~= self:buildingOf(city, pos.cell) then
+		local a, b = self:buildingOf(city, fromCell), self:buildingOf(city, pos.cell)
+		print(string.format("LivingCities: WARNING cross-building leg %d for %s: from cell %d (%s) to cell %d (%s), viaHub %d",
+			leg, readStringData(npcKey(oid, "name")), fromCell, a ~= nil and a.id or "?", pos.cell, b ~= nil and b.id or "?",
+			readData(npcKey(oid, "viaHub"))))
+	end
+
+	self:clearWalk(pNpc)
+	self:homeHere(pNpc)
 	AiAgent(pNpc):setNextPosition(pos.x, self:slotZ(city, pos), pos.y, pos.cell or 0)
 
-	local timeout = self.walkTimeoutIndoors
+	if timeout == nil then
+		timeout = self.walkTimeoutIndoors
 
-	if (pos.cell or 0) == 0 and SceneObject(pNpc):getParentID() == 0 then
-		local dx = pos.x - SceneObject(pNpc):getPositionX()
-		local dy = pos.y - SceneObject(pNpc):getPositionY()
-		timeout = self.walkTimeout + math.floor(math.sqrt(dx * dx + dy * dy))
+		if (pos.cell or 0) == 0 and SceneObject(pNpc):getParentID() == 0 then
+			local dx = pos.x - SceneObject(pNpc):getPositionX()
+			local dy = pos.y - SceneObject(pNpc):getPositionY()
+			timeout = self.walkTimeout + math.floor(math.sqrt(dx * dx + dy * dy))
+		end
 	end
 
 	writeData(npcKey(oid, "walkTimeout"), timeout)
 	writeData(npcKey(oid, "walkStart"), os.time())
-	createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc, packArgs(gen, seq))
+	createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc,
+		packArgs(gen, readData(npcKey(oid, "seq")), legNo))
 end
 
+-- Core3's move tree leashes an AI that is over 256 m from its home location (CheckRetreat, then Leash: it drops its
+-- queue and walks back to where it spawned, even out of another building). Our NPCs roam whole cities, so their home
+-- follows them: set to where they stand at every leg, every walk check, every teleport and every linger.
+function LivingCities:homeHere(pNpc)
+	local cell = SceneObject(pNpc):getParentID()
+	local pCell = nil
+
+	if cell ~= 0 then
+		pCell = getSceneObject(cell)
+	end
+
+	AiAgent(pNpc):setHomeLocation(SceneObject(pNpc):getPositionX(), SceneObject(pNpc):getPositionZ(),
+		SceneObject(pNpc):getPositionY(), pCell)
+end
+
+-- Core3's setNextPosition puts the point in front of any older ones and keeps the old path, so every new walk (and
+-- every stop) starts from an empty queue
+function LivingCities:clearWalk(pNpc)
+	AiAgent(pNpc):clearPatrolPoints()
+	AiAgent(pNpc):clearCurrentPath()
+end
+
+-- Where the NPC stood at the last check (tenths of a metre, with its cell), to see whether it is moving
+function LivingCities:rememberSpot(pNpc, oid)
+	writeData(npcKey(oid, "lastX"), math.floor(SceneObject(pNpc):getPositionX() * 10))
+	writeData(npcKey(oid, "lastY"), math.floor(SceneObject(pNpc):getPositionY() * 10))
+	writeData(npcKey(oid, "lastCell"), SceneObject(pNpc):getParentID())
+end
+
+function LivingCities:movedSince(pNpc, oid)
+	if SceneObject(pNpc):getParentID() ~= readData(npcKey(oid, "lastCell")) then
+		return 99
+	end
+
+	local dx = SceneObject(pNpc):getPositionX() - readData(npcKey(oid, "lastX")) / 10
+	local dy = SceneObject(pNpc):getPositionY() - readData(npcKey(oid, "lastY")) / 10
+
+	return math.sqrt(dx * dx + dy * dy)
+end
+
+-- The point the current leg heads for
+function LivingCities:legTarget(key, oid, pNpc)
+	local city = LivingCitiesData[key]
+	local leg = readData(npcKey(oid, "leg"))
+
+	if leg == LEG_EXIT then
+		local building = self:buildingOf(city, SceneObject(pNpc):getParentID())
+
+		return building ~= nil and building.exit ~= nil and building.exit.inside or nil
+	elseif leg == LEG_HUB then
+		return city.arrival
+	end
+
+	return self:walkTarget(key, oid)
+end
+
+-- Core3's DESTINATIONREACHED. It runs inside Core3's movement code (holding the agent's move lock), so the next leg
+-- starts in an event rather than here.
 function LivingCities:onArrived(pNpc)
 	if pNpc == nil then
 		return 0
@@ -768,80 +977,194 @@ function LivingCities:onArrived(pNpc)
 	return 0
 end
 
--- The walk is over (Core3's DESTINATIONREACHED, or walkCheck found it standing on the spot)
+-- A leg is done (DESTINATIONREACHED, or walkCheck found the NPC standing on its point)
 function LivingCities:arrived(pNpc, oid, gen)
 	local key = readStringData(npcKey(oid, "city"))
 	local state = readData(npcKey(oid, "state"))
+	local leg = readData(npcKey(oid, "leg"))
+	local legArgs = packArgs(gen, readData(npcKey(oid, "seq")), readData(npcKey(oid, "legNo")))
 
-	if state == WALKING then
+	if state ~= WALKING and state ~= LEAVING then
+		return
+	end
+
+	if leg == LEG_EXIT then
+		-- At the door on the way out: step outside
+		createEvent(200, "LivingCities", "exitHop", pNpc, legArgs)
+	elseif leg == LEG_HUB then
+		-- At the hub: the last leg goes direct
+		writeData(npcKey(oid, "viaHub"), 2)
+		createEvent(200, "LivingCities", "nextLeg", pNpc, legArgs)
+	elseif state == WALKING then
 		writeData(npcKey(oid, "stuck"), 0)
 		self:startLinger(pNpc, key, gen)
-	elseif state == LEAVING then
-		-- Destroy it outside the current lock
+	else
+		-- Left town: destroy it outside the current lock
 		writeData(npcKey(oid, "state"), 0)
 		createEvent(1000, "LivingCities", "despawnLater", nil, tostring(oid))
 		self:count(key, "left")
 	end
 end
 
--- Every walkCheckSeconds while walking: standing on the spot counts as arrived (Core3 only reports arrival when the
--- height matches too); past the timeout with a player near, the NPC is stuck. With nobody near, the AI is asleep and
--- the clock restarts.
-function LivingCities:walkCheck(pNpc, args)
+-- Is this event for the NPC's current leg?
+function LivingCities:currentLeg(pNpc, args)
 	local a = unpackArgs(args)
-	local gen, seq = a[1], tonumber(a[2])
+	local gen, seq, legNo = a[1], tonumber(a[2]), tonumber(a[3])
 
 	if not self:current(pNpc, gen) then
-		return
+		return nil
 	end
 
 	local oid = SceneObject(pNpc):getObjectID()
 	local state = readData(npcKey(oid, "state"))
 
-	if readData(npcKey(oid, "seq")) ~= seq or (state ~= WALKING and state ~= LEAVING) then
+	if readData(npcKey(oid, "seq")) ~= seq or readData(npcKey(oid, "legNo")) ~= legNo or (state ~= WALKING and state ~= LEAVING) then
+		return nil
+	end
+
+	return oid, tonumber(gen)
+end
+
+function LivingCities:nextLeg(pNpc, args)
+	local oid, gen = self:currentLeg(pNpc, args)
+
+	if oid ~= nil then
+		self:startLeg(pNpc, oid, readStringData(npcKey(oid, "city")), gen)
+	end
+end
+
+-- Out through the door: from just inside it to just outside, then the next leg
+function LivingCities:exitHop(pNpc, args)
+	local oid, gen = self:currentLeg(pNpc, args)
+
+	if oid == nil then
 		return
 	end
 
 	local key = readStringData(npcKey(oid, "city"))
 	local city = LivingCitiesData[key]
-	local spot, slot = self:slotOf(key, oid)
-	local target = state == LEAVING and city.arrival or slot
+	local building = self:buildingOf(city, SceneObject(pNpc):getParentID())
 
-	if target ~= nil and SceneObject(pNpc):getParentID() == (target.cell or 0) then
+	self:clearWalk(pNpc)
+
+	if building ~= nil and building.exit ~= nil then
+		local outside = building.exit.outside
+
+		SceneObject(pNpc):teleport(outside.x, self:slotZ(city, outside), outside.y, 0)
+		self:homeHere(pNpc)
+
+		if outside.heading ~= nil then
+			SceneObject(pNpc):updateDirection(math.rad(outside.heading))
+		end
+	end
+
+	self:startLeg(pNpc, oid, key, gen)
+end
+
+-- Every walkCheckSeconds while walking:
+-- - standing on the leg's point counts as arrived (Core3 reports arrival only when the height matches too);
+-- - no movement for two checks with a player near means Core3 dropped the path: out of the door if on the way out,
+--   else once by the hub, else stuck;
+-- - past the leg's timeout counts the same as a stall.
+-- With nobody near, Core3 pauses the AI, so the clocks restart.
+function LivingCities:walkCheck(pNpc, args)
+	local oid, gen = self:currentLeg(pNpc, args)
+
+	if oid == nil then
+		return
+	end
+
+	local key = readStringData(npcKey(oid, "city"))
+	local leg = readData(npcKey(oid, "leg"))
+	local target = self:legTarget(key, oid, pNpc)
+
+	if target == nil then
+		-- Out of the building another way, or no door known: next leg from here
+		self:startLeg(pNpc, oid, key, gen)
+		return
+	end
+
+	if SceneObject(pNpc):getParentID() == (target.cell or 0) then
 		local dx = target.x - SceneObject(pNpc):getPositionX()
 		local dy = target.y - SceneObject(pNpc):getPositionY()
 
 		if dx * dx + dy * dy <= self.arriveRange * self.arriveRange then
-			self:arrived(pNpc, oid, tonumber(gen))
+			self:clearWalk(pNpc)
+			self:arrived(pNpc, oid, gen)
 			return
 		end
 	end
 
 	if AiAgent(pNpc):getNumberOfPlayersInRange() == 0 and not self:awake() then
 		writeData(npcKey(oid, "walkStart"), os.time())
-	end
-
-	if os.time() - readData(npcKey(oid, "walkStart")) < readData(npcKey(oid, "walkTimeout")) then
+		writeData(npcKey(oid, "stall"), 0)
+		self:rememberSpot(pNpc, oid)
 		createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc, args)
 		return
 	end
 
+	self:homeHere(pNpc)
+
+	local stall = 0
+
+	if self:movedSince(pNpc, oid) < 1 then
+		stall = readData(npcKey(oid, "stall")) + 1
+	end
+
+	writeData(npcKey(oid, "stall"), stall)
+	self:rememberSpot(pNpc, oid)
+
+	if stall < 2 and os.time() - readData(npcKey(oid, "walkStart")) < readData(npcKey(oid, "walkTimeout")) then
+		createEvent(self.walkCheckSeconds * 1000, "LivingCities", "walkCheck", pNpc, args)
+		return
+	end
+
+	-- Couldn't reach the door from inside: step out anyway
+	if leg == LEG_EXIT then
+		self:exitHop(pNpc, args)
+		return
+	end
+
+	local state = readData(npcKey(oid, "state"))
+
+	-- A direct walk Core3 couldn't path: once more by the hub
+	if leg == LEG_DIRECT and state == WALKING and readData(npcKey(oid, "viaHub")) == 0 then
+		writeData(npcKey(oid, "viaHub"), 1)
+		self:count(key, "rerouted")
+		self:startLeg(pNpc, oid, key, gen)
+		return
+	end
+
+	local city = LivingCitiesData[key]
+	local spot = self:slotOf(key, oid)
 	local stuck = readData(npcKey(oid, "stuck")) + 1
 
-	print(string.format("LivingCities: %s stuck in %s at %.1f %.1f cell %d on the way to %s", readStringData(npcKey(oid, "name")),
+	print(string.format("LivingCities: %s stuck in %s at %.1f %.1f cell %d on the way to %s (leg %d)", readStringData(npcKey(oid, "name")),
 		city.name, SceneObject(pNpc):getPositionX(), SceneObject(pNpc):getPositionY(), SceneObject(pNpc):getParentID(),
-		state == LEAVING and "the arrival point" or (spot ~= nil and spot.id or "?")))
+		state == LEAVING and "the arrival point" or (spot ~= nil and spot.id or "?"), leg))
 	self:count(key, "stuck")
 
-	if state == LEAVING or stuck >= 2 then
-		-- Give up on this one: it goes, and the crowd check brings someone new
+	self:clearWalk(pNpc)
+
+	if (state == LEAVING or stuck >= 2) and self:nobodyNear(pNpc, self.seenRange) then
+		-- Give up on this one unseen: it goes, and the crowd check brings someone new
 		createEvent(1000, "LivingCities", "despawnLater", nil, tostring(oid))
 		return
 	end
 
 	writeData(npcKey(oid, "stuck"), stuck)
+
+	if stuck >= 2 or state == LEAVING then
+		-- Someone is watching: stand about like an idle player and try again in a few minutes
+		self:release(oid, key)
+		writeData(npcKey(oid, "state"), LINGERING)
+		CreatureObject(pNpc):setMoodString(pickOne(self.actMoods.stand))
+		createEvent(rand(120, 240) * 1000, "LivingCities", "nextErrand", pNpc, packArgs(gen, readData(npcKey(oid, "seq"))))
+		return
+	end
+
 	writeData(npcKey(oid, "state"), LINGERING)
-	self:nextErrand(pNpc, packArgs(gen, seq))
+	self:nextErrand(pNpc, packArgs(gen, readData(npcKey(oid, "seq"))))
 end
 
 -- Comings and goings
@@ -931,17 +1254,30 @@ function LivingCities:arrive(key, gen)
 		return
 	end
 
-	-- Nobody at the starport to see them arrive: put them straight into the city
+	-- Nobody at the starport to see them arrive: put them straight into the city (in an event holding the NPC's lock)
 	local oid = SceneObject(pNpc):getObjectID()
 	local choice = self:pickSlot(key, self:kitByName(readStringData(npcKey(oid, "kit"))), 0)
 
 	if choice ~= nil then
-		local pos = city.spots[choice.spot].slots[choice.slot]
-
 		self:occupy(pNpc, key, choice.spot, choice.slot)
 		writeData(npcKey(oid, "seq"), readData(npcKey(oid, "seq")) + 1)
-		SceneObject(pNpc):teleport(pos.x, self:slotZ(city, pos), pos.y, pos.cell or 0)
-		self:startLinger(pNpc, key, gen)
+		createEvent(100, "LivingCities", "arriveUnseen", pNpc, tostring(gen))
+	end
+end
+
+function LivingCities:arriveUnseen(pNpc, gen)
+	if not self:current(pNpc, gen) then
+		return
+	end
+
+	local oid = SceneObject(pNpc):getObjectID()
+	local key = readStringData(npcKey(oid, "city"))
+	local spot, pos = self:slotOf(key, oid)
+
+	if pos ~= nil then
+		self:clearWalk(pNpc)
+		SceneObject(pNpc):teleport(pos.x, self:slotZ(LivingCitiesData[key], pos), pos.y, pos.cell or 0)
+		self:startLinger(pNpc, key, tonumber(gen))
 	end
 end
 
@@ -1008,15 +1344,38 @@ function LivingCities:chatterTick(pNothing, args)
 	createEvent(self.chatterSeconds * 1000, "LivingCities", "chatterTick", nil, args)
 end
 
+-- When this NPC last greeted (or decided not to greet) a player: "player=time,..." in one string per NPC, so it goes
+-- with the NPC (forget)
+function LivingCities:greetedAt(oid, playerOid)
+	local t = string.match("," .. readStringData(npcKey(oid, "greeted")), "," .. playerOid .. "=(%d+)")
+
+	return tonumber(t) or 0
+end
+
+function LivingCities:setGreeted(oid, playerOid, now)
+	local kept = {}
+
+	for entry in string.gmatch(readStringData(npcKey(oid, "greeted")), "[^,]+") do
+		local who, t = string.match(entry, "(%d+)=(%d+)")
+
+		if who ~= nil and tonumber(who) ~= playerOid and now - tonumber(t) < self.greetCooldown then
+			table.insert(kept, entry)
+		end
+	end
+
+	table.insert(kept, playerOid .. "=" .. now)
+	writeStringData(npcKey(oid, "greeted"), table.concat(kept, ","))
+end
+
 -- A player close by who hasn't been greeted by this NPC lately; returns "greet" plus the player's id, or nil
 function LivingCities:greetTarget(pNpc, oid, players, now)
 	for _, pPlayer in ipairs(players) do
 		if SceneObject(pNpc):getDistanceTo(pPlayer) <= self.greetRange then
-			local cooldown = npcKey(oid, "greet:" .. SceneObject(pPlayer):getObjectID())
+			local playerOid = SceneObject(pPlayer):getObjectID()
 
-			if now - readData(cooldown) >= self.greetCooldown then
+			if now - self:greetedAt(oid, playerOid) >= self.greetCooldown then
 				-- One roll per pass-by: the cooldown starts whether or not they speak
-				writeData(cooldown, now)
+				self:setGreeted(oid, playerOid, now)
 
 				if percent(self.greetChance) then
 					return "greet:" .. SceneObject(pPlayer):getObjectID()
@@ -1135,9 +1494,9 @@ function LivingCities:report()
 			end
 
 			print(string.format("LivingCities: %s: %d in town (target %d): %d walking, %d lingering, %d leaving, %d talking; " ..
-				"since start %d arrived, %d left, %d stuck", city.name, #members, self:target(key), states[WALKING],
+				"since the last start %d arrived, %d left, %d rerouted by the hub, %d stuck", city.name, #members, self:target(key), states[WALKING],
 				states[LINGERING], states[LEAVING], states[TALKING], readData(cityKey(key, "stat:arrived")),
-				readData(cityKey(key, "stat:left")), readData(cityKey(key, "stat:stuck"))))
+				readData(cityKey(key, "stat:left")), readData(cityKey(key, "stat:rerouted")), readData(cityKey(key, "stat:stuck"))))
 		end
 	end
 end
@@ -1373,4 +1732,195 @@ function LivingCities:devProbeZ()
 			end
 		end
 	end
+end
+
+-- Development: walkers that start on every indoor slot and head out to the arrival point (the way out of buildings),
+-- reported by devProbeReport like devProbe's. devProbeOutDebug turns Core3's AI debug log on for the first one.
+function LivingCities:devProbeOut()
+	local sent = 0
+
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		if city ~= nil and isZoneEnabled(city.planet) then
+			for spotIndex, spot in ipairs(city.spots) do
+				for slotIndex, slot in ipairs(spot.slots) do
+					if (slot.cell or 0) ~= 0 then
+						local id = key .. ":" .. spotIndex .. ":" .. slotIndex
+						local pProbe = spawnMobile(city.planet, "living_traveller_human_male", 0, slot.x, self:slotZ(city, slot), slot.y, 0, slot.cell)
+
+						if pProbe ~= nil then
+							local oid = SceneObject(pProbe):getObjectID()
+
+							writeStringData("lcp:out:" .. oid, id)
+							writeData("lcp:outoid:" .. id, oid)
+							deleteData("lcp:outok:" .. id)
+							AiAgent(pProbe):addObjectFlag(AI_STATIONARY)
+							CreatureObject(pProbe):setPvpStatusBitmask(0)
+							createObserver(DESTINATIONREACHED, "LivingCities", "probeOutArrived", pProbe)
+							createEvent(2000, "LivingCities", "probeOutGo", pProbe, key)
+							sent = sent + 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	print("LivingCities: " .. sent .. " walkers heading out of buildings")
+end
+
+function LivingCities:probeOutGo(pProbe, key)
+	local pos = LivingCitiesData[key].arrival
+	AiAgent(pProbe):setNextPosition(pos.x, self:slotZ(LivingCitiesData[key], pos), pos.y, 0)
+end
+
+function LivingCities:probeOutArrived(pProbe)
+	local id = readStringData("lcp:out:" .. SceneObject(pProbe):getObjectID())
+
+	if id ~= "" then
+		writeData("lcp:outok:" .. id, 1)
+	end
+
+	return 0
+end
+
+function LivingCities:devProbeOutReport()
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		if city ~= nil and isZoneEnabled(city.planet) then
+			local total, out = 0, 0
+
+			for spotIndex, spot in ipairs(city.spots) do
+				for slotIndex, slot in ipairs(spot.slots) do
+					local id = key .. ":" .. spotIndex .. ":" .. slotIndex
+					local pProbe = getSceneObject(readData("lcp:outoid:" .. id))
+
+					if pProbe ~= nil then
+						total = total + 1
+
+						if readData("lcp:outok:" .. id) == 1 or SceneObject(pProbe):getParentID() == 0 then
+							out = out + 1
+						else
+							print(string.format("LivingCities: out-probe %s %s slot %d still inside at %.1f %.1f %.1f cell %d", city.name, spot.id,
+								slotIndex, SceneObject(pProbe):getPositionX(), SceneObject(pProbe):getPositionY(), SceneObject(pProbe):getPositionZ(),
+								SceneObject(pProbe):getParentID()))
+						end
+					end
+				end
+			end
+
+			print("LivingCities: out-probe " .. city.name .. ": " .. out .. " of " .. total .. " got outside")
+		end
+	end
+end
+
+function LivingCities:devProbeOutDebug()
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		for spotIndex, spot in ipairs(city.spots) do
+			for slotIndex = 1, #spot.slots do
+				local pProbe = getSceneObject(readData("lcp:outoid:" .. key .. ":" .. spotIndex .. ":" .. slotIndex))
+
+				if pProbe ~= nil and SceneObject(pProbe):getParentID() ~= 0 then
+					AiAgent(pProbe):setAIDebug(true)
+					print("LivingCities: AI debug on for out-probe " .. city.name .. " " .. spot.id .. " " .. slotIndex)
+					return
+				end
+			end
+		end
+	end
+end
+
+-- Development: walkers that start on every outdoor slot (and each building's outside door point) and head for the
+-- arrival point: the way NPCs leave. devProbeFromReport lists the starts they couldn't get away from.
+function LivingCities:devProbeFrom()
+	local sent = 0
+
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		if city ~= nil and isZoneEnabled(city.planet) then
+			local starts = {}
+
+			for spotIndex, spot in ipairs(city.spots) do
+				for slotIndex, slot in ipairs(spot.slots) do
+					if (slot.cell or 0) == 0 then
+						table.insert(starts, {id = spot.id .. ":" .. slotIndex, pos = slot})
+					end
+				end
+			end
+
+			for _, building in ipairs(city.buildings or {}) do
+				if building.exit ~= nil then
+					table.insert(starts, {id = building.id .. ":door", pos = building.exit.outside})
+				end
+			end
+
+			for i, start in ipairs(starts) do
+				local pProbe = spawnMobile(city.planet, "living_traveller_human_male", 0, start.pos.x, self:slotZ(city, start.pos), start.pos.y, 0, 0)
+
+				if pProbe ~= nil then
+					local oid = SceneObject(pProbe):getObjectID()
+					local id = key .. ":" .. i
+
+					writeStringData("lcp:fromid:" .. id, start.id)
+					writeData("lcp:from:" .. id, oid)
+					writeData("lcp:fromx:" .. id, math.floor(start.pos.x * 10))
+					writeData("lcp:fromy:" .. id, math.floor(start.pos.y * 10))
+					AiAgent(pProbe):addObjectFlag(AI_STATIONARY)
+					CreatureObject(pProbe):setPvpStatusBitmask(0)
+					createEvent(2000, "LivingCities", "probeOutGo", pProbe, key)
+					sent = sent + 1
+				end
+			end
+
+			writeData("lcp:fromcount:" .. key, #starts)
+		end
+	end
+
+	print("LivingCities: " .. sent .. " walkers leaving outdoor slots")
+end
+
+function LivingCities:devProbeFromReport()
+	for _, key in ipairs(self.cities) do
+		local city = LivingCitiesData[key]
+
+		if city ~= nil and isZoneEnabled(city.planet) then
+			local total, gone = readData("lcp:fromcount:" .. key), 0
+
+			for i = 1, total do
+				local id = key .. ":" .. i
+				local pProbe = getSceneObject(readData("lcp:from:" .. id))
+
+				if pProbe ~= nil then
+					local dx = SceneObject(pProbe):getPositionX() - readData("lcp:fromx:" .. id) / 10
+					local dy = SceneObject(pProbe):getPositionY() - readData("lcp:fromy:" .. id) / 10
+
+					if dx * dx + dy * dy > 25 then
+						gone = gone + 1
+					else
+						print(string.format("LivingCities: from-probe %s %s never got going (%.1f m from its start at %.1f %.1f)", city.name,
+							readStringData("lcp:fromid:" .. id), math.sqrt(dx * dx + dy * dy), SceneObject(pProbe):getPositionX(),
+							SceneObject(pProbe):getPositionY()))
+					end
+				end
+			end
+
+			print("LivingCities: from-probe " .. city.name .. ": " .. gone .. " of " .. total .. " got going")
+		end
+	end
+end
+
+-- Development: remove every crowd and stop their timers (restart brings them back)
+function LivingCities:devStop()
+	writeData("lc:gen", self:generation() + 1)
+
+	for _, key in ipairs(self.cities) do
+		self:clearCity(key)
+	end
+
+	print("LivingCities: stopped, no crowds")
 end
