@@ -680,7 +680,8 @@ kubectl create namespace swgemu
 kubectl -n swgemu create secret generic swgemu-secrets \
   --from-literal=db-password="$(pass homelab/swgemu/db-password)" \
   --from-literal=db-root-password="$(pass homelab/swgemu/db-root-password)" \
-  --from-literal=db-secret="$(pass homelab/swgemu/db-secret)"
+  --from-literal=db-secret="$(pass homelab/swgemu/db-secret)" \
+  --from-literal=litellm-key="$(pass homelab/swgemu/litellm-key)"
 kubectl -n corpocache get secret ghcr-pull-secret -o json \
   | jq '{apiVersion,kind,type,data,metadata:{name:"ghcr-pull-secret",namespace:"swgemu"}}' | kubectl apply -f -
 kubectl -n swgemu patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
