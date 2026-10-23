@@ -125,7 +125,7 @@ spec:
             - name: LITELLM_URL
               value: http://litellm.litellm.svc:4000/v1
             - name: TALK_MODEL
-              value: vm/qwen3.8:27b
+              value: vm/qwen3.6-abliterated:27b
             - name: LITELLM_KEY
               valueFrom:
                 secretKeyRef:

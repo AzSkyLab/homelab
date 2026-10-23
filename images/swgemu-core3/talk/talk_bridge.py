@@ -90,21 +90,8 @@ BANNED = re.compile(r"\b(ai|a\.i\.|artificial intelligence|language model|chatbo
 # Bot players sound like players, so they could slip into player talk too: same rule (only if the player said it)
 BOT_BANNED = re.compile(r"\b(afk|macro(s|ing)?|ooc|mmo(rpg)?|respawn(s|ed)?|lag(gy|ging)?|log(ged|ging)? ?(in|on|off|out)|"
                         r"keyboard|my character|toon|alt|devs?|patch notes)\b", re.I)
-# Swearing is allowed, like players on a 2004 server (the prompts say when). Never said, whoever said it first: slurs
-# and hate speech, sexual talk, and threats of real harm. A reply with any of them is not spoken.
-HATEFUL = re.compile(
-    # Slurs: race and ethnicity, religion, sexuality and gender identity, disability
-    r"\b(n[i1!]+gg\w*|nig(s|ga\w*)?|negro\w*|coons?|chinks?(?! in)|gooks?|spics?|wetbacks?|beaners?|kikes?|jewed|"
-    r"jew (him|her|them|you|me) down|ragheads?|towelheads?|sand ?n\w+|pakis?|japs?|gypped|gyps(y|ies)|"
-    r"fag\w*|f[a4]gg?[o0]ts?|dykes?|tranny|trannies|shemales?|homos?(?! sapiens)|retard(s|ed)?|spaz\w*|spastics?|mongs?|"
-    # Sexual talk
-    r"cocks?|puss(y|ies)|cunts?\w*|whores?|sluts?\w*|cum(s|ming|med|shots?)?|blow ?jobs?|hand ?jobs?|porn\w*|dildos?|orgasm\w*|"
-    r"masturbat\w*|jerk(ing|s)? off|horny|tits|titties|boobs?|penis\w*|vagina\w*|anal|sex|sexual\w*|nude\w*|naked|"
-    r"suck (my|me|your|on) \w+|blow me|rap(e|es|ed|ing|ist)|molest\w*|"
-    # Threats of real harm
-    r"kill (yo)?urself|kys|go die|hope you die|neck yourself|hang yourself|slit your \w+|know where you live|"
-    r"irl|in real life|dox(x?ing|x?ed)?|(i'?ll|i will|gonna|going to) (kill|murder|stab|rape|hurt) (you|ya|u))\b",
-    re.I)
+# No content filter: the creator chose a model with no refusals and wants any kind of chat (Phase 4). Swearing
+# still follows the player's lead (SWEAR_BACK / NO_SWEARING below); that is character, not a filter.
 # Swearing, the galaxy's own curses, and insults: a player who uses any of them gets sworn back at
 SWEARS = re.compile(r"\b(fuck\w*|f\*+k\w*|motherf\w*|shit\w*|bullshit|damn\w*|goddamn\w*|hell|ass|asses|ass ?holes?|"
                     r"arse\w*|bastards?|bitch\w*|crap\w*|piss\w*|dicks?|bloody|bollocks)\b", re.I)
@@ -113,7 +100,7 @@ CURSES = re.compile(r"\b(kriff\w*|nerf[- ]?herders?|poodoo|sleemo|bantha fodder|
 RUDE = re.compile(r"\b(stupid|idiot\w*|moron\w*|dumb\w*|useless|quack|suck\w*|shut up|lazy|drunk|ugly|smell\w*|"
                   r"stink\w*|loser|trash|garbage|worthless|lame|pathetic|scum\w*|jerk)\b", re.I)
 # When the crowd and the bots swear: the bridge decides from the player's words (the model can't be trusted to keep
-# it from polite players), and the hard limits always apply
+# it from polite players)
 SWEAR_BACK = (
     "{player} is swearing, insulting you or joking around crudely, and this is a rough galaxy: swear right back like a "
     "regular in a cantina, real words (shit, damn, hell, ass, bastard, fuck) mixed with the galaxy's own curses "
@@ -121,15 +108,14 @@ SWEAR_BACK = (
     "scold them for it."
 )
 NO_SWEARING = "{player} is talking to you plainly, so you don't swear or curse at all, not even \"kriff\"."
-NEVER = ("Never use slurs or insult anyone for their race, ethnicity, religion, sexuality, gender or a disability; no "
-         "sexual talk; no threats to really hurt anyone.")
+
 
 
 def swearing(r):
     """The swearing rule for this request."""
     text = r.get("text", "")
     rule = SWEAR_BACK if SWEARS.search(text) or CURSES.search(text) or RUDE.search(text) else NO_SWEARING
-    return rule.format(player=r.get("playerName", "They")) + " " + NEVER
+    return rule.format(player=r.get("playerName", "They"))
 
 # Bot players (Phase 3): where each job stands, and the actions it may take
 BOT_PLACES = {"doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina"}
@@ -361,7 +347,7 @@ class Bridge:
             used = {m.group(0).lower() for m in banned.finditer(asked)}
             if any(m.group(0).lower() not in used for m in banned.finditer(text)):
                 return None
-        if not text or HATEFUL.search(text):
+        if not text:
             return None
         if bot:
             text = Bridge.two_sentences(text)

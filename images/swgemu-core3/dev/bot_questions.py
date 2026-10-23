@@ -220,7 +220,8 @@ def main():
 
     def clean(content, asked="", bot=False):
         result = talk_bridge.Bridge.clean(content, asked, bot)
-        if result is None and talk_bridge.HATEFUL.search(content):
+        hateful = getattr(talk_bridge, "HATEFUL", None)  # gone since Phase 4: no content filter
+        if result is None and hateful is not None and hateful.search(content):
             filtered.append(asked)
         return result
 

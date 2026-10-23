@@ -349,7 +349,7 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/swgemu/db-root-password` | swgemu-secrets (`db-root-password`) | swgemu | MariaDB root |
 | `homelab/swgemu/db-secret` | swgemu-secrets (`db-secret`) | swgemu | Core3 `DBSecret`, mixed into every account password hash (changing it breaks all logins) |
 | `homelab/swgemu/admin-password` | — | — | Game account `cameren` (admin level 15) |
-| `homelab/swgemu/litellm-key` | swgemu-secrets (`litellm-key`) | swgemu | LiteLLM virtual key for the talk bridge, limited to `vm/qwen3.8:27b` (optional: without it the NPCs give canned lines) |
+| `homelab/swgemu/litellm-key` | swgemu-secrets (`litellm-key`) | swgemu | LiteLLM virtual key `swgemu-talk` for the talk bridge, limited to the talk models (optional: without it the NPCs give canned lines) |
 | — (copied from corpocache) | ghcr-pull-secret | swgemu | GHCR pull secret, attached to the namespace's `default` ServiceAccount |
 
 ### Recreating a K8s Secret from pass
@@ -656,11 +656,11 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
 - **NPCs that talk (talk bridge).** A second container, `talk`, in the core3 pod, from the same image (keep both
   `image:` tags equal). It runs `images/swgemu-core3/talk/talk_bridge.py` (Python standard library). Core3's Lua can't
   call out without stalling a server thread, so it writes request files to the shared `emptyDir` `/run/talk/req/`;
-  the bridge asks LiteLLM (`http://litellm.litellm.svc:4000/v1`, model `TALK_MODEL`, default `vm/qwen3.8:27b`, thinking
-  off) and writes `/run/talk/rep/<id>.txt`. City fact sheets: `talk/facts.json`, built by
+  the bridge asks LiteLLM (`http://litellm.litellm.svc:4000/v1`, model `TALK_MODEL`, set to `vm/qwen3.6-abliterated:27b`
+  in core3.yml, thinking off) and writes `/run/talk/rep/<id>.txt`. City fact sheets: `talk/facts.json`, built by
   `~/github/swgemu/tools/living_cities/build_facts.py`. Logs: `kubectl -n swgemu logs deploy/core3 -c talk` (one line
   per reply, with its latency). The key is `swgemu-secrets` `litellm-key` (`pass homelab/swgemu/litellm-key`): a LiteLLM
-  virtual key limited to the model. Without it the bridge gets 401s and the NPCs give canned lines. Test from the
+  virtual key limited to the talk models. Switch models with `scripts/swgemu-talk-model.sh <model>`. Without it the bridge gets 401s and the NPCs give canned lines. Test from the
   workstation: `LITELLM_URL=https://llm.home.lab/v1 LITELLM_KEY=... python3 talk/talk_bridge.py --ask mos_eisley
   "where's the bank?"`.
 - **Local test server.** `images/swgemu-core3/dev/docker-compose.yml` runs our image on the workstation with only
