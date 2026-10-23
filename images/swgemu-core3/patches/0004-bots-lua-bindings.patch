@@ -1,0 +1,22 @@
+diff --git a/MMOCoreORB/src/server/zone/managers/director/DirectorManager.cpp b/MMOCoreORB/src/server/zone/managers/director/DirectorManager.cpp
+index 712be05..44f1357 100644
+--- a/MMOCoreORB/src/server/zone/managers/director/DirectorManager.cpp
++++ b/MMOCoreORB/src/server/zone/managers/director/DirectorManager.cpp
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "DirectorManager.h"
++#include "server/zone/managers/bot/BotLua.h"
+ #include "server/zone/objects/cell/CellObject.h"
+ #include "server/zone/objects/creature/LuaCreatureObject.h"
+ #include "templates/params/creature/ObjectFlag.h"
+@@ -917,6 +918,9 @@ void DirectorManager::initializeLuaEngine(Lua* luaEngine) {
+ 	Luna<LuaContractCrate>::Register(luaEngine->getLuaState());
+ 	Luna<LuaScreenPlayObserver>::Register(luaEngine->getLuaState());
+ 	Luna<LuaSpawnEggObject>::Register(luaEngine->getLuaState());
++
++	// Bot players: botList, isBot, botSay, ... (our patch)
++	BotLua::registerFunctions(luaEngine);
+ }
+ 
+ int DirectorManager::loadScreenPlays(Lua* luaEngine) {

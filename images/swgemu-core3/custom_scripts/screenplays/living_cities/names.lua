@@ -1,16 +1,19 @@
 -- Living Cities: names for the crowd, in the style players picked on a 2004 server. A first name is unique per city
 -- while its owner is in town (Phase 2 lets players call an NPC by it). Species without a list here use the general one.
+--
+-- Reserved for the bot players (custom_scripts/bots/roster.lua), so never in these lists: Hesk Torlan, Neela Kaavo,
+-- Doran Halcott, Selka Marrovan, Ilyra Seawell, Saela Dawnmere. A first name a player calls out means one character.
 LivingCitiesNames = {
 	first = {
 		"Aren", "Bela", "Corvan", "Dahla", "Davin", "Eris", "Faela", "Garen", "Halia", "Ivo", "Jaela", "Jarek", "Kael",
-		"Kira", "Landry", "Lira", "Maro", "Nessa", "Orin", "Pell", "Quin", "Rhea", "Rorik", "Saela", "Tavik", "Teva",
+		"Kira", "Landry", "Lira", "Maro", "Nessa", "Orin", "Pell", "Quin", "Rhea", "Rorik", "Tavik", "Teva",
 		"Ulric", "Vara", "Venn", "Wes", "Xara", "Yorin", "Zara", "Ardo", "Brisa", "Cael", "Dax", "Elan", "Fenn", "Gella",
-		"Hesk", "Ilyra", "Jaro", "Kesh", "Lorn", "Mira", "Nalo", "Oska", "Pira", "Raen", "Sorin", "Tamsin", "Ula",
+		"Jaro", "Kesh", "Lorn", "Mira", "Nalo", "Oska", "Pira", "Raen", "Sorin", "Tamsin", "Ula",
 		"Varek", "Wren", "Yana", "Zev", "Alys", "Bram", "Cira", "Deln", "Essa", "Galt", "Hana", "Isko", "Jessa", "Korr",
 		"Lusa", "Mott", "Nira", "Oren", "Pax", "Remy", "Siva", "Tor", "Vela", "Wynn", "Yarro", "Zelle", "Ansel", "Breck",
-		"Cassa", "Doran", "Eila", "Ferro", "Gavin", "Holt", "Imra", "Juno", "Kade", "Lyse", "Marn", "Nyla", "Orsk", "Perrin",
-		"Rissa", "Selka", "Tobin", "Vex", "Willa", "Yeva", "Zander", "Aleka", "Bastian", "Celia", "Dorn", "Elwen", "Jaxen",
-		"Kerra", "Luthe", "Maddox", "Neela", "Rook", "Shae", "Talon", "Vix",
+		"Cassa", "Eila", "Ferro", "Gavin", "Holt", "Imra", "Juno", "Kade", "Lyse", "Marn", "Nyla", "Orsk", "Perrin",
+		"Rissa", "Tobin", "Vex", "Willa", "Yeva", "Zander", "Aleka", "Bastian", "Celia", "Dorn", "Elwen", "Jaxen",
+		"Kerra", "Luthe", "Maddox", "Rook", "Shae", "Talon", "Vix",
 	},
 	last = {
 		"Vosk", "Darklin", "Merrik", "Sunrider", "Tarrant", "Holloway", "Venn", "Kessler", "Draven", "Corwin", "Starling",

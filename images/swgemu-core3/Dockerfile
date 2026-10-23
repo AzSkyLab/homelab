@@ -5,11 +5,10 @@
 # Upstream defaults to -march=native, which on the workstation would emit instructions the agents
 # can't run (SIGILL), so native is turned off and the target is pinned to sandybridge.
 
-FROM debian:bookworm AS build
+# Toolchain only; dev/build-core3.sh reuses this stage for incremental builds of our patched tree
+FROM debian:bookworm AS deps
 
-ARG CORE3_REF=403893d9b9f8e6fa712fbb3cb1fcd8f0fe45bb79
 ARG CLANG_VERSION=19
-ARG JOBS=16
 
 RUN set -eux; \
     apt-get update; \
@@ -23,6 +22,11 @@ RUN set -eux; \
 
 ENV CC=clang-${CLANG_VERSION} CXX=clang++-${CLANG_VERSION}
 
+FROM deps AS build
+
+ARG CORE3_REF=403893d9b9f8e6fa712fbb3cb1fcd8f0fe45bb79
+ARG JOBS=16
+
 # Not /src: src/CMakeLists.txt maps .idl to autogen paths by replacing every "src/" in the absolute path
 RUN set -eux; \
     git init -q /core3; \
@@ -31,6 +35,13 @@ RUN set -eux; \
     git fetch -q --depth 50 origin "${CORE3_REF}"; \
     git checkout -q FETCH_HEAD; \
     git submodule update --init --recursive --depth 1
+
+# Our C++ (see patches/README.md): new files copied into the tree, then hook patches applied in order.
+# A patch that doesn't apply to CORE3_REF fails the build.
+COPY patches /tmp/patches
+RUN set -eux; \
+    cp -r /tmp/patches/bots /core3/MMOCoreORB/src/server/zone/managers/bot; \
+    for p in /tmp/patches/*.patch; do [ -e "$p" ] || continue; git -C /core3 apply --whitespace=nowarn "$p"; done
 
 WORKDIR /core3/MMOCoreORB/build/unix/ninja
 
