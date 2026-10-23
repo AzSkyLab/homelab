@@ -663,10 +663,9 @@ kubectl -n swgemu exec -i deploy/core3 -- add-account <name> [admin_level] <<< '
 timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.20.84/44455; cat <&3'
 # Copy TRE files onto a fresh core3-tre volume (pod waits for them), then verify
 tar cf - -C ~/Games/swg-original/tre . | kubectl -n swgemu exec -i deploy/core3 -- tar xf - -C /tre
-# Update Core3 (bump CORE3_REF in images/swgemu-core3/Dockerfile) or our scripts: commit, then
-tag=$(grep -oP 'CORE3_REF=\K.{8}' images/swgemu-core3/Dockerfile)-$(git log -1 --format=%h -- images/swgemu-core3)
-cd images/swgemu-core3 && docker build --build-arg JOBS=24 -t ghcr.io/azskylab/swgemu-core3:$tag . \
-  && docker push ghcr.io/azskylab/swgemu-core3:$tag       # then set the tag in core3.yml and push
+# Update Core3 (bump CORE3_REF in images/swgemu-core3/Dockerfile) or our scripts: commit on main, then
+bash scripts/swgemu-deploy.sh     # build + push the image, set the tag in core3.yml, commit, push, wait, show start lines
+bash scripts/swgemu-talk-key.sh   # once: LiteLLM key for the talk bridge into pass and swgemu-secrets
 # Living Cities (crowd report, rebuild the crowds, every NPC's state)
 kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:report
 kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:restart
