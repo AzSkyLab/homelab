@@ -384,16 +384,26 @@ order, last wins):
 - Workstation: `OLLAMA_CONTEXT_LENGTH=65536` (since 2026-10-22; every model still fits on the 5090, 25-27.4 of 32.6 GB), `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
 - ollama-01 VM: `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_NUM_PARALLEL=1` (24GB card, tighter)
 
-### oh-my-pi (omp) — local coding agent on the workstation
+### OpenCode — local coding agent on the workstation
 
-[omp](https://github.com/can1357/oh-my-pi) is installed on the workstation
-(`npm -g --prefix ~/.local`, needs `bun` from extra) and wired to LiteLLM, so it codes
-against local GPUs:
+[OpenCode](https://github.com/anomalyco/opencode) 2.x (MIT) is installed from the Arch repo (`pacman -S opencode`, so
+`-Syu` updates it) and wired to LiteLLM, so it codes against the local GPUs. It replaced oh-my-pi (omp) on 2026-10-22:
+same bug-fix task on `ws/qwen3.8:27b`, both passed, but OpenCode's own prompt is about 8k tokens against omp's 18k,
+so it also runs on the 3090's 16k context (omp could not).
 
-- Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-completions` (omp's Chat Completions transport), apiKey = LiteLLM master key. Until 2026-10-22 it said `api: openai-chat`, which is not a valid value: omp skipped the whole file and quietly used its built-in local Ollama provider instead (the old notes here, that `openai-completions` hangs and that the `homelab/...` form breaks, came from that state). `omp models homelab` lists the models; a schema error there means the file is being ignored.
-- Each model's `contextWindow` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 65536, vm 16384), `maxTokens` 16384 (ws) / 8192 (vm). omp's own system prompt is about 17k tokens, so the `vm/` models cannot hold it; use `ws/` models.
-- `~/.omp/agent/config.yml`: `modelRoles: default: ws/qwen3.8:27b` (the LiteLLM model name works as is) and `disabledProviders: [ollama]`, so omp does not also list the local Ollama models with their native 262k context.
-- Usage: `omp "prompt"` (interactive) or `omp -p "prompt" </dev/null` (print mode; outside a terminal it waits on stdin without the redirect); `--model ws/qwen3.6:35b-a3b` for the faster model
+- Config: `~/.config/opencode/opencode.jsonc`. Provider `homelab`, package `@opencode/ai/providers/openai-compatible`,
+  `settings.baseURL: http://llm.home.lab/v1`, `settings.apiKey: {file:~/.config/opencode/litellm.key}` (the LiteLLM
+  master key, mode 600). Model keys are LiteLLM model names; default `homelab/ws/qwen3.8:27b`.
+- Each model's `limit.context` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 65536, vm 16384); `limit.output` 16384 / 4096.
+  `capabilities.tools: true` must be set on custom models.
+- `disabled_providers: [ollama, lmstudio, vllm, opencode]`: the first three would list the same models again with their
+  native 262k context; `opencode` is OpenCode's hosted free-model service, which would send code off the LAN.
+  `share: disabled`, `update: disable` (pacman updates it).
+- A background server (127.0.0.1 only) runs the sessions; after editing the config run `opencode service restart`.
+  `opencode models` should list exactly the four `homelab/...` models.
+- Usage: `opencode` (TUI) in a project folder, or `opencode run --auto "prompt"` (one-shot, auto-approves tools);
+  `-m homelab/ws/qwen3.6:35b-a3b` for the faster model, `-m homelab/vm/qwen3.8:27b` for the 3090.
+- omp's leftover config and sessions are in `~/.omp` (796K); `rm -rf ~/.omp` once it is no longer wanted.
 
 ### Authentication
 

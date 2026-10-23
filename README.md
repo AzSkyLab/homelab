@@ -130,20 +130,20 @@ Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default
 (64k workstation / 16k VM, `OLLAMA_NUM_PARALLEL=1`) via `zz-context.conf` systemd
 drop-ins — the stock default silently truncates agentic prompts.
 
-### Local coding agent (oh-my-pi)
+### Local coding agent (OpenCode)
 
-[omp](https://github.com/can1357/oh-my-pi) runs on the workstation against the LiteLLM
-gateway — a terminal coding agent (LSP, subagents, browser tools) powered entirely by
-local GPUs. Default model: `ws/qwen3.8:27b` on the 5090.
+[OpenCode](https://github.com/anomalyco/opencode) runs on the workstation against the LiteLLM
+gateway — a terminal coding agent powered entirely by local GPUs.
+Default model: `ws/qwen3.8:27b` on the 5090.
 
 ```bash
-omp "refactor this function"       # interactive
-omp -p "explain this error"        # print mode
-omp --model ws/qwen3.6:35b-a3b "..."  # switch model (faster MoE)
+opencode                                              # interactive TUI in the current folder
+opencode run --auto "fix the failing tests"           # one-shot
+opencode run -m homelab/ws/qwen3.6:35b-a3b "..."      # switch model (faster MoE)
 ```
 
-Config: `~/.omp/agent/models.yml` (provider → `http://llm.home.lab/v1`, `api: openai-completions`);
-setup notes and gotchas in [CLAUDE.md](CLAUDE.md#oh-my-pi-omp--local-coding-agent-on-the-workstation).
+Config: `~/.config/opencode/opencode.jsonc` (provider → `http://llm.home.lab/v1`);
+setup notes and gotchas in [CLAUDE.md](CLAUDE.md#opencode--local-coding-agent-on-the-workstation).
 
 ## Remote Access (WireGuard VPN)
 
