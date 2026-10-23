@@ -1,0 +1,22 @@
+#!/bin/bash
+# Create a game account (registration is closed while AUTOREG=0). The password is read from stdin.
+#   kubectl -n swgemu exec -i deploy/core3 -- add-account <username> [admin_level] <<< 'password'
+# admin_level 15 is a full admin. The password is stored as unsalted SHA1, which Core3 accepts once
+# and replaces with its salted SHA256 on the first login.
+set -euo pipefail
+
+user=${1:?usage: add-account <username> [admin_level] < password}
+level=${2:-0}
+[[ $user =~ ^[A-Za-z0-9_]{3,32}$ ]] || { echo "username must be 3-32 letters, digits or _" >&2; exit 2; }
+[[ $level =~ ^[0-9]+$ ]] || { echo "admin_level must be a number" >&2; exit 2; }
+IFS= read -r password || true
+[ -n "$password" ] || { echo "no password on stdin" >&2; exit 2; }
+
+export MYSQL_PWD=$DBPASS
+mariadb --host="${DBHOST:-mariadb}" --port="${DBPORT:-3306}" --user="${DBUSER:-swgemu}" swgemu <<EOF
+SET @pw = SHA1('$(printf '%s' "$password" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")');
+INSERT INTO accounts (username, password, station_id, salt, admin_level)
+SELECT '$user', @pw, FLOOR(RAND() * 4294967295), '', $level
+WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE username = '$user');
+SELECT IF(ROW_COUNT() > 0, 'created', 'already exists') AS '$user';
+EOF

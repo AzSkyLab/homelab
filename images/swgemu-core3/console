@@ -1,0 +1,8 @@
+#!/bin/bash
+# Send a command to the running Core3 server console; its output shows up in the pod log.
+#   kubectl -n swgemu exec deploy/core3 -- console help
+set -euo pipefail
+
+[ $# -gt 0 ] || { echo "usage: console <command> [args]" >&2; exit 2; }
+[ -p /run/core3/console ] || { echo "core3 is not running yet" >&2; exit 1; }
+printf '%s\n' "$*" > /run/core3/console

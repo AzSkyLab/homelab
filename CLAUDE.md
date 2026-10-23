@@ -38,6 +38,7 @@ homelab/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
 │   │   ├── litellm/             # LiteLLM API gateway
 │   │   ├── mmo/                 # MMO game server (syncs deploy/k8s from azskylab/videogame)
+│   │   ├── swgemu/              # SWGEmu Core3 (Star Wars Galaxies emulator) + MariaDB
 │   │   ├── traefik-public/      # Second Traefik, internet-facing, game only (10.0.20.83)
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
 │   └── manifests/
@@ -45,7 +46,9 @@ homelab/
 │       ├── arc/                  # ARC runner CA certificate
 │       ├── cert-manager-ca/     # Internal CA issuers + Let's Encrypt issuers (letsencrypt-issuers.yml)
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
+│       ├── swgemu/              # Core3 Deployment + UDP LoadBalancer (10.0.20.84), MariaDB
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
+├── images/swgemu-core3/          # Core3 server image (Dockerfile, entrypoint, console + add-account helpers)
 ├── workstation/ai-3d/            # Local AI 3D service on the workstation (ComfyUI, TRELLIS.2, SDXL)
 └── docs/                         # Network design, Unifi setup, AD migration
 ```
@@ -74,6 +77,7 @@ homelab/
 | Ollama (Workstation) | 10.0.10.40 | `desktop.home.lab` |
 | LiteLLM | 10.0.20.80 | `llm.home.lab` (via Traefik) |
 | WireGuard | 10.0.20.21 (hostNetwork) | `vpn.home.lab` (web UI) |
+| SWGEmu Core3 LB | 10.0.20.84 | — (UDP 44453 login, 44462 ping, 44463 zone; TCP 44455 status) |
 
 ### Kubeconfig
 
@@ -233,6 +237,7 @@ spec:
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
 | MMO game server | mmo | GitHub azskylab/videogame, private (deploy/k8s/) | `wss://jankmmo.duckdns.org` (public) |
+| SWGEmu Core3 | swgemu | homelab (kubernetes/manifests/swgemu/), image from images/swgemu-core3 | UDP `10.0.20.84:44453` |
 
 ## External PostgreSQL
 
@@ -340,6 +345,11 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/mmo/signup-code` | mmo-server (`MMO_SIGNUP_CODE`) | mmo | Invite code players type to create an account |
 | `homelab/mmo/argocd-deploy-key` | videogame-repo | argocd | Read-only GitHub deploy key so ArgoCD can read the private videogame repo |
 | — (copied from corpocache) | ghcr-pull-secret | mmo | GHCR pull secret, attached to the namespace's `default` ServiceAccount |
+| `homelab/swgemu/db-password` | swgemu-secrets (`db-password`) | swgemu | MariaDB `swgemu` user, used by Core3 |
+| `homelab/swgemu/db-root-password` | swgemu-secrets (`db-root-password`) | swgemu | MariaDB root |
+| `homelab/swgemu/db-secret` | swgemu-secrets (`db-secret`) | swgemu | Core3 `DBSecret`, mixed into every account password hash (changing it breaks all logins) |
+| `homelab/swgemu/admin-password` | — | — | Game account `cameren` (admin level 15) |
+| — (copied from corpocache) | ghcr-pull-secret | swgemu | GHCR pull secret, attached to the namespace's `default` ServiceAccount |
 
 ### Recreating a K8s Secret from pass
 
@@ -563,6 +573,82 @@ kubectl -n argocd label secret videogame-repo argocd.argoproj.io/secret-type=rep
 ```
 
 The database was made with `ansible-playbook playbooks/create-app-db.yml -e app_name=mmo -e app_db_password="$(pass homelab/mmo/db-password)"`.
+
+## SWGEmu Core3 (Star Wars Galaxies Emulator)
+
+[swgemu/Core3](https://github.com/swgemu/Core3) (pre-CU SWG server, C++, AGPL) runs in the `swgemu` namespace with its
+own MariaDB. Upstream only ships a dev container (gdb, screen, interactive shell), so the image is our own:
+`images/swgemu-core3/`.
+
+### Architecture
+
+```
+SWG client → UDP 44453 (login) → core3 LB 10.0.20.84 → core3 pod
+           ← galaxy table hands out GALAXY_ADDRESS:44463 (zone) and :44462 (ping)
+core3 pod → mariadb:3306 (accounts, characters list, galaxy row)
+core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) and /tre (PVC core3-tre: client TRE files)
+```
+
+### Key Details
+
+| Setting | Value |
+|---------|-------|
+| Image | `ghcr.io/azskylab/swgemu-core3:<core3 short sha>` (private), built on the workstation, tag in `core3.yml` |
+| Core3 commit | `CORE3_REF` build arg in the Dockerfile (unstable branch) |
+| Galaxy | `Homelab`, id 2; address from `GALAXY_ADDRESS` (written into the `galaxy` table at every start) |
+| Registration | Closed (`AUTOREG=0`); make accounts with `add-account` |
+| Admin account | `cameren`, admin level 15 (`pass homelab/swgemu/admin-password`) |
+| Storage | `local-path`: `mariadb-data` 5Gi, `core3-data` 20Gi, `core3-tre` 5Gi (all landed on k3s-agent-01) |
+| Resources | ~3 GiB RSS idle with all 12 ground + 10 space zones; limit 12Gi; boot ≈ 1 min |
+| TRE files (source) | `~/Games/swg-original/tre` on the workstation (51 needed + 2 hotfix, 2.8 GB) |
+
+### Important Design Decisions and Gotchas
+
+- **CPU target.** The agents are Sandy Bridge (E5-2670: AVX, no AVX2/BMI/FMA). Upstream builds with `-march=native`,
+  which on the workstation would emit instructions that crash on the agents. The Dockerfile sets `ENABLE_NATIVE=OFF`,
+  `-march=sandybridge`, and fails the build if objdump finds AVX2/BMI/FMA opcodes.
+- **Checkout path must not contain `src/`.** `src/CMakeLists.txt` derives autogen paths by replacing every `src/` in
+  the absolute path; a checkout at `/src` breaks every IDL object ("no such file"). The image builds in `/core3`.
+- **Legacy docker builder here** (no buildx), so no `COPY --chmod`.
+- **Console on a FIFO.** Core3 reads commands from stdin; at EOF its reader would spin. The entrypoint feeds stdin from
+  `/run/core3/console` (held open) and the `console` helper writes to it. Output goes to the pod log.
+- **Clean stops.** No SIGTERM handler in Core3, so the entrypoint traps it and sends `shutdown 0` (full save, then exit).
+  Measured: ~80 s with an empty world; `terminationGracePeriodSeconds: 600`. Never `kubectl delete pod --force`.
+  No liveness probe on purpose (a slow load or save must not be killed); readiness = status port 44455.
+- **TRE files.** The server reads game data from the original client files. 21 came from the 2003 retail discs
+  (`unshield` on `data1.cab`); the JTL `data_sku1_*` and all `patch_*` files came from the SWGEmu Launchpad mirror
+  `http://www.launchpad2.net/SWGEmu/`, checked against its `required2.txt` MD5s (what the official launcher does for
+  disc owners). The entrypoint waits, logging what's missing, until every `TreFiles` entry exists in `/tre`.
+- **Accounts.** `add-account` inserts unsalted SHA1; Core3 accepts that once and rewrites it as
+  SHA256(`DBSecret` + password + salt) on first login.
+
+### Common Tasks
+
+```bash
+kubectl -n swgemu logs deploy/core3 -f
+kubectl -n swgemu exec deploy/core3 -- console help             # also: save, chars, broadcast <msg>, shutdown <min>
+kubectl -n swgemu exec -i deploy/core3 -- add-account <name> [admin_level] <<< '<password>'
+# Status XML (players online, uptime)
+timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.20.84/44455; cat <&3'
+# Copy TRE files onto a fresh core3-tre volume (pod waits for them), then verify
+tar cf - -C ~/Games/swg-original/tre . | kubectl -n swgemu exec -i deploy/core3 -- tar xf - -C /tre
+# Update Core3: bump CORE3_REF in images/swgemu-core3/Dockerfile, then
+cd images/swgemu-core3 && docker build --build-arg JOBS=24 -t ghcr.io/azskylab/swgemu-core3:<sha8> . \
+  && docker push ghcr.io/azskylab/swgemu-core3:<sha8>      # then set the tag in core3.yml and push
+```
+
+### Recreating K8s Secrets
+
+```bash
+kubectl create namespace swgemu
+kubectl -n swgemu create secret generic swgemu-secrets \
+  --from-literal=db-password="$(pass homelab/swgemu/db-password)" \
+  --from-literal=db-root-password="$(pass homelab/swgemu/db-root-password)" \
+  --from-literal=db-secret="$(pass homelab/swgemu/db-secret)"
+kubectl -n corpocache get secret ghcr-pull-secret -o json \
+  | jq '{apiVersion,kind,type,data,metadata:{name:"ghcr-pull-secret",namespace:"swgemu"}}' | kubectl apply -f -
+kubectl -n swgemu patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
+```
 
 ## GitHub Actions CI/CD (ARC)
 

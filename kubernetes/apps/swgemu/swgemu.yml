@@ -1,0 +1,25 @@
+---
+# SWGEmu Core3 (Star Wars Galaxies emulator) and its MariaDB. Secrets and the client TRE files are put in by hand,
+# see the SWGEmu section of CLAUDE.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: swgemu
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: applications
+  source:
+    repoURL: https://github.com/azskylab/homelab.git
+    targetRevision: main
+    path: kubernetes/manifests/swgemu/
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: swgemu
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

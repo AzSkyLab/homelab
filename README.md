@@ -88,6 +88,7 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | CorpoCache | [cache.home.lab](https://cache.home.lab) | Corporate cache tool |
 | WireGuard | [vpn.home.lab](https://vpn.home.lab) | Remote access VPN (wg-easy) |
 | MMO game server | `wss://jankmmo.duckdns.org` (public) | Game server from azskylab/videogame; friends connect from the internet |
+| SWGEmu Core3 | `10.0.20.84` (UDP 44453) | Star Wars Galaxies (pre-CU) emulator server, built from swgemu/Core3 |
 
 ## AI / LLM Infrastructure
 

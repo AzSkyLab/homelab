@@ -1,0 +1,141 @@
+---
+# SWGEmu Core3 server. Image built from images/swgemu-core3 (see CLAUDE.md, SWGEmu section).
+# World state (Berkeley DB), navmeshes and logs live on core3-data; the SWG client TRE files on core3-tre.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core3-data
+  namespace: swgemu
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: core3-tre
+  namespace: swgemu
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core3
+  namespace: swgemu
+  labels:
+    app: core3
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: core3
+  template:
+    metadata:
+      labels:
+        app: core3
+    spec:
+      # SIGTERM makes the entrypoint send "shutdown 0" (final save); give it time to finish
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: core3
+          image: ghcr.io/azskylab/swgemu-core3:403893d9
+          env:
+            - name: DBHOST
+              value: mariadb
+            - name: DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: swgemu-secrets
+                  key: db-password
+            - name: DBSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: swgemu-secrets
+                  key: db-secret
+            - name: GALAXY_NAME
+              value: Homelab
+            # Handed to clients by the login server as the zone server address
+            - name: GALAXY_ADDRESS
+              value: "10.0.20.84"
+            # Closed registration: make accounts with add-account
+            - name: AUTOREG
+              value: "0"
+          ports:
+            - name: login
+              containerPort: 44453
+              protocol: UDP
+            - name: status
+              containerPort: 44455
+              protocol: TCP
+            - name: ping
+              containerPort: 44462
+              protocol: UDP
+            - name: zone
+              containerPort: 44463
+              protocol: UDP
+          # The status server comes up once the zones have loaded (several minutes, longer on first boot
+          # while navmeshes build). No liveness probe: a slow load must not get the pod killed mid-save.
+          readinessProbe:
+            tcpSocket:
+              port: status
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              memory: 12Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tre
+              mountPath: /tre
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: core3-data
+        - name: tre
+          persistentVolumeClaim:
+            claimName: core3-tre
+---
+# The router forwards the game ports to this address. Local keeps players' real source addresses.
+apiVersion: v1
+kind: Service
+metadata:
+  name: core3
+  namespace: swgemu
+  annotations:
+    metallb.universe.tf/address-pool: k8s-vlan-pool
+    metallb.universe.tf/loadBalancerIPs: "10.0.20.84"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: core3
+  ports:
+    - name: login
+      port: 44453
+      targetPort: login
+      protocol: UDP
+    - name: status
+      port: 44455
+      targetPort: status
+      protocol: TCP
+    - name: ping
+      port: 44462
+      targetPort: ping
+      protocol: UDP
+    - name: zone
+      port: 44463
+      targetPort: zone
+      protocol: UDP
