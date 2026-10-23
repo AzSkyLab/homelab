@@ -656,7 +656,7 @@ function LivingCities:forget(key, oid)
 		LivingTalk:npcGone(oid)
 	end
 
-	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout", "walkStart", "leg", "legNo", "viaHub", "stall", "lastX", "lastY", "lastCell"}) do
+	for _, field in ipairs({"seat", "gen", "seq", "state", "spot", "slot", "stuck", "walkTimeout", "walkStart", "leg", "legNo", "viaHub", "stall", "lastX", "lastY", "lastCell", "talkUntil"}) do
 		deleteData(npcKey(oid, field))
 	end
 
@@ -1338,6 +1338,7 @@ function LivingCities:chatterTick(pNothing, args)
 
 	local now = os.time()
 	local speakChance = math.floor(100000 * self.chatterSeconds / self.chatterEvery)
+	local playersNear = false
 
 	for _, pNpc in ipairs(self:members(key)) do
 		local oid = SceneObject(pNpc):getObjectID()
@@ -1345,6 +1346,10 @@ function LivingCities:chatterTick(pNothing, args)
 
 		if state == LINGERING or state == WALKING then
 			local players = SceneObject(pNpc):getPlayersInRange(self.chatterRange) or {}
+
+			if #players > 0 then
+				playersNear = true
+			end
 
 			if #players > 0 or self:awake() then
 				local action = self:greetTarget(pNpc, oid, players, now)
@@ -1360,6 +1365,11 @@ function LivingCities:chatterTick(pNothing, args)
 				end
 			end
 		end
+	end
+
+	-- Phase 2: keep the language model loaded while someone might talk to the crowd
+	if playersNear and LivingTalk ~= nil then
+		LivingTalk:warm()
 	end
 
 	createEvent(self.chatterSeconds * 1000, "LivingCities", "chatterTick", nil, args)

@@ -62,7 +62,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates libatomic1 libboost-atomic1.74.0 libboost-thread1.74.0 libdb5.3 libjemalloc2 liblua5.3-0 libmariadb3 libssl3 \
-        mariadb-client procps tzdata zlib1g; \
+        mariadb-client procps python3 tzdata zlib1g; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --uid 44400 --user-group --home-dir /opt/swgemu --shell /bin/bash swgemu
 
@@ -72,6 +72,8 @@ COPY entrypoint.sh /usr/local/bin/entrypoint
 COPY console add-account /usr/local/bin/
 # Our scripts, over Core3's empty custom_scripts hooks (see custom_scripts/ and the SWGEmu section of CLAUDE.md)
 COPY custom_scripts /opt/swgemu/bin/scripts/custom_scripts
+# The talk bridge (Phase 2: NPCs that talk), run as a second container from this image; see core3.yml
+COPY talk /opt/swgemu/talk
 
 # Runtime state lives on the /data volume; config-local.lua and the console FIFO are made at start in /run/core3
 RUN set -eux; \

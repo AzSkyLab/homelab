@@ -109,6 +109,41 @@ spec:
               mountPath: /data
             - name: tre
               mountPath: /tre
+            - name: talk
+              mountPath: /run/talk
+        # NPCs that talk: Core3's Lua writes request files to /run/talk, this bridge asks LiteLLM and writes the
+        # replies back (images/swgemu-core3/talk/talk_bridge.py). Same image as Core3: keep both image tags equal.
+        # Without the key the NPCs answer with canned lines; without this container they don't answer at all.
+        # The shell loop restarts the bridge in place if it ever exits, so a bridge crash can't CrashLoop the pod
+        # (that would mark it NotReady and drop the game's LoadBalancer endpoint); it exits on SIGTERM.
+        - name: talk
+          image: ghcr.io/azskylab/swgemu-core3:403893d9
+          command: ["sh", "-c", "trap 'exit 0' TERM INT; while :; do python3 /opt/swgemu/talk/talk_bridge.py & wait $!; sleep 10; done"]
+          env:
+            - name: TALK_DIR
+              value: /run/talk
+            - name: LITELLM_URL
+              value: http://litellm.litellm.svc:4000/v1
+            - name: TALK_MODEL
+              value: vm/qwen3.8:27b
+            - name: LITELLM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: swgemu-secrets
+                  key: litellm-key
+                  optional: true
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: talk
+              mountPath: /run/talk
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -116,6 +151,9 @@ spec:
         - name: tre
           persistentVolumeClaim:
             claimName: core3-tre
+        - name: talk
+          emptyDir:
+            sizeLimit: 16Mi
 ---
 # The router forwards the game ports to this address. Local keeps players' real source addresses.
 apiVersion: v1
