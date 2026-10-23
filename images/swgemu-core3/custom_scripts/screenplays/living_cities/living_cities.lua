@@ -166,6 +166,26 @@ local function capitalize(word)
 end
 
 -- "a:b:c" for event arguments, and back
+-- Human players in range. Bot players (Phase 3) are player creatures too, but the crowd doesn't greet them, chatter
+-- for them or count them as an audience.
+local function humansInRange(pNpc, range)
+	local players = SceneObject(pNpc):getPlayersInRange(range) or {}
+
+	if isBot == nil then
+		return players
+	end
+
+	local humans = {}
+
+	for _, pPlayer in ipairs(players) do
+		if not isBot(pPlayer) then
+			table.insert(humans, pPlayer)
+		end
+	end
+
+	return humans
+end
+
 local function packArgs(...)
 	return table.concat({...}, ":")
 end
@@ -219,7 +239,7 @@ function LivingCities:nobodyNear(pNpc, range)
 		return false
 	end
 
-	return #(SceneObject(pNpc):getPlayersInRange(range) or {}) == 0
+	return #humansInRange(pNpc, range) == 0
 end
 
 -- Start and restart
@@ -1345,7 +1365,7 @@ function LivingCities:chatterTick(pNothing, args)
 		local state = readData(npcKey(oid, "state"))
 
 		if state == LINGERING or state == WALKING then
-			local players = SceneObject(pNpc):getPlayersInRange(self.chatterRange) or {}
+			local players = humansInRange(pNpc, self.chatterRange)
 
 			if #players > 0 then
 				playersNear = true

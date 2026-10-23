@@ -10,9 +10,10 @@ local MIND = 6 -- CreatureAttribute::MIND
 BotDoctor = ScreenPlay:new {
 	screenplayName = "BotDoctor",
 
-	-- Core3's ranges: HealEnhanceCommand 7 m, HealWoundCommand 6 m
-	enhanceRange = 7,
-	woundRange = 6,
+	-- Half a metre inside Core3's ranges (HealEnhanceCommand 7 m, HealWoundCommand 6 m), so a command we start is
+	-- never refused for range (the refusal would go to the bot's missing client and the step would vanish)
+	enhanceRange = 6.5,
+	woundRange = 5.5,
 	-- Further than this, or on another planet, a patient gets directions instead of "come closer"
 	roomRange = 30,
 	-- A request from out of reach waits this long (seconds) for the patient to come over (checked every tick)
@@ -496,7 +497,7 @@ function BotDoctor:step(pBot, args)
 	local range = enhancing and self.enhanceRange or self.woundRange
 	local base = self:packItem(gen, seq, item)
 
-	if dist == nil or dist > range + 1 then
+	if dist == nil or dist > range then
 		if enhancing or item.kind == "wounds" then
 			self:say(pBot, oid, item.oid, item.channel, "wandered", pPatient ~= nil and CreatureObject(pPatient):getFirstName() or nil)
 			self:finish(pBot)
@@ -541,6 +542,24 @@ function BotDoctor:command(pBot, oid, command, targetOid, argument, gap)
 	writeData(key(oid, "readyAt"), getTimestampMilli() + gap)
 end
 
+-- Logs the enhancements a patient has (an event on the patient, so only the patient is locked)
+function BotDoctor:logBuffs(pPatient, args)
+	local a = unpackArgs(args)
+	local landed = {}
+
+	for _, buff in ipairs(botGetBuffs(pPatient) or {}) do
+		local attribute = tostring(buff.name or ""):lower():match("medical_enhance_(%a+)")
+
+		if attribute ~= nil then
+			table.insert(landed, attribute .. " +" .. self:buffAmount(pPatient, attribute, buff) .. " " ..
+				math.floor((tonumber(buff.secondsLeft) or 0) / 60) .. " min")
+		end
+	end
+
+	print("BotJobs: " .. BotJobs:name(num(a[1])) .. " buffed " .. CreatureObject(pPatient):getFirstName() .. ": " ..
+		(#landed > 0 and table.concat(landed, ", ") or "no enhancement buffs found") .. (a[2] ~= "-" and a[2] or ""))
+end
+
 -- The treatment is over: log what landed, a line, the next patient
 function BotDoctor:done(pBot, args)
 	local a = unpackArgs(args)
@@ -560,19 +579,8 @@ function BotDoctor:done(pBot, args)
 		local woundsLeft = wound ~= nil and ("; " .. amount .. " wounds left on " .. wound.name) or ""
 
 		if item.kind == "buff" then
-			local landed = {}
-
-			for _, buff in ipairs(botGetBuffs(pPatient) or {}) do
-				local attribute = tostring(buff.name or ""):lower():match("medical_enhance_(%a+)")
-
-				if attribute ~= nil then
-					table.insert(landed, attribute .. " +" .. self:buffAmount(pPatient, attribute, buff) .. " " ..
-						math.floor((tonumber(buff.secondsLeft) or 0) / 60) .. " min")
-				end
-			end
-
-			print("BotJobs: " .. BotJobs:name(oid) .. " buffed " .. patientName .. ": " ..
-				(#landed > 0 and table.concat(landed, ", ") or "no enhancement buffs found") .. woundsLeft)
+			-- Read the patient's buffs in an event on the patient, not here under the bot's lock
+			createEvent(1, "BotDoctor", "logBuffs", pPatient, packArgs(oid, woundsLeft ~= "" and woundsLeft or "-"))
 
 			if item.tipped ~= "1" and percent(self.tipChance) then
 				self:say(pBot, oid, item.oid, item.channel, "tip", patientName)

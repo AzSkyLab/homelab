@@ -413,6 +413,12 @@ void BotManager::scheduleLogin(BotRuntime* bot) {
 	Reference<BotEntry*> entry = bot->entry;
 
 	Core::getTaskManager()->executeTask([this, oid, entry]() {
+		// A shutdown that started after this login was queued: stay out, or the bot would be saved online
+		if (!keepTicking()) {
+			setState(oid, BotRuntime::OFFLINE);
+			return;
+		}
+
 		ManagedReference<SceneObject*> object = zoneServer->getObject(oid, true);	// loads it from the database
 		ManagedReference<CreatureObject*> creature = object != nullptr && object->isPlayerCreature() ? object->asCreatureObject() : nullptr;
 
