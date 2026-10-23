@@ -28,6 +28,8 @@ LivingTalk = ScreenPlay:new {
 	-- Keep the model loaded while players are near a crowd (seconds between pings)
 	warmEvery = 240,
 	maxChars = 200,
+	-- The bridge counts as gone when its heartbeat is older than this (seconds)
+	aliveSeconds = 60,
 }
 
 registerScreenPlay("LivingTalk", true)
@@ -91,14 +93,33 @@ function LivingTalk:start()
 	if f ~= nil then
 		f:close()
 		os.remove(probe)
-		print("LivingTalk: talk bridge directory ready")
+		print("LivingTalk: talk bridge directory ready" .. (self:bridgeAlive() and ", bridge running" or ", bridge not running yet"))
 	else
 		print("LivingTalk: no talk bridge directory at " .. self.dir .. "; the crowd won't answer")
 	end
 end
 
--- Write one request; false if the bridge's directory isn't there (no bridge: no answers, no fallback lines)
+-- Is the bridge running? It rewrites /run/talk/alive with the time several times a second.
+function LivingTalk:bridgeAlive()
+	local f = io.open(self.dir .. "/alive", "r")
+
+	if f == nil then
+		return false
+	end
+
+	local t = tonumber(f:read("l") or "")
+	f:close()
+
+	return t ~= nil and os.time() - t <= self.aliveSeconds
+end
+
+-- Write one request; false if no bridge is reading (no answers then, and no fallback lines, and nothing piles up in
+-- the shared directory)
 function LivingTalk:send(id, fields)
+	if not self:bridgeAlive() then
+		return false
+	end
+
 	local path = self.dir .. "/req/" .. id
 	local f = io.open(path .. ".tmp", "w")
 
@@ -243,7 +264,7 @@ function LivingTalk:devAsk()
 	print("LivingTalk: asking " .. readStringData(npcKey(oid, "name")) .. ": " .. text)
 
 	if not self:ask(pNpc, oid, "mos_eisley", 1, "Tester", text) then
-		print("LivingTalk: not sent (no bridge directory, or the last question is still waiting)")
+		print("LivingTalk: not sent (no bridge running, a question still waiting, or the quiet minute after a fallback)")
 	end
 end
 

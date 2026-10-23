@@ -7,6 +7,7 @@ shared directory (an emptyDir in the core3 pod):
   req/<id>.json   written by Lua (temp file, then rename): {"type": "say" | "gone" | "warm", ...}
   rep/<id>.txt    written here (temp file, then rename), read and removed by Lua:
                     line 1: "ok" or "fallback"; line 2: a mood (may be empty); line 3: what the NPC says
+  alive           the time, rewritten 4 times a second; Lua sends nothing when it is over a minute old
 
 "say" carries the NPC's persona (name, species, sex, kit, city, place), the player's name and what they said; the
 reply comes from the model with the NPC's city fact sheet and the last exchanges between the two. "gone" drops an
@@ -160,9 +161,14 @@ class Bridge:
         if match:
             try:
                 obj = json.loads(match.group(0))
-                text, mood = str(obj.get("say", "")), str(obj.get("mood", ""))
             except ValueError:
-                pass
+                return None
+            if not isinstance(obj, dict) or not isinstance(obj.get("say"), str):
+                return None
+            text, mood = obj["say"], str(obj.get("mood") or "")
+        elif text.startswith("{"):
+            # JSON cut off at max_tokens: don't speak half an object
+            return None
         text = text.translate(ASCII).encode("ascii", "ignore").decode("ascii")
         text = re.sub(r"\s+", " ", text.replace("*", "")).strip().strip('"').strip()
         if mood not in MOODS:
@@ -243,6 +249,8 @@ class Bridge:
         req_dir = os.path.join(TALK_DIR, "req")
         while True:
             try:
+                # Lua writes requests only while this is fresh, so a dead bridge doesn't fill the shared volume
+                write_atomic(os.path.join(TALK_DIR, "alive"), "%d\n" % time.time())
                 self.poll(req_dir)
             except Exception as e:  # a bad file or a full disk must not stop the bridge (or the pod)
                 log("loop error", type(e).__name__, str(e)[:200])

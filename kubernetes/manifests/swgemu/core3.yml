@@ -151,9 +151,11 @@ spec:
         - name: tre
           persistentVolumeClaim:
             claimName: core3-tre
+        # Small request and reply files; Lua stops writing when the bridge's heartbeat is stale, so this can't fill up
+        # and get the pod (Core3 too) evicted
         - name: talk
           emptyDir:
-            sizeLimit: 16Mi
+            sizeLimit: 64Mi
 ---
 # The router forwards the game ports to this address. Local keeps players' real source addresses.
 apiVersion: v1
