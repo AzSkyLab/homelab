@@ -48,7 +48,7 @@ homelab/
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
 │       ├── swgemu/              # Core3 Deployment + UDP LoadBalancer (10.0.20.84), MariaDB
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
-├── images/swgemu-core3/          # Core3 server image (Dockerfile, entrypoint, console + add-account helpers)
+├── images/swgemu-core3/          # Core3 server image (Dockerfile, entrypoint, console + add-account helpers, custom_scripts, dev/ test server)
 ├── workstation/ai-3d/            # Local AI 3D service on the workstation (ComfyUI, TRELLIS.2, SDXL)
 └── docs/                         # Network design, Unifi setup, AD migration
 ```
@@ -596,8 +596,10 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
 
 | Setting | Value |
 |---------|-------|
-| Image | `ghcr.io/azskylab/swgemu-core3:<core3 short sha>` (private), built on the workstation, tag in `core3.yml` |
+| Image | `ghcr.io/azskylab/swgemu-core3:<core3 sha8>-<homelab sha7>` (private; the homelab part is the last commit touching `images/swgemu-core3/`), built on the workstation, tag in `core3.yml` |
 | Core3 commit | `CORE3_REF` build arg in the Dockerfile (unstable branch) |
+| Our scripts | `images/swgemu-core3/custom_scripts/`, copied over Core3's empty `bin/scripts/custom_scripts/` hooks (Living Cities: player-looking city crowds). Specs in `~/github/swgemu/specs/` |
+| Clock | `TZ=America/New_York` (scripts read the local hour) |
 | Galaxy | `Homelab`, id 2; address from `GALAXY_ADDRESS` (written into the `galaxy` table at every start) |
 | Registration | Closed (`AUTOREG=0`); make accounts with `add-account` |
 | Admin account | `cameren`, admin level 15 (`pass homelab/swgemu/admin-password`) |
@@ -628,6 +630,17 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
   persist in `/data/navmeshes`, so a restart resumes the build.
 - **Accounts.** `add-account` inserts unsalted SHA1; Core3 accepts that once and rewrites it as
   SHA256(`DBSecret` + password + salt) on first login.
+- **Our scripts never edit upstream files.** Core3 includes `scripts/custom_scripts/{screenplays/screenplays,mobile,
+  object,loot}/serverobjects.lua` last; ours live there. Screenplays reload live (`console reloadscreenplays`, then
+  `console runLuaFunction LivingCities:restart` to rebuild the crowds); mobile templates and outfits only load at boot.
+  The directory is owned by `swgemu`, so a quick test can `kubectl cp` a script into the pod; a restart goes back to the
+  image's copy.
+- **Local test server.** `images/swgemu-core3/dev/docker-compose.yml` runs our image on the workstation with only
+  Tatooine, Corellia and Naboo and `custom_scripts` bind-mounted. Build it once with `--build-arg
+  CORE3_CXX_EXTRA=-DDEBUG_AI` (tag `dev-debug-ai`): Core3 reads `AiAgentLoadTesting` (AI awake with no player near)
+  only in `DEBUG_AI` builds, and a Release build leaves every NPC standing until a player comes. Production leaves the
+  arg empty. Copy the three planets' navmeshes from the cluster into its data dir first, or the first boot builds
+  them.
 
 ### Common Tasks
 
@@ -639,9 +652,14 @@ kubectl -n swgemu exec -i deploy/core3 -- add-account <name> [admin_level] <<< '
 timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.20.84/44455; cat <&3'
 # Copy TRE files onto a fresh core3-tre volume (pod waits for them), then verify
 tar cf - -C ~/Games/swg-original/tre . | kubectl -n swgemu exec -i deploy/core3 -- tar xf - -C /tre
-# Update Core3: bump CORE3_REF in images/swgemu-core3/Dockerfile, then
-cd images/swgemu-core3 && docker build --build-arg JOBS=24 -t ghcr.io/azskylab/swgemu-core3:<sha8> . \
-  && docker push ghcr.io/azskylab/swgemu-core3:<sha8>      # then set the tag in core3.yml and push
+# Update Core3 (bump CORE3_REF in images/swgemu-core3/Dockerfile) or our scripts: commit, then
+tag=$(grep -oP 'CORE3_REF=\K.{8}' images/swgemu-core3/Dockerfile)-$(git log -1 --format=%h -- images/swgemu-core3)
+cd images/swgemu-core3 && docker build --build-arg JOBS=24 -t ghcr.io/azskylab/swgemu-core3:$tag . \
+  && docker push ghcr.io/azskylab/swgemu-core3:$tag       # then set the tag in core3.yml and push
+# Living Cities (crowd report, rebuild the crowds, every NPC's state)
+kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:report
+kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:restart
+kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:dump
 ```
 
 ### Recreating K8s Secrets
