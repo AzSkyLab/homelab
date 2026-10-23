@@ -14,6 +14,11 @@ data:
         litellm_params:
           model: "ollama_chat/qwen3-coder:30b"
           api_base: "http://10.0.20.30:11434"
+      # Abliterated (refusals removed) Qwen3.6 27B, imported from huihui-ai's GGUF (Q4_K), not the Ollama library
+      - model_name: "vm/qwen3.6-abliterated:27b"
+        litellm_params:
+          model: "ollama_chat/qwen3.6-abliterated:27b"
+          api_base: "http://10.0.20.30:11434"
       - model_name: "vm/qwen3.8:27b"
         litellm_params:
           model: "ollama_chat/qwen3.8:27b"
@@ -22,6 +27,10 @@ data:
       - model_name: "ws/qwen3-coder:30b"
         litellm_params:
           model: "ollama_chat/qwen3-coder:30b"
+          api_base: "http://10.0.10.40:11434"
+      - model_name: "ws/qwen3.6-abliterated:27b"
+        litellm_params:
+          model: "ollama_chat/qwen3.6-abliterated:27b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ws/qwen3.6:35b-a3b"
         litellm_params:
@@ -39,6 +48,14 @@ data:
       - model_name: "ollama/qwen3-coder:30b"
         litellm_params:
           model: "ollama_chat/qwen3-coder:30b"
+          api_base: "http://10.0.10.40:11434"
+      - model_name: "ollama/qwen3.6-abliterated:27b"
+        litellm_params:
+          model: "ollama_chat/qwen3.6-abliterated:27b"
+          api_base: "http://10.0.20.30:11434"
+      - model_name: "ollama/qwen3.6-abliterated:27b"
+        litellm_params:
+          model: "ollama_chat/qwen3.6-abliterated:27b"
           api_base: "http://10.0.10.40:11434"
       - model_name: "ollama/qwen3.8:27b"
         litellm_params:

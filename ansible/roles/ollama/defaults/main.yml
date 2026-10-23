@@ -5,6 +5,7 @@ ollama_port: 11434
 ollama_version: "0.40.8"
 nvidia_driver_version: 580
 # What ollama-01 serves; keep in step with the vm/ entries in kubernetes/manifests/litellm/configmap.yml
+# (qwen3.6-abliterated:27b is served too but built from a Hugging Face GGUF, not pulled; see CLAUDE.md, LiteLLM)
 ollama_models:
   - qwen3.8:27b
   - qwen3-coder:30b

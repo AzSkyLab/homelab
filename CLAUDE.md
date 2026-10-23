@@ -385,6 +385,16 @@ Models are listed explicitly per backend in `kubernetes/manifests/litellm/config
 Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
 and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster).
 
+`qwen3.6-abliterated:27b` (both backends, since 2026-10-23) is huihui-ai's abliterated (refusals removed) Qwen3.6 27B,
+not from the Ollama library, so `ollama pull` and the Ansible role can't fetch it. To rebuild it on a backend:
+- Download `Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf` (16.8 GB) and `mmproj-model-f16.gguf` from
+  `huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF` and check them against the repo's LFS sha256. `ollama pull
+  hf.co/...:Q4_K` doesn't work: Hugging Face only accepts standard quant names like `Q4_K_M` as tags.
+- `ollama create qwen3.6-abliterated:27b -f Modelfile`. The Modelfile is `ollama show --modelfile qwen3.6:35b-a3b`
+  minus its `FROM`, plus two `FROM` lines (the model GGUF, then the mmproj), so it gets the same renderer, parser,
+  sampling and MTP drafting.
+- MTP (the `nextn` layer, `draft_num_predict 2`) roughly doubles speed: 66 → 115 tok/s on the 5090.
+
 ### Ollama context length (important)
 
 Ollama defaults to a 4096 context, which silently truncates agentic prompts. Fixed via
