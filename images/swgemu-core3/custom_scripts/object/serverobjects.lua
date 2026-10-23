@@ -1,0 +1,1 @@
+-- Our additions to Core3 (homelab images/swgemu-core3/custom_scripts). Core3 includes this file last.

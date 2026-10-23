@@ -34,11 +34,15 @@ RUN set -eux; \
 
 WORKDIR /core3/MMOCoreORB/build/unix/ninja
 
+# Extra compiler flags, empty for production. The local test server uses -DDEBUG_AI, the only build where
+# Core3.AiAgent.AiAgentLoadTesting keeps AI running with no player near (see dev/docker-compose.yml).
+ARG CORE3_CXX_EXTRA=
+
 RUN set -eux; \
     cmake -G Ninja ../../.. \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS="-march=sandybridge -mtune=sandybridge" \
-        -DCMAKE_CXX_FLAGS="-march=sandybridge -mtune=sandybridge" \
+        -DCMAKE_CXX_FLAGS="-march=sandybridge -mtune=sandybridge ${CORE3_CXX_EXTRA}" \
         -DENABLE_NATIVE=OFF \
         -DCOMPILE_TESTS=OFF \
         -DENABLE_BUILD_CLIENT=OFF \
@@ -58,7 +62,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates libatomic1 libboost-atomic1.74.0 libboost-thread1.74.0 libdb5.3 libjemalloc2 liblua5.3-0 libmariadb3 libssl3 \
-        mariadb-client procps zlib1g; \
+        mariadb-client procps tzdata zlib1g; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --uid 44400 --user-group --home-dir /opt/swgemu --shell /bin/bash swgemu
 
@@ -66,10 +70,14 @@ COPY --from=build /core3/MMOCoreORB/bin /opt/swgemu/bin
 COPY --from=build /core3/MMOCoreORB/sql /opt/swgemu/sql
 COPY entrypoint.sh /usr/local/bin/entrypoint
 COPY console add-account /usr/local/bin/
+# Our scripts, over Core3's empty custom_scripts hooks (see custom_scripts/ and the SWGEmu section of CLAUDE.md)
+COPY custom_scripts /opt/swgemu/bin/scripts/custom_scripts
 
 # Runtime state lives on the /data volume; config-local.lua and the console FIFO are made at start in /run/core3
 RUN set -eux; \
     chmod 755 /usr/local/bin/entrypoint /usr/local/bin/console /usr/local/bin/add-account; \
+    # Owned by the server user so a development loop can kubectl cp scripts in and reloadscreenplays
+    chown -R swgemu:swgemu /opt/swgemu/bin/scripts/custom_scripts; \
     ldd /opt/swgemu/bin/core3 | grep 'not found' && exit 1; \
     cd /opt/swgemu/bin; \
     for d in databases navmeshes log exports; do rm -rf "$d"; ln -s "/data/$d" "$d"; done; \

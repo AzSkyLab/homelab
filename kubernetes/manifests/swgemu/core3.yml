@@ -73,6 +73,9 @@ spec:
             # Upstream default is 6 parallel navmesh builds, which saturates a 4 vCPU agent
             - name: CORE3_CONFIG_EXTRA
               value: Core3.MaxNavMeshJobs = 2
+            # Our scripts read the local hour (Living Cities: quieter crowds late at night)
+            - name: TZ
+              value: America/New_York
           ports:
             - name: login
               containerPort: 44453

@@ -1,0 +1,51 @@
+# Local Core3 test server on the workstation, for trying custom_scripts without touching the cluster.
+# Production's Dockerfile and entrypoint, built once with -DDEBUG_AI: the only kind of build where
+# Core3.AiAgent.AiAgentLoadTesting keeps AI running with no player near, so NPCs walk and can be checked from the log
+# (a Release build leaves every NPC standing until a player comes). Only Tatooine, Corellia and Naboo. Our
+# custom_scripts are bind-mounted, so a Lua edit only needs `console reloadscreenplays` (mobile templates need a
+# restart), and the image never needs rebuilding for script changes.
+#
+#   cd images/swgemu-core3 && docker build --build-arg CORE3_CXX_EXTRA=-DDEBUG_AI -t ghcr.io/azskylab/swgemu-core3:dev-debug-ai .
+#   cd dev && docker compose up -d && docker compose logs -f core3
+#   docker compose exec core3 console runLuaFunction LivingCities:report
+#   docker compose down            # keeps the data dir; delete it for a fresh world
+#
+# Paths come from the environment (defaults below): SWG_TRE (the 53 TRE files), CORE3_DEV_DATA (world state,
+# navmeshes, logs; copy the three planets' navmeshes from the cluster to skip the long first build).
+name: core3-dev
+
+services:
+  mariadb:
+    image: mariadb:10.11.19
+    environment:
+      MARIADB_ROOT_PASSWORD: dev
+      MARIADB_DATABASE: swgemu
+      MARIADB_USER: swgemu
+      MARIADB_PASSWORD: dev
+    volumes:
+      - ${CORE3_DEV_DATA:-~/.cache/swgemu-scratch/data}/mysql:/var/lib/mysql
+
+  core3:
+    image: ${CORE3_IMAGE:-ghcr.io/azskylab/swgemu-core3:dev-debug-ai}
+    depends_on: [mariadb]
+    environment:
+      DBHOST: mariadb
+      DBPASS: dev
+      DBSECRET: dev-secret
+      GALAXY_NAME: Dev
+      GALAXY_ADDRESS: 127.0.0.1
+      AUTOREG: "1"
+      TZ: America/New_York
+      CORE3_CONFIG_EXTRA: |
+        Core3.MaxNavMeshJobs = 4
+        Core3.ZonesEnabled = {"corellia", "naboo", "tatooine"}
+        Core3.SpaceZonesEnabled = {}
+        Core3.AiAgent = {AiAgentLoadTesting = true}
+    volumes:
+      - ${SWG_TRE:-~/Games/swg-original/tre}:/tre:ro
+      - ${CORE3_DEV_DATA:-~/.cache/swgemu-scratch/data}:/data
+      - ../custom_scripts:/opt/swgemu/bin/scripts/custom_scripts:ro
+    # The cluster gives Core3 2 CPUs; a little more here because every creature on three planets stays awake
+    cpus: 6
+    mem_limit: 12g
+    stop_grace_period: 10m
