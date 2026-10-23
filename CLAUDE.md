@@ -599,7 +599,7 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
 | Registration | Closed (`AUTOREG=0`); make accounts with `add-account` |
 | Admin account | `cameren`, admin level 15 (`pass homelab/swgemu/admin-password`) |
 | Storage | `local-path`: `mariadb-data` 5Gi, `core3-data` 20Gi, `core3-tre` 5Gi (all landed on k3s-agent-01) |
-| Resources | ~3 GiB RSS idle with all 12 ground + 10 space zones; limit 12Gi; boot ≈ 1 min |
+| Resources | ~3–4 GiB RSS with all 12 ground + 10 space zones; limits 2 CPU / 12Gi; boot ≈ 1 min |
 | TRE files (source) | `~/Games/swg-original/tre` on the workstation (51 needed + 2 hotfix, 2.8 GB) |
 
 ### Important Design Decisions and Gotchas
@@ -619,6 +619,10 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
   (`unshield` on `data1.cab`); the JTL `data_sku1_*` and all `patch_*` files came from the SWGEmu Launchpad mirror
   `http://www.launchpad2.net/SWGEmu/`, checked against its `required2.txt` MD5s (what the official launcher does for
   disc owners). The entrypoint waits, logging what's missing, until every `TreFiles` entry exists in `/tre`.
+- **CPU limit (2) and `MaxNavMeshJobs = 2`.** Core3 builds navmeshes on first boot (and when regions change) with 6
+  parallel jobs by default. Uncapped, that pinned k3s-agent-01 at 100% (load 60 on 4 vCPUs); the MetalLB speaker there
+  failed its probes and crash-looped, which dropped every LB IP it announces (10.0.20.53, .80, .83, .84). Navmeshes
+  persist in `/data/navmeshes`, so a restart resumes the build.
 - **Accounts.** `add-account` inserts unsalted SHA1; Core3 accepts that once and rewrites it as
   SHA256(`DBSecret` + password + salt) on first login.
 

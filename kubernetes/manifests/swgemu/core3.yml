@@ -70,6 +70,9 @@ spec:
             # Closed registration: make accounts with add-account
             - name: AUTOREG
               value: "0"
+            # Upstream default is 6 parallel navmesh builds, which saturates a 4 vCPU agent
+            - name: CORE3_CONFIG_EXTRA
+              value: Core3.MaxNavMeshJobs = 2
           ports:
             - name: login
               containerPort: 44453
@@ -89,11 +92,14 @@ spec:
             tcpSocket:
               port: status
             periodSeconds: 15
+          # The CPU limit protects the node's other tenants: uncapped, the first-boot navmesh build took all 4 vCPUs
+          # of k3s-agent-01, MetalLB's speaker there failed its probes, and every LB IP it announces dropped
           resources:
             requests:
               cpu: "1"
               memory: 4Gi
             limits:
+              cpu: "2"
               memory: 12Gi
           volumeMounts:
             - name: data
