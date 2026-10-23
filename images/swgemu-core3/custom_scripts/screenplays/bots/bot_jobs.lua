@@ -50,6 +50,8 @@ BotJobs = ScreenPlay:new {
 	sayRange = 40,
 	-- Lines shown in the log are cut to this length
 	logChars = 120,
+	-- A long reply's next chat line follows this long after the last (ms), like someone typing
+	moreLineMs = 2500,
 }
 
 registerScreenPlay("BotJobs", true)
@@ -606,13 +608,90 @@ function BotJobs:act(pBot, playerOid, action, channel, brainLine)
 end
 
 -- Say a line, or tell it to the player when the talk was by tell. playerOid 0 with "spatial" just says it.
+-- A long reply in chat-sized lines (at most size characters), cut at sentence ends where possible
+local function chatLines(text, size)
+	local out = {}
+
+	while #text > size do
+		local cut = 0
+
+		for i = size, 40, -1 do
+			local c = text:sub(i, i)
+
+			if c == "." or c == "!" or c == "?" then
+				cut = i
+				break
+			end
+		end
+
+		if cut == 0 then
+			cut = text:sub(1, size):match("^.*() ") or size
+		end
+
+		table.insert(out, (text:sub(1, cut):gsub("^%s+", ""):gsub("%s+$", "")))
+		text = text:sub(cut + 1):gsub("^%s+", "")
+	end
+
+	if text ~= "" then
+		table.insert(out, text)
+	end
+
+	return out
+end
+
+-- Say a line, or tell it to the player when the talk was by tell. playerOid 0 with "spatial" just says it. A reply
+-- longer than a chat line goes out as several lines a moment apart, like a player typing.
 function BotJobs:reply(pBot, playerOid, channel, line, mood)
 	if line == nil or line == "" then
 		return
 	end
 
-	if LivingTalk ~= nil then
-		line = LivingTalk:cleanLine(line)
+	local oid = SceneObject(pBot):getObjectID()
+	local size = LivingTalk ~= nil and LivingTalk.maxChars or 200
+	local lines = chatLines((tostring(line):gsub("[%c]", " ")), size)
+
+	if #lines == 0 then
+		return
+	end
+
+	if #lines > 1 then
+		writeStringData(key(oid, "more"), table.concat(lines, "\n", 2))
+		createEvent(self.moreLineMs, "BotJobs", "replyMore", pBot, packArgs(readData(key(oid, "gen")), playerOid, channel))
+	end
+
+	self:sendLine(pBot, playerOid, channel, lines[1], mood)
+end
+
+-- The next line of a long reply
+function BotJobs:replyMore(pBot, args)
+	local a = unpackArgs(args)
+
+	if not self:current(pBot, a[1]) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local rest = readStringData(key(oid, "more"))
+
+	if rest == "" then
+		return
+	end
+
+	local first, others = rest:match("^([^\n]*)\n?(.*)$")
+
+	if others ~= nil and others ~= "" then
+		writeStringData(key(oid, "more"), others)
+		createEvent(self.moreLineMs, "BotJobs", "replyMore", pBot, args)
+	else
+		deleteStringData(key(oid, "more"))
+	end
+
+	self:sendLine(pBot, tonumber(a[2]), a[3], first, "")
+end
+
+function BotJobs:sendLine(pBot, playerOid, channel, line, mood)
+	if line == nil or line == "" then
+		return
 	end
 
 	local name = self:name(SceneObject(pBot):getObjectID())
