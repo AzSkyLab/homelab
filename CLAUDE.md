@@ -369,7 +369,7 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 - **`ws/<model>`** — routes to the workstation (RTX 5090)
 - **`ollama/<model>`** — load-balanced across whichever backend has the model
 
-Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup).
+Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup). Use `model: "ollama_chat/<model>"` in `litellm_params`: the `ollama/` prefix talks to `/api/generate` and fakes tool calls with JSON mode, which broke every tool-using client (omp, Open WebUI tools) until 2026-10-22.
 
 Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
 and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster).
