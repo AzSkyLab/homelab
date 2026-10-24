@@ -135,6 +135,31 @@ BotLines.crew = {
 	notMine = {
 		"That's not my line of work. Ask the others.",
 	},
+	-- Swoops (crew_swoop.lua), group chat: the leader mounted, got off, a fight started, or the swoop won't take
+	swoopMount = {
+		"Mounting up.",
+		"Calling my swoop.",
+		"Right behind you.",
+		"Swoop's coming.",
+		"On my bike.",
+	},
+	swoopOff = {
+		"Parking the swoop.",
+		"Off the bike.",
+		"Stowing my swoop.",
+		"Walking from here.",
+	},
+	swoopFight = {
+		"Off the bike!",
+		"Getting down to fight.",
+		"Contact! Off the swoop.",
+		"Dismounting, covering you.",
+	},
+	swoopFail = {
+		"Can't get my swoop going here. I'll run.",
+		"Swoop won't take. Catching up on foot.",
+		"No room for my bike here. Running.",
+	},
 	-- The model can't answer and nothing was asked for: one of these, then a quiet minute
 	fallback = {
 		"Hm?",

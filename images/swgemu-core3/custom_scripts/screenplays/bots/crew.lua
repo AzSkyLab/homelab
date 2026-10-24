@@ -24,6 +24,7 @@
 --   runLuaFunction BotCrew:devState:<first>                    a crew bot's state
 
 includeFile("../custom_scripts/screenplays/bots/crew_lines.lua")
+includeFile("../custom_scripts/screenplays/bots/crew_swoop.lua")
 
 -- CreatureAttribute, CreaturePosture, CreatureState
 local HEALTH, ACTION, MIND = 0, 3, 6
@@ -839,6 +840,7 @@ function BotCrew:step(pBot, oid, now)
 
 		put(ckey(oid, "leader"), SceneObject(pLeader):getObjectID())
 		self:scanHumans(g, oid)
+		BotCrewSwoop:tick(pBot, oid, pLeader, now)
 	end
 
 	local role = self:role(oid)
@@ -951,6 +953,7 @@ end
 
 function BotCrew:leaveForHome(pBot, oid, now)
 	self:missionLeft(pBot, oid)
+	BotCrewSwoop:release(pBot, oid)
 	putString(ckey(oid, "mode"), "leaving")
 	put(ckey(oid, "leavingAt"), now)
 
