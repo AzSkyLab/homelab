@@ -12,7 +12,6 @@ spec:
     - https://github.com/azskylab/homelab.git
     - https://github.com/azskylab/workouttracker.git
     - https://github.com/azskylab/CorpoCache.git
-    - git@github.com:AzSkyLab/videogame.git
   destinations:
     - namespace: "*"
       server: https://kubernetes.default.svc

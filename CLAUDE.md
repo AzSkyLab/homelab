@@ -37,10 +37,9 @@ homelab/
 │   │   ├── workout-tracker/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
 │   │   ├── litellm/             # LiteLLM API gateway
-│   │   ├── mmo/                 # MMO game server (syncs deploy/k8s from azskylab/videogame)
 │   │   ├── swgemu/              # SWGEmu Core3 (Star Wars Galaxies emulator) + MariaDB
 │   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
-│   │   ├── traefik-public/      # Second Traefik, internet-facing: the game and the file share only (10.0.20.83)
+│   │   ├── traefik-public/      # Second Traefik, internet-facing: the file share only (10.0.20.83)
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
 │   └── manifests/
 │       ├── ingress/              # Traefik Ingress resources for infra services
@@ -71,7 +70,7 @@ homelab/
 | Service | IP | DNS |
 |---------|-----|-----|
 | Traefik LB | 10.0.20.80 | `*.home.lab` ingress (internal only; never port-forward this) |
-| Traefik public LB | 10.0.20.83 | `jankmmo.duckdns.org`, `charknox.duckdns.org` (internet-facing: the game and the file share only) |
+| Traefik public LB | 10.0.20.83 | `charknox.duckdns.org` (internet-facing: the file share only) |
 | CoreDNS LB | 10.0.20.53 | Internal DNS |
 | PostgreSQL | 10.0.30.10 | `postgres.home.lab` |
 | Ollama (VM) | 10.0.20.30 | `ollama.home.lab` |
@@ -163,7 +162,8 @@ kubectl apply -f kubernetes/projects/infrastructure.yml
      - https://github.com/azskylab/<new-repo>.git
    ```
    Then apply manually: `kubectl apply -f kubernetes/projects/applications.yml`
-   A **private** repo also needs an ArgoCD repository Secret (a read-only deploy key over SSH; see the MMO section),
+   A **private** repo also needs an ArgoCD repository Secret (a read-only deploy key over SSH, a Secret labelled
+   `argocd.argoproj.io/secret-type=repository` in `argocd`),
    and the AppProject must list the SSH URL.
 
 3. **Add DNS entry** in `kubernetes/apps/coredns/coredns.yml` under `zoneFiles[0].contents`:
@@ -237,7 +237,6 @@ spec:
 | LiteLLM | litellm | homelab (kubernetes/manifests/litellm/) | https://llm.home.lab |
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
-| MMO game server | mmo | GitHub azskylab/videogame, private (deploy/k8s/) | `wss://jankmmo.duckdns.org` (public) |
 | SWGEmu Core3 | swgemu | homelab (kubernetes/manifests/swgemu/), image from images/swgemu-core3 | UDP `10.0.20.84:44453` |
 | File share | fileshare | homelab (kubernetes/manifests/fileshare/) | `https://charknox.duckdns.org` (public, password) |
 
@@ -344,10 +343,6 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomains kept on the home IP (`malliefivpn,charknox`) |
 | `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `friend`, SHA-512 hash) | fileshare | Download page password |
-| `homelab/mmo/db-password` | mmo-server (`DATABASE_URL`), mmo-backup (`PGPASSWORD`) | mmo | PostgreSQL password for the `mmo` database |
-| `homelab/mmo/signup-code` | mmo-server (`MMO_SIGNUP_CODE`) | mmo | Invite code players type to create an account |
-| `homelab/mmo/argocd-deploy-key` | videogame-repo | argocd | Read-only GitHub deploy key so ArgoCD can read the private videogame repo |
-| — (copied from corpocache) | ghcr-pull-secret | mmo | GHCR pull secret, attached to the namespace's `default` ServiceAccount |
 | `homelab/swgemu/db-password` | swgemu-secrets (`db-password`) | swgemu | MariaDB `swgemu` user, used by Core3 |
 | `homelab/swgemu/db-root-password` | swgemu-secrets (`db-root-password`) | swgemu | MariaDB root |
 | `homelab/swgemu/db-secret` | swgemu-secrets (`db-secret`) | swgemu | Core3 `DBSecret`, mixed into every account password hash (changing it breaks all logins) |
@@ -470,44 +465,23 @@ Local image and 3D generation on the workstation RTX 5090 for the game's art pip
 - **Licence to-do:** DINOv3 (used inside TRELLIS.2) comes from a re-upload; accept Meta's licence on the official
   `facebook/dinov3-vitl16-pretrain-lvd1689m` page once.
 
-## MMO Game Server (Public)
+## Public Door (traefik-public)
 
-The game server from `azskylab/videogame` and the file share (next section) are the only things in the lab that face
-the internet over TCP. They have their own door: a second Traefik on its own MetalLB address, so the router never forwards to the lab-wide Traefik.
+A second Traefik on its own MetalLB address (`10.0.20.83`, namespace `traefik-public`, serves only Ingresses of class
+`traefik-public`) is the lab's only internet-facing TCP entry, used by the file share (next section); the router never
+forwards to the lab-wide Traefik. Certificates come from the ClusterIssuer `letsencrypt-prod` (HTTP-01; `letsencrypt-staging` for tests).
 
-### Architecture
-
-```
-Internet → USG port forward (TCP 80, 443) → traefik-public LB 10.0.20.83 → Ingress (class traefik-public) → mmo-server:7777
-mmo-server pod → PostgreSQL VM 10.0.30.10 (database `mmo`)
-Players: wss://jankmmo.duckdns.org (Let's Encrypt certificate, TLS ends at traefik-public, the pod speaks plain ws)
-Downloads: https://jankmmo.duckdns.org/downloads/ → Ingress mmo-downloads → nginx (mmo-downloads pod) ← mirror sidecar ← GitHub Releases
-```
-
-### Key Details
-
-| Setting | Value |
-|---------|-------|
-| Public name | `jankmmo.duckdns.org` (DuckDNS, A record → home public IP) |
-| Public Traefik | `traefik-public` namespace, LB `10.0.20.83`, `--providers.kubernetesingress.ingressClass=traefik-public` |
-| Certificate | `mmo-server-tls` in `mmo`, ClusterIssuer `letsencrypt-prod` (HTTP-01), renews automatically |
-| Image | `ghcr.io/azskylab/mmo-server:latest` (private; built by the videogame repo's `image.yml` on ARC runners) |
-| ArgoCD app | `mmo` (project `applications`), `git@github.com:AzSkyLab/videogame.git`, path `deploy/k8s` |
-| Database | `mmo` on `10.0.30.10`, user `mmo` |
-| Backups | CronJob `mmo-backup`, daily 03:30 America/New_York, PVC `mmo-backups` |
-| Admin account | `cameren` (`MMO_ADMINS`); in-game `/who /kick /ban /unban /announce` |
-| Dev commands | Off (`MMO_DEV_COMMANDS=0`) |
-| Downloads | Deployment `mmo-downloads` (nginx-unprivileged + a curl mirror sidecar, images pinned by digest), PVC `mmo-downloads` 6 Gi; in the app's `include` list in `kubernetes/apps/mmo/mmo.yml` since 2026-10-17 |
-| Mirror token | Secret `mmo-downloads-token` (key `token`), `pass homelab/mmo/downloads-token`: fine-grained, videogame repo only, Contents read-only, made 2026-10-17, **expires about 2027-10-17** |
-| Update signing key | Private half in `pass mmo/update-signing-key` (top level, not under `homelab/`) and the repo secret `MMO_UPDATE_SIGNING_KEY`; public half committed as `tools/installer/update_key.pem` |
+**History:** it was built for the MMO game server (azskylab/videogame, `wss://jankmmo.duckdns.org`). The game was taken
+down on 2026-10-24 (namespace `mmo`, Argo app, database `mmo`, Grafana board, GHCR image all removed). The restore kit,
+including this section as it was, is in that repo: `docs/LAB_TEARDOWN.md` and `deploy/lab-wide/homelab/`.
 
 ### USG Port Forwards
 
 | Name | Protocol | WAN port | Forward IP | Forward port |
 |------|----------|----------|------------|--------------|
 | WireGuard VPN | UDP | 443 | `10.0.20.21` | 443 |
-| MMO https | TCP | 443 | `10.0.20.83` | 443 |
-| MMO http (Let's Encrypt) | TCP | 80 | `10.0.20.83` | 80 |
+| Public https | TCP | 443 | `10.0.20.83` | 443 |
+| Public http (Let's Encrypt) | TCP | 80 | `10.0.20.83` | 80 |
 
 Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. TCP and UDP 443 go to different hosts.
 
@@ -524,75 +498,25 @@ Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. 
   (`letsencrypt-issuers.yml`, `ingressTemplate`). Let's Encrypt follows the redirect and does not check the
   certificate behind it.
 - **Split DNS inside the cluster (manual, not in git).** From inside the LAN the public IP answers with the USG's own
-  login page (no hairpin for that path), so cert-manager's self-check failed. The k3s CoreDNS override resolves the game
-  name to the public Traefik inside the cluster. It lives in the `coredns-custom` ConfigMap in `kube-system`, key
-  `jankmmo.server`:
+  login page (no hairpin for that path), so cert-manager's self-check failed. The k3s CoreDNS override resolves a public
+  name to the public Traefik inside the cluster. It lives in the `coredns-custom` ConfigMap in `kube-system`, one key
+  per name (the game used `jankmmo.server`, removed 2026-10-24):
   ```
-  jankmmo.duckdns.org:53 {
+  <name>.duckdns.org:53 {
     errors
     hosts {
-      10.0.20.83 jankmmo.duckdns.org
+      10.0.20.83 <name>.duckdns.org
     }
   }
   ```
-  Recreate with `kubectl -n kube-system patch configmap coredns-custom --type merge -p '{"data":{"jankmmo.server":"..."}}'`
+  Add with `kubectl -n kube-system patch configmap coredns-custom --type merge -p '{"data":{"<name>.server":"..."}}'`
   then `kubectl -n kube-system rollout restart deploy/coredns`.
 - **Split DNS for LAN clients (in git, since 2026-10-18).** The lab CoreDNS (`coredns-external`, 10.0.20.53) has a
-  `jankmmo.duckdns.org` zone answering `10.0.20.83` (`kubernetes/apps/coredns/coredns.yml`), so home computers that use
-  10.0.20.53 reach the game and its downloads page. A device on a network whose DHCP hands out another DNS server still
-  gets the public IP and the USG login page (`nslookup jankmmo.duckdns.org` tells which).
+  zone answering `10.0.20.83` for each public name (`kubernetes/apps/coredns/coredns.yml`), so home computers that use
+  10.0.20.53 reach them. A device on a network whose DHCP hands out another DNS server still gets the public IP and the
+  USG login page (`nslookup <name>.duckdns.org` tells which).
 - **Testing from the LAN is misleading.** `curl https://<public IP>/` from inside answers with the USG login page for any
   host name (HTTP 200). Test the doors by address (`--resolve host:443:10.0.20.83`) or from a phone on mobile data.
-- **Private repo access.** ArgoCD reads the private videogame repo with a read-only deploy key (GitHub: repo settings ▸
-  Deploy keys, "ArgoCD (read-only)"); the ArgoCD repository Secret is `videogame-repo` in `argocd`, and the AppProject
-  `applications` lists the SSH URL `git@github.com:AzSkyLab/videogame.git`.
-- **Downloads mirror.** Every 5 minutes the sidecar reads the newest GitHub Release with the token, checks every file
-  against `SHA256SUMS` and switches `latest.json` last; a failed round keeps serving the old version. It gives up on a
-  tag after 3 failed tries, remembered in `/data/downloads/.failed` on the volume (survives restarts), and a release seen
-  before its assets finish uploading counts as a try. To make it try again:
-  `kubectl -n mmo exec deploy/mmo-downloads -c mirror -- rm /data/downloads/.failed`. When the token lapses it logs
-  "cannot read the latest release"; make a new one and replace the Secret.
-- **Image pulls.** `ghcr-pull-secret` (copied from `corpocache`) is attached to the `mmo` namespace's `default`
-  ServiceAccount, the same pattern as corpocache and workout-tracker.
-
-### Common Tasks
-
-```bash
-# Logs
-kubectl -n mmo logs deploy/mmo-server -f
-# Update the server: push to videogame main (image.yml builds the image), then
-kubectl -n mmo rollout restart deployment/mmo-server   # everyone is saved and disconnected; warn with /announce first
-# Certificate state
-kubectl -n mmo get certificate,challenge
-# Downloads: what is served, and the mirror's log (a new v* tag on the videogame repo is served within ~5 minutes of its release)
-curl -s --resolve jankmmo.duckdns.org:443:10.0.20.83 https://jankmmo.duckdns.org/downloads/latest.json | head -5
-kubectl -n mmo logs deploy/mmo-downloads -c mirror --tail=20
-# Register the admin before letting anyone in (only needed on a fresh database)
-kubectl -n mmo port-forward svc/mmo-server 7777:7777   # then the client connects to ws://127.0.0.1:7777
-```
-
-### Recreating K8s Secrets
-
-```bash
-kubectl create namespace mmo
-kubectl -n mmo create secret generic mmo-server \
-  --from-literal=DATABASE_URL="postgres://mmo:$(pass homelab/mmo/db-password)@10.0.30.10:5432/mmo" \
-  --from-literal=MMO_SIGNUP_CODE="$(pass homelab/mmo/signup-code)" \
-  --from-literal=MMO_ADMINS=cameren
-kubectl -n mmo create secret generic mmo-downloads-token --from-literal=token="$(pass homelab/mmo/downloads-token)"
-kubectl -n mmo create secret generic mmo-backup \
-  --from-literal=PGHOST=10.0.30.10 --from-literal=PGUSER=mmo --from-literal=PGDATABASE=mmo \
-  --from-literal=PGPASSWORD="$(pass homelab/mmo/db-password)"
-kubectl -n corpocache get secret ghcr-pull-secret -o json \
-  | jq '{apiVersion,kind,type,data,metadata:{name:"ghcr-pull-secret",namespace:"mmo"}}' | kubectl apply -f -
-kubectl -n mmo patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
-pass homelab/mmo/argocd-deploy-key > /tmp/k && kubectl -n argocd create secret generic videogame-repo \
-  --from-file=sshPrivateKey=/tmp/k --from-literal=type=git \
-  --from-literal=url=git@github.com:AzSkyLab/videogame.git && shred -u /tmp/k
-kubectl -n argocd label secret videogame-repo argocd.argoproj.io/secret-type=repository
-```
-
-The database was made with `ansible-playbook playbooks/create-app-db.yml -e app_name=mmo -e app_db_password="$(pass homelab/mmo/db-password)"`.
 
 ## SWGEmu Core3 (Star Wars Galaxies Emulator)
 

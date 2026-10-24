@@ -50,12 +50,9 @@ spec:
               - name: loop
               - name: reload
               - name: loadbalance
-          # Split DNS for the public door (the game and the file share): from inside the LAN the public IP answers with
-          # the USG login page (no hairpin), so LAN clients get the public Traefik directly. The cluster's own CoreDNS
-          # has the same override.
+          # Split DNS for the public door (the file share): from inside the LAN the public IP answers with the USG login
+          # page (no hairpin), so LAN clients get the public Traefik directly. The cluster's own CoreDNS has the same override.
           - zones:
-              - zone: jankmmo.duckdns.org.
-                use_tcp: true
               - zone: charknox.duckdns.org.
                 use_tcp: true
             port: 53
@@ -63,7 +60,6 @@ spec:
               - name: errors
               - name: hosts
                 configBlock: |-
-                  10.0.20.83 jankmmo.duckdns.org
                   10.0.20.83 charknox.duckdns.org
               - name: cache
                 parameters: 30
@@ -71,7 +67,7 @@ spec:
           - filename: home.lab.db
             domain: home.lab
             contents: |
-              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026102101 3600 600 604800 600
+              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026102401 3600 600 604800 600
               home.lab.    IN  NS   ns.home.lab.
               ns                IN  A    10.0.20.53
               k3s-server        IN  A    10.0.20.10
@@ -105,7 +101,6 @@ spec:
               ap-u7-pro         IN  A    10.0.10.6
               llm               IN  A    10.0.20.80
               vpn               IN  A    10.0.20.80
-              mmo-admin         IN  A    10.0.20.80
   destination:
     server: https://kubernetes.default.svc
     namespace: coredns

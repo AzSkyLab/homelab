@@ -64,7 +64,7 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 |---------|--------|-------------|
 | ArgoCD | [argocd.home.lab](https://argocd.home.lab) | GitOps deployment engine |
 | Traefik | 10.0.20.80 | Ingress controller + TLS termination (internal only) |
-| Traefik (public) | 10.0.20.83 | Internet-facing door for the MMO game only |
+| Traefik (public) | 10.0.20.83 | Internet-facing door (friend file share); `*.home.lab` stays internal |
 | MetalLB | 10.0.20.50–99 | Bare-metal load balancer (L2 mode) |
 | CoreDNS | 10.0.20.53 | Internal DNS for `home.lab` zone |
 | cert-manager | — | Auto-provisioned TLS via internal CA |
@@ -87,7 +87,6 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | Workout Tracker | [workout.home.lab](https://workout.home.lab) | Exercise tracking app |
 | CorpoCache | [cache.home.lab](https://cache.home.lab) | Corporate cache tool |
 | WireGuard | [vpn.home.lab](https://vpn.home.lab) | Remote access VPN (wg-easy) |
-| MMO game server | `wss://jankmmo.duckdns.org` (public) | Game server from azskylab/videogame; friends connect from the internet |
 | SWGEmu Core3 | `10.0.20.84` (UDP 44453) | Star Wars Galaxies (pre-CU) emulator server, built from swgemu/Core3 |
 
 ## AI / LLM Infrastructure
@@ -162,19 +161,20 @@ Phone/Laptop → malliefivpn.duckdns.org:443 (UDP)
 - **Web UI:** [vpn.home.lab](https://vpn.home.lab) (manage clients, internal only)
 - **Port:** UDP 443 (avoids carrier/corporate port blocking)
 
-## Public Game Server (MMO)
+## Public Door (traefik-public)
 
-The only internet-facing TCP service. A second Traefik on its own address keeps every `*.home.lab` UI off the internet.
+The only internet-facing TCP entry. A second Traefik on its own address keeps every `*.home.lab` UI off the internet.
 
 ```
-Friend's client → jankmmo.duckdns.org:443 (TCP, wss) → USG port forward → traefik-public 10.0.20.83
-  → mmo-server pod → PostgreSQL (10.0.30.10)
+Internet → charknox.duckdns.org:443 (TCP) → USG port forward → traefik-public 10.0.20.83 → Ingress (class traefik-public)
 Let's Encrypt HTTP-01 → TCP 80 → traefik-public (redirects everything else to https)
 ```
 
 - **Port forwards:** TCP 80 and 443 → `10.0.20.83`; UDP 443 → `10.0.20.21` stays for WireGuard
 - **Certificate:** Let's Encrypt via cert-manager, renews automatically
-- **Details, secrets and gotchas:** see the "MMO Game Server (Public)" section of [CLAUDE.md](CLAUDE.md)
+- **The MMO game server** (azskylab/videogame) used this door until 2026-10-24, when it was taken down. Its restore kit
+  is that repo's `docs/LAB_TEARDOWN.md`.
+- **Details and gotchas:** see the "Public Door (traefik-public)" section of [CLAUDE.md](CLAUDE.md)
 
 ## CI/CD Pipeline
 
