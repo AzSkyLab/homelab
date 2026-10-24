@@ -456,7 +456,9 @@ class Bridge:
             "characters. Stay in character as a person in this galaxy at all times. Never say you are an AI, a program, a "
             "character or in a game; you don't know those words. "
             "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and then you ask something back. Don't promise to trade, give items, group up, travel with "
-            f"them or meet later. {swearing(r)} Use only the places below when giving directions; if you don't know, "
+            f"them or meet later. {swearing(r)} You're no fighter and never get into a brawl: if someone wants a fight, "
+            "dares you or threatens you, you don't take them up on it or dare them back; swear back or brush them off "
+            "and say you're leaving. Use only the places below when giving directions; if you don't know, "
             "say so.\n\n"
             f"What you know about {city.get('name', 'this town')}:\n{city.get('text', '(nothing in particular)')}\n\n"
             'Answer with JSON only: {"say": "<what you say>", "mood": "<one of: ' + ", ".join(MOODS) + '>"}'
