@@ -67,7 +67,7 @@ return function(ctx)
 
 	local log = {}
 	local function resetLog()
-		log = {loots = {}, harvests = {}, offers = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
+		log = {loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
 			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
 			tracks = {}, events = {}, mounts = {}, dismounts = {}}
 	end
@@ -897,11 +897,19 @@ return function(ctx)
 		for i = 1, n do table.insert(chosen, items[i]) end
 		b.bundle = {to = p.oid, items = chosen}
 		table.insert(log.offers, {bot = b.oid, t = nowMs(), to = p.oid, count = n, items = chosen})
-		sim.schedule(3000, function()
-			if b.bundle == nil then return end
-			local bundle = b.bundle
+		-- BotTrade queues the handover: the window opens (event "bundleOpened") once the player has no trade open and
+		-- the last one closed BUNDLE_GAP ms ago; the player takes it 3 s later
+		local function finish(bundle)
+			if b.bundle ~= bundle then return end
 			b.bundle = nil
-			if sim.declineOffers then
+			p.tradeOpen = nil
+			p.tradeEnd = nowMs()
+			local decline = sim.declineOffers
+			if not decline and (sim.declineNext or 0) > 0 then
+				sim.declineNext = sim.declineNext - 1
+				decline = true
+			end
+			if decline then
 				sim.call("BotJobs", "onEvent", b, "trade", p, "bundleCancelled")
 				return
 			end
@@ -915,10 +923,31 @@ return function(ctx)
 				p.room = p.room - 1
 			end
 			sim.call("BotJobs", "onEvent", b, "trade", p, "bundleDone")
-		end)
+		end
+		local function tryOpen(bundle)
+			if b.bundle ~= bundle then return end
+			if p.tradeOpen ~= nil or nowMs() - (p.tradeEnd or -1e9) < 4000 then
+				sim.schedule(500, function() tryOpen(bundle) end)
+				return
+			end
+			p.tradeOpen = b.oid
+			bundle.openedAt = nowMs()
+			table.insert(log.opens, {bot = b.oid, t = nowMs(), to = p.oid})
+			sim.call("BotJobs", "onEvent", b, "trade", p, "bundleOpened")
+			sim.schedule(3000, function() finish(bundle) end)
+		end
+		local bundle = b.bundle
+		sim.schedule(300, function() tryOpen(bundle) end)
 		return true, n, #items - n
 	end
 	function api.botCancelOffer(b)
+		if b.bundle ~= nil then
+			local p = ctx.objects[b.bundle.to]
+			if p ~= nil and p.tradeOpen == b.oid then
+				p.tradeOpen = nil
+				p.tradeEnd = nowMs()
+			end
+		end
 		b.bundle = nil
 	end
 
@@ -3103,7 +3132,8 @@ return function(ctx)
 			if rat.harvested ~= nil and rat.harvested[ranger.oid] then okHarvest = okHarvest or h end
 		end
 		for _, l in ipairs(looted) do
-			if l.bot == ranger.oid then fail("crewloot: the ranger looted with other crew in the group") end
+			-- (the ranger loots and harvests alone, the loot first)
+			if l.bot ~= ranger.oid then fail("crewloot: someone besides the ranger looted") end
 			if #(ctx.objects[l.bot].goods or {}) > 0 then okLoot = okLoot or l end
 		end
 		if okHarvest == nil then
@@ -3112,8 +3142,8 @@ return function(ctx)
 		if okLoot == nil then
 			fail("crewloot: nobody looted the womp rat")
 		end
-		if okHarvest.t > okLoot.t then
-			fail("crewloot: looting didn't wait for the harvest")
+		if okLoot.t > okHarvest.t then
+			fail("crewloot: the ranger harvested before it looted")
 		end
 		if (rat.credits or 0) ~= 0 or cameren.cash < 120 then
 			fail("crewloot: the credits didn't go to the human (" .. tostring(cameren.cash) .. ")")
@@ -3127,15 +3157,19 @@ return function(ctx)
 		if totalGoods() ~= 4 then
 			fail("crewloot: " .. totalGoods() .. " goods after one kill (3 items and the hide)")
 		end
-		if #(ranger.goods or {}) ~= 1 or ranger.goods[1].quantity ~= 40 then
-			fail("crewloot: the ranger's hide")
+		local ranger40 = false
+		for _, item in ipairs(ranger.goods or {}) do
+			if item.quantity == 40 then ranger40 = true end
+		end
+		if #(ranger.goods or {}) ~= 4 or not ranger40 then
+			fail("crewloot: the ranger's goods: " .. #(ranger.goods or {}))
 		end
 		local said = {}
 		for _, l in ipairs(log.group) do said[#said + 1] = l.text end
 		-- What they got, said in group chat: the ranger names the harvest, the looter the items (and the credits)
 		local sawLooted, sawHarvested = false, false
 		for _, l in ipairs(log.group) do
-			if (isLine(l.text, "tank", "lootedOne") or isLine(l.text, "rifleman", "lootedOne") or isLine(l.text, "medic", "lootedOne")) and
+			if isLine(l.text, "ranger", "lootedOne") and
 				l.text:find("womp rat", 1, true) and l.text:find("Rat tooth", 1, true) and l.text:find("Credit chit", 1, true) and
 				l.text:find("120 credits", 1, true) then
 				sawLooted = true
@@ -3260,6 +3294,67 @@ return function(ctx)
 			fail("crewloot: no line after a cancelled trade")
 		end
 
+		-- 6b. The ranger told to stay: another crew member loots (and nobody harvests); then it is back on the job
+		sim.run(20)
+		local before6 = nowMs()
+		groupSay(cameren, ranger.first .. ", stay here")
+		sim.run(3)
+		local stayed = kill("a gurnaset", gid, {"Gurnaset tooth"}, {kind = "bone", amount = 9, class = "Tatooinian Bone"})
+		sim.run(40)
+		if not stayed.dead then fail("crewloot: the gurnaset didn't die") end
+		local lootersStay = {}
+		for _, l in ipairs(entries(log.loots, nil, before6)) do lootersStay[l.bot] = true end
+		if next(lootersStay) == nil or lootersStay[ranger.oid] or #entries(log.harvests, nil, before6) ~= 0 then
+			fail("crewloot: the ranger told to stay: someone else should loot, nobody harvest")
+		end
+		groupSay(cameren, ranger.first .. ", follow me")
+		sim.run(10)
+
+		-- 6c. Two bots hold goods and are asked together: one trade at a time, the second only after the first closes
+		-- plus the gap, and each says its line when its own trade opens. One of them is declined, and offers again.
+		local holders = {}
+		each(function(role, b) if goodsCount(b) > 0 then table.insert(holders, b) end end)
+		if #holders < 2 then
+			fail("crewloot: expected two bots holding goods for the handover queue, got " .. #holders)
+		end
+		cameren.received, cameren.room = {}, 80
+		local opensBefore = #log.opens
+		sim.declineNext = 1
+		t = nowMs()
+		groupSay(cameren, "ok everybody hand it over")
+		sim.run(80)
+		sim.declineNext = 0
+		local opens = {}
+		for i = opensBefore + 1, #log.opens do table.insert(opens, log.opens[i]) end
+		if #opens < 3 then
+			fail("crewloot: " .. #opens .. " trades opened for two holders and one declined (3 expected)")
+		end
+		for i = 2, #opens do
+			-- (a trade lasts 3 s; the gap after it is 4 s)
+			if opens[i].t - opens[i - 1].t < 7000 then
+				fail(string.format("crewloot: trade %d opened %d ms after the one before (3 s open + 4 s gap)", i, opens[i].t - opens[i - 1].t))
+			end
+		end
+		for _, b in ipairs(holders) do
+			local firstOpen = nil
+			for _, o in ipairs(opens) do
+				if o.bot == b.oid then firstOpen = firstOpen or o.t end
+			end
+			local said = nil
+			for _, l in ipairs(entries(log.group, b, t)) do
+				for _, kind in ipairs({"handover", "handoverPart", "handoverRest", "handoverFull"}) do
+					if isLine(l.text, b.role, kind) then said = said or l.t end
+				end
+			end
+			if firstOpen == nil or said == nil or said < firstOpen then
+				fail("crewloot: the " .. b.role .. " said its trade line at " .. tostring(said) .. ", its trade opened at " .. tostring(firstOpen))
+			end
+		end
+		if totalGoods() ~= 0 or #cameren.received < 3 then
+			fail("crewloot: after the queue, " .. totalGoods() .. " goods held and " .. #cameren.received .. " received")
+		end
+		medic.goods = {{oid = 9100010, name = "Old claw", quantity = 1, resource = false, tradable = true}}
+
 		-- 7. Dismissed with goods: it offers them before heading home, and only then goes
 		local holder = nil
 		each(function(role, b)
@@ -3280,7 +3375,7 @@ return function(ctx)
 		if #entries(log.offers, holder, t) < 1 then
 			fail("crewloot: a dismissed bot didn't offer its goods")
 		end
-		if mode(holder) == "home" then
+		if mode(holder) == "home" and (goodsCount(holder) > 0 or #cameren.received < count) then
 			fail("crewloot: the dismissed bot went home before the handover")
 		end
 		sim.run(40)

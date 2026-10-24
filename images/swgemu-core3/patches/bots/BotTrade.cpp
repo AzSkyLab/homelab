@@ -38,6 +38,10 @@ const int HELD_MS = 120000;
 const int BUNDLE_MS = 90000;
 const float BUNDLE_RANGE = 14.f;
 
+// One handover trade at a time to a player: the next opens this long after the last one closed (ms). The 2005 client
+// doesn't show a trade request that comes in the moment another closes, so the second handover was never seen
+const int BUNDLE_GAP_MS = 4000;
+
 // What the watcher last saw of one bot's trade, and what the jobs last read. Changed only with the bot locked; the map
 // itself is guarded by watchMutex
 class Watched : public Object {
@@ -375,11 +379,32 @@ bool runGive(CreatureObject* bot, CreatureObject* owner, Watched* entry) {
 	return getTradeSession(bot) == nullptr;
 }
 
+Mutex bundleEndMutex;
+VectorMap<uint64, uint64> bundleEnded;	// owner oid -> when a handover trade to it last closed (ms)
+
+void noteBundleEnd(uint64 ownerOid) {
+	Locker locker(&bundleEndMutex);
+	Time now;
+
+	bundleEnded.put(ownerOid, now.getMiliTime());
+}
+
+// Has the last handover trade to this owner been closed long enough?
+bool ownerRested(uint64 ownerOid) {
+	Locker locker(&bundleEndMutex);
+	Time now;
+	int pos = bundleEnded.find(ownerOid);
+
+	return pos == -1 || now.getMiliTime() - bundleEnded.elementAt(pos).getValue() >= (uint64) BUNDLE_GAP_MS;
+}
+
 // Ends a handover without it being taken. Pre: bot locked
 void endBundle(CreatureObject* bot, Watched* entry, const char* detail, const char* why) {
 	uint64 ownerOid = entry->bundleTo;
 
 	tradeLog().info(true) << bot->getFirstName() << "'s handover to " << ownerOid << " ends: " << why;
+
+	noteBundleEnd(ownerOid);
 
 	if (getTradeSession(bot) != nullptr) {
 		PlayerManager* playerManager = getPlayerManager(bot);
@@ -453,6 +478,10 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 		if (bot->getDistanceTo(owner) >= BUNDLE_RANGE)
 			return true;
 
+		// Another handover to this owner closed a moment ago: wait
+		if (!ownerRested(entry->bundleTo))
+			return true;
+
 		owner->setTradeTargetID(bot->getObjectID());
 
 		String error;
@@ -466,6 +495,9 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 		entry->bundleSince.updateToCurrentTime();
 
 		tradeLog().info(true) << bot->getFirstName() << " opens a handover trade with " << owner->getFirstName() << " (" << entry->bundle.size() << " item(s))";
+
+		// The jobs say "trade's open" now, not when the handover was queued
+		fireEvent(bot, entry->bundleTo, "bundleOpened");
 
 		return true;
 	}
@@ -542,6 +574,7 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 		entry->bundleOpened = false;
 		entry->reset();
 
+		noteBundleEnd(ownerOid);
 		fireEvent(bot, ownerOid, "bundleDone");
 	}
 
@@ -1363,8 +1396,10 @@ void BotTrade::cancelBundle(CreatureObject* bot) {
 	PlayerManager* playerManager = getPlayerManager(bot);
 	ManagedReference<TradeSession*> session = getTradeSession(bot);
 
-	if (playerManager != nullptr && session != nullptr && session->getTradeTargetPlayer() == entry->bundleTo)
+	if (playerManager != nullptr && session != nullptr && session->getTradeTargetPlayer() == entry->bundleTo) {
 		playerManager->handleAbortTradeMessage(bot);
+		noteBundleEnd(entry->bundleTo);
+	}
 
 	if (entry->giveItem == 0)
 		bot->setTradeTargetID(0);

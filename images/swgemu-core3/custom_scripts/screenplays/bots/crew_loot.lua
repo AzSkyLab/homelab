@@ -1,12 +1,14 @@
--- Bot players (Phase 7): the crew loots, the ranger harvests, and what they picked up is handed over by trade.
+-- Bot players (Phase 7): the ranger loots and harvests, and what it picked up is handed over by trade.
 -- Included from crew.lua (after BotCrew exists). Spec: ~/github/swgemu/specs/2026-10-24-crew-swoops-missions/ (4, 5, 6).
 --
 -- The kills: each crew bot notes what it fights (BotCrew:lootNote), and the players' targets are noted by scanHuman, in
 -- lists of the last few oids. After a fight (every crew step that is out of combat, BotCrew:lootTurn) the group's dead
--- creatures are worked through, one corpse at a time:
---   1. the ranger walks up and harvests it (botHarvest: Core3's own harvest, the type the creature has most of);
---   2. then one crew bot, the first that isn't the ranger, loots it (botLootCorpse: everything into its pack, the
---      credits through Core3's group split to the humans). Looting waits for the harvest, as it did for players.
+-- creatures are worked through, one corpse at a time, by the ranger alone:
+--   1. it walks up and loots it (botLootCorpse: everything into its pack, the credits through Core3's group split to
+--      the humans);
+--   2. then harvests it (botHarvest: Core3's own harvest, the type the creature has most of).
+-- Only while the ranger is dead, told to stay, on a camp search or on a mission errand does another crew member (the
+-- first that is up) loot, as before: it waits for the harvest, or for the ranger to be away, or lootHarvestWait.
 -- Corpses of players and other groups' are refused by the binding. A corpse is given up on after lootGiveUp seconds.
 --
 -- The area scan: the kill lists miss corpses (a creature a mission lair spawned, one the leader killed while the crew
@@ -15,8 +17,8 @@
 -- the corpse's loot belongs to the group) and adds them to the list. An asked-for scan also wakes up the corpses the
 -- crew had given up on, if there is still something on them.
 --
--- What they got is said in group chat (lootFlush): the ranger names what it harvested, the looter what it took, one
--- line for everything done since the last one, so a pile of corpses is one line, not a dozen.
+-- What they got is said in group chat (lootFlush): the looter names what it harvested and what it took, one line each
+-- for everything done since the last one, so a pile of corpses is one line, not a dozen.
 --
 -- Goods: what a bot holds that isn't its gear (botGoods: what it looted, and every resource container). Handing over
 -- (botOfferGoods: a trade window opens on the player's client, the bot has put everything in and accepted; the player
@@ -25,7 +27,10 @@
 --   - when the group breaks up, a bot is dismissed or sent home: before it heads home;
 --   - when the bot is regrouped, for goods it still holds from before.
 -- An offer is one chain of events per bot (lootOfferStep): it walks up to the player, offers, waits for the trade's
--- result (the "trade" events bundleDone / bundleCancelled from BotTrade), offers the rest in another trade, and ends.
+-- result (the "trade" events bundleOpened / bundleDone / bundleCancelled from BotTrade), offers the rest in another
+-- trade, and ends. BotTrade opens one trade at a time to a player (a few seconds after the last one closed), so bots
+-- handing over together go one after the other; each says its line when its own trade opens. A handover that is
+-- cancelled while other bots hold goods too is offered once more before it gives up.
 -- The goods are never sold, dropped or kept for the bot: a cancelled trade leaves them in its pack for the next ask.
 
 BotCrew.lootEvery = 2           -- seconds between a bot's loot and harvest actions
@@ -34,7 +39,7 @@ BotCrew.lootFromLeader = 70     -- a corpse further than this from the leader is
 BotCrew.harvestReach = 5        -- the ranger walks up to this far from a corpse (Core3 allows 7 m)
 BotCrew.lootReach = 6           -- a looter walks up to this far (Core3 allows 16 m)
 BotCrew.lootTries = 30          -- actions on one corpse before it is dropped
-BotCrew.lootSayDelay = 8        -- seconds a bot gathers what it got before saying it (it says it at once when it has no more to do)
+BotCrew.lootSayDelay = 20       -- seconds a bot gathers what it got before saying it (it says it at once when it has no more to do)
 BotCrew.lootScanRange = 60      -- metres around the leader for the corpses a scan looks for
 BotCrew.lootScanEvery = 4       -- seconds between scans after a fight
 BotCrew.lootScanAfter = 40      -- seconds after a fight the crew keeps scanning
@@ -45,6 +50,7 @@ BotCrew.offerStepMs = 2500
 BotCrew.offerRoomMs = 5000        -- how often it looks again for room in the player's pack
 BotCrew.offerRequestSeconds = 60   -- an asked-for handover gives up after this long
 BotCrew.offerLeaveSeconds = 75     -- a handover before heading home
+BotCrew.offerRetryMs = 8000        -- a cancelled handover is offered once more after this, when others hold goods too
 BotCrew.handoverWords = {"hand it over", "hand it all over", "hand over", "give me the loot", "give me my loot",
 	"give me the goods", "give me what you", "trade me", "give me the hides", "give me the resources", "hand me the loot",
 	"hand me the goods", "hand me what you", "hand me my loot", "give it over", "give me your loot", "give me everything"}
@@ -185,26 +191,37 @@ function BotCrew:lootCorpses(g, pLeader, now, pBot)
 	return out
 end
 
--- The crew member who harvests (a ranger with the scout skill, alive), and who loots (the first other crew member
--- that is alive, else the ranger)
-function BotCrew:lootRoles(g)
-	local harvester, looter, any = nil, nil, nil
+-- The crew member who harvests (a ranger with the scout skill, alive), and who loots: the ranger too, unless it is
+-- told to stay, on a camp search or a mission errand (or is down), then the first other crew member that is alive
+function BotCrew:lootRoles(g, now)
+	local harvester, ranger, other, any = nil, nil, nil, nil
 
 	for _, m in ipairs(g.crew) do
 		if not CreatureObject(m.p):isDead() then
 			any = any or m
 
 			if m.job == "ranger" then
+				ranger = m
+
 				if CreatureObject(m.p):hasSkill("outdoors_scout_novice") then
 					harvester = m
 				end
-			elseif looter == nil then
-				looter = m
+			elseif other == nil then
+				other = m
 			end
 		end
 	end
 
-	return harvester, looter or harvester or any
+	local rangerFree = false
+
+	if ranger ~= nil then
+		local order = readStringData(lkey(ranger.oid, "order"))
+
+		rangerFree = not CreatureObject(ranger.p):isIncapacitated() and order ~= "stay" and order ~= "campSearch" and
+			not (self.missionBusy ~= nil and self:missionBusy(ranger.oid, now))
+	end
+
+	return harvester, (rangerFree and ranger) or other or ranger or any
 end
 
 -- The area scan
@@ -523,11 +540,30 @@ function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 		return false
 	end
 
-	local harvester, looter = self:lootRoles(g)
+	local harvester, looter = self:lootRoles(g, now)
 	local isHarvester = harvester ~= nil and harvester.oid == oid
 	local isLooter = looter ~= nil and looter.oid == oid
 
-	-- The ranger: the first corpse not harvested yet
+	-- The ranger does both, a corpse at a time: it loots it first, then harvests it
+	if isHarvester and isLooter then
+		for _, c in ipairs(corpses) do
+			if c.loot then
+				self:lootFlush(pBot, oid, now, false)
+				return self:lootStep(pBot, oid, c, now)
+			end
+
+			if c.harvest then
+				self:lootFlush(pBot, oid, now, false)
+				return self:harvestStep(pBot, oid, c, now)
+			end
+		end
+
+		self:lootFlush(pBot, oid, now, true)
+
+		return false
+	end
+
+	-- The ranger, when another loots (it was away): the first corpse not harvested yet
 	if isHarvester then
 		for _, c in ipairs(corpses) do
 			if c.harvest then
@@ -638,10 +674,14 @@ function BotCrew:lootStep(pBot, oid, c, now)
 	end
 
 	if r.ok then
-		-- Done when the corpse is empty, the pack is full, or nothing more would move
+		-- Done when the corpse is empty, the pack is full, or nothing more would move (and, if the ranger loots first,
+		-- it has been harvested: the corpse stays in the list until then)
 		if r.left == 0 or r.full or r.moved == 0 then
 			putInt(corpseKey(c.oid, "loot"), 1)
-			putInt(corpseKey(c.oid, "done"), 1)
+
+			if readData(corpseKey(c.oid, "harv")) == 1 then
+				putInt(corpseKey(c.oid, "done"), 1)
+			end
 		end
 
 		-- (a corpse with nothing on it isn't announced or counted as looted)
@@ -664,6 +704,7 @@ function BotCrew:lootStep(pBot, oid, c, now)
 	else
 		-- Not this group's, a player's, alive: nothing for the crew here
 		putInt(corpseKey(c.oid, "loot"), 1)
+		putInt(corpseKey(c.oid, "harv"), 1)
 		putInt(corpseKey(c.oid, "done"), 1)
 	end
 
@@ -763,6 +804,19 @@ function BotCrew:othersHold(g, oid)
 	return false
 end
 
+-- Is another crew member of the group handing over, or holding goods to?
+function BotCrew:othersHandOver(pBot, oid)
+	local g = self:group(pBot)
+
+	for _, m in ipairs(g ~= nil and g.crew or {}) do
+		if m.oid ~= oid and (self:lootHolding(m.oid) or readData(lkey(m.oid, "goodsN")) > 0) then
+			return true
+		end
+	end
+
+	return false
+end
+
 -- Group chat that asks for the loot: the bots with goods answer, and if none has any, the first crew member says so
 -- (BotCrew:groupAddressed)
 function BotCrew:handoverAnswers(oid, g)
@@ -832,6 +886,8 @@ function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener)
 	putInt(lkey(oid, "offerTries"), 0)
 	putInt(lkey(oid, "offerBatches"), 0)
 	putInt(lkey(oid, "offerSaid"), 0)
+	putInt(lkey(oid, "offerRetried"), 0)
+	deleteStringData(lkey(oid, "offerLineKind"))
 
 	if opener ~= nil then
 		putInt(lkey(oid, "offerOpener"), opener == "lootFull" and 1 or 2)
@@ -959,14 +1015,10 @@ function BotCrew:lootOfferStep(pBot, args)
 			kind = "handoverRest"
 		end
 
-		-- To the group while it holds; the player alone once it doesn't
-		local line = self:line(oid, kind, name, {goods = self:goodsSummary(goods)})
-
-		if line ~= nil then
-			local member = self:lootMember(pBot, playerOid)
-
-			BotJobs:reply(pBot, playerOid, member ~= nil and "group" or "spatial", line)
-		end
+		-- Said when the window really opens (BotTrade queues the handover behind other bots' trades to the player): the
+		-- "bundleOpened" event (lootTradeEvent)
+		writeStringData(lkey(oid, "offerLineKind"), kind)
+		writeStringData(lkey(oid, "offerLineGoods"), (self:goodsSummary(goods):gsub("%%", "")))
 
 		again()
 		return
@@ -1000,11 +1052,35 @@ end
 
 -- BotTrade's events for a handover (BotCrew:onEvent "trade")
 function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
-	if detail ~= "bundleDone" and detail ~= "bundleCancelled" then
+	if detail ~= "bundleDone" and detail ~= "bundleCancelled" and detail ~= "bundleOpened" then
 		return
 	end
 
 	local playerOid = pOther ~= nil and SceneObject(pOther):getObjectID() or readData(lkey(oid, "offerFor"))
+
+	-- The trade window is open on the player's client: say so now (to the group while it holds; the player alone once
+	-- it doesn't)
+	if detail == "bundleOpened" then
+		local kind = readStringData(lkey(oid, "offerLineKind"))
+
+		if kind ~= "" and readData(lkey(oid, "offerFor")) ~= 0 then
+			local name = pOther ~= nil and self:firstName(pOther) or nil
+			local line = self:line(oid, kind, name, {goods = readStringData(lkey(oid, "offerLineGoods"))})
+
+			if line ~= nil then
+				local member = self:lootMember(pBot, playerOid)
+
+				BotJobs:reply(pBot, playerOid, member ~= nil and "group" or "spatial", line)
+			end
+		end
+
+		deleteStringData(lkey(oid, "offerLineKind"))
+		putInt(lkey(oid, "offerUntil"), math.max(readData(lkey(oid, "offerUntil")), os.time() + 100))
+
+		return
+	end
+
+	deleteStringData(lkey(oid, "offerLineKind"))
 
 	putInt(lkey(oid, "offerOpen"), 0)
 
@@ -1024,6 +1100,18 @@ function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
 		end
 	else
 		print("BotJobs: " .. self:name(oid) .. "'s handover was cancelled (" .. count .. " held)")
+
+		if readData(lkey(oid, "offerFor")) ~= 0 and count > 0 and readData(lkey(oid, "offerRetried")) == 0 and
+			self:othersHandOver(pBot, oid) then
+			-- Others were handing over too: once more, after them, before giving up
+			putInt(lkey(oid, "offerRetried"), 1)
+			putInt(lkey(oid, "offerUntil"), math.max(readData(lkey(oid, "offerUntil")), os.time() + 60))
+			print("BotJobs: " .. self:name(oid) .. " will offer again after the others")
+			createEvent(self.offerRetryMs, "BotCrew", "lootOfferStep", pBot,
+				packArgs(readData(key(oid, "gen")), readData(lkey(oid, "offerSeq"))))
+
+			return
+		end
 
 		if readData(lkey(oid, "offerFor")) ~= 0 then
 			if count > 0 then
@@ -1083,11 +1171,11 @@ end
 
 function BotCrew:lootClear(oid)
 	for _, field in ipairs({"offerFor", "offerUntil", "offerOpen", "offerTries", "offerBatches", "offerOpener", "offerRemaining",
-		"offerSaid", "lootAt", "lootSayAt", "victims", "goodsN", "hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
+		"offerSaid", "offerRetried", "lootAt", "lootSayAt", "victims", "goodsN", "hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
 		deleteData(lkey(oid, field))
 	end
 
-	for _, field in ipairs({"victims", "hvName", "hvList", "ltName", "ltNames"}) do
+	for _, field in ipairs({"victims", "hvName", "hvList", "ltName", "ltNames", "offerLineKind", "offerLineGoods"}) do
 		deleteStringData(lkey(oid, field))
 	end
 	putInt(lkey(oid, "offerSeq"), readData(lkey(oid, "offerSeq")) + 1)

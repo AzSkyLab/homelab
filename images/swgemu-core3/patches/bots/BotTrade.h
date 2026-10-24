@@ -86,9 +86,11 @@ public:
 	// Starts a give-back trade of itemOid to owner. Pre: bot locked
 	static bool give(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner, uint64 itemOid);
 
-	// Phase 7: a give-back trade of many items (BotLoot's handover). Opens the trade window on the owner's client at
-	// once (it is a hand-over, not a request), puts the items in, accepts, and verifies last. Events to the jobs,
-	// BotJobs:onEvent(pBot, "trade", pOwner, detail): "bundleDone" (the owner took them) or "bundleCancelled" (the
+	// Phase 7: a give-back trade of many items (BotLoot's handover). Opens the trade window on the owner's client (it is
+	// a hand-over, not a request) once the owner is free and no other handover to it closed in the last few seconds
+	// (one trade at a time: the client doesn't show a request that arrives as another closes), puts the items in,
+	// accepts, and verifies last. Events to the jobs, BotJobs:onEvent(pBot, "trade", pOwner, detail): "bundleOpened"
+	// (the window is open now), "bundleDone" (the owner took them) or "bundleCancelled" (the
 	// owner cancelled, walked off, logged out or took too long). Pre: bot locked. False if a bundle is already under way
 	static bool giveBundle(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner,
 			const Vector<uint64>& items);
