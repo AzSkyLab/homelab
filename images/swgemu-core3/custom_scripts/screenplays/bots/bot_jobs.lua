@@ -33,7 +33,8 @@
 -- intent(text) -> an intent or nil (keywords, used without the brain), isAction(intent) -> bool,
 -- allowed(action) -> the action or nil (checks the brain's line 4), act(pBot, pPlayer, action, channel, brainLine),
 -- and optionally onSpoken(pBot, oid, pSpeaker, channel, text) -> true when the job answered it itself (nothing goes
--- to the brain), groupAddressed(pBot, pSpeaker, text) -> bool,
+-- to the brain), onSaid(pBot, oid, playerOid, channel, line) (what it just said, for a record),
+-- groupAddressed(pBot, pSpeaker, text) -> bool,
 -- and the fields kit and place (what the brain knows the job as). Missing functions are skipped.
 -- BotFight (fight.lua) isn't a job: it runs for every bot (provoked fights, duels).
 includeFile("../custom_scripts/screenplays/bots/lines.lua")
@@ -719,6 +720,13 @@ function BotJobs:reply(pBot, playerOid, channel, line, mood)
 
 	if #lines == 0 then
 		return
+	end
+
+	-- The job may keep a record of what it said (the crew's hunt log)
+	local module = self:module(self:job(oid))
+
+	if module ~= nil and module.onSaid ~= nil then
+		module:onSaid(pBot, oid, playerOid, channel, table.concat(lines, " "))
 	end
 
 	if #lines > 1 then

@@ -121,6 +121,7 @@ return function(ctx)
 	function methods.getWorldPositionX(self) return self:getPositionX() end
 	function methods.getWorldPositionY(self) return self:getPositionY() end
 	function methods.getCurrentSpeed(self) return self.speed or 0 end
+	function methods.isRidingMount(self) return self.riding == true end
 	function methods.isCreatureObject(self) return self.isPlayer == true or self.isMob == true end
 	function methods.getDisplayedName(self) return self.display or self.name or "something" end
 	function methods.isAttackableBy(self, other)
@@ -564,6 +565,11 @@ return function(ctx)
 		assert(type(kit) == "string" and kit:match("^object/tangible/scout/camp/[%w_]+%.iff$"), "botPlaceCamp: bad kit " .. tostring(kit))
 		if b == nil or b.cell ~= 0 or b.inTown then
 			return 0, (b ~= nil and b.cell ~= 0) and "inside" or "in a city"
+		end
+		-- A lair the test put down: no camp within its radius
+		local lair = ctx.campLair
+		if lair ~= nil and math.sqrt((b.x - lair.x) ^ 2 + (b.y - lair.y) ^ 2) <= lair.r then
+			return 0, "lair too close"
 		end
 		local camp = ctx.newObject({isCamp = true, planet = b.planet, x = b.x, y = b.y, z = 5, cell = 0, inWorld = true,
 			radius = 20, name = "a camp"})
@@ -1297,6 +1303,28 @@ return function(ctx)
 		cameren.wounds = {}
 		cameren.x = cameren.x + 40
 		sim.run(15)
+
+		-- 15b. A lair too close: the ranger says so, walks out, places the camp clear of it, and says where
+		ctx.campLair = {x = cameren.x, y = cameren.y, r = 50}
+		t = nowMs()
+		groupSay(cameren, "let's camp here")
+		sim.run(240)
+		local searched = entries(log.camps, ranger, t)
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campSearchLair") then
+			fail("crew: a lair close by, and the ranger didn't say it would look for a spot")
+		end
+		if #searched ~= 1 or math.sqrt((ctx.objects[searched[1].oid].x - ctx.campLair.x) ^ 2 + (ctx.objects[searched[1].oid].y - ctx.campLair.y) ^ 2) <= 50 then
+			fail("crew: the ranger didn't place a camp clear of the lair (" .. #searched .. " camps)")
+		end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campUpThere") then
+			fail("crew: the ranger didn't say where the camp is")
+		end
+		ctx.campLair = nil
+		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
+		sim.run(200)
+		if readStringData("bot:" .. ranger.oid .. ":crew:order") == "stay" or moveState(ranger) ~= "follow" then
+			fail("crew: after the camp search the ranger didn't go back to following")
+		end
 
 		-- 16. Tracking: what's around, a creature by name, one that isn't there
 		trackList = {

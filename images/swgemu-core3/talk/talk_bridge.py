@@ -26,7 +26,9 @@ Phases 4-6 add the jobs musician, smuggler, tank, rifleman, medic, ranger, mayor
 (group chat), and line 5, the flags: "insult" when the player insulted the bot (the Lua counts them for provoked
 fights). The model judges the insult and the bridge checks it against the words, as it does the action. Optional
 request fields: "cityInfo" (a player city's news, from botCityInfo) and "cityName", "role" (a citizen's trade),
-"grouped" (the bot is in the player's group), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
+"grouped" (the bot is in the player's group), "situation" (a crew bot: where it is and what it's doing, in words),
+"hunt" and "huntLog" (a crew bot on a hunt: the hunt's id, and what everyone said on it; it stands in for the bot's
+own memory, and the action check reads its last lines), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
 smuggler's prices; 4000 and 6000 if absent).
 
 Standard library only. Settings come from the environment:
@@ -600,9 +602,15 @@ class Bridge:
                 f"regulars who hang out {where} in {town} looking for a group: a Teras Kasi tank, a rifleman, a combat "
                 "medic and a ranger. Anyone who wants to hunt can take you along: they /invite you, or ask. In a "
                 "group you follow their lead: they lead and they're master looter, never you; you go where they go, "
-                "attack what they attack and defend the group. You never loot or take a share: the corpses, the "
-                "credits and the loot are theirs."
+                "attack what they attack and defend the group. On a hunt the crew loots the corpses and the ranger "
+                "harvests the creatures, and at the end you hand it all over to the humans in the group; the "
+                "credits and mission rewards are theirs, and you never keep a share. You each own a swoop and ride "
+                "with the group, and at a mission terminal you can each take two destroy missions in the direction "
+                "the leader names."
             )
+            if r.get("situation"):
+                who += (f" Right now you're {r.get('situation')}. That's where you are, whatever was said before; "
+                        "don't talk as if you were anywhere else.")
             crew_actions = (
                 '"join" when they ask you to group up or come hunting with them, in any words ("wanna hunt?", '
                 '"lfg?", "join me", "can I invite you?", "need a tank"); "follow" when they tell you to follow them or '
@@ -717,6 +725,10 @@ class Bridge:
         if crew or (job == "citizen" and str(r.get("role") or "").lower() in ("hunter", "scout", "creature handler")):
             hunting = (f"The hunting around {city_name}, as you know it (pick what fits and say it your own way, "
                        f"don't recite it): {HUNTING.get(r.get('city'), '(you know it from experience)')}\n\n")
+        if crew and r.get("huntLog"):
+            hunting += ("What's been said and done on this hunt so far, by everyone in the group, oldest first (it's "
+                        "the same hunt: remember it, and don't repeat yourself):\n" + str(r.get("huntLog")).strip() +
+                        "\n\n")
         if actions:
             act = (f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
                    "you're about to do, not that it's done.\n\n")
@@ -897,9 +909,19 @@ class Bridge:
         return bool(rude or ADDRESSED.search(text) or
                     (first and re.search(r"\b%s\b" % re.escape(first), text, re.I)))
 
+    @staticmethod
+    def hunt_before(r, text):
+        """The last two lines of a crew's hunt log before this one (the player's line is already in it), for decide."""
+        lines = [line.split(": ", 1)[-1] for line in str(r.get("huntLog") or "").splitlines() if line.strip()]
+        if lines and lines[-1].strip() == text.strip():
+            lines = lines[:-1]
+        return " ".join(lines[-2:])
+
     def answer(self, r, timeout):
         bot = bool(r.get("bot")) and r.get("job") in BOT_ACTIONS
-        turns = self.remember(r)
+        # On a hunt the log is the crew's shared memory: it stands in for this bot's own (it has every line)
+        hunt = bot and r.get("job") in CREW_JOBS and r.get("huntLog")
+        turns = collections.deque() if hunt else self.remember(r)
         text = r.get("text", "")
         messages = [{"role": "system", "content": self.bot_prompt(r) if bot else self.system_prompt(r)}] + \
                    list(turns) + [{"role": "user", "content": text}]
@@ -918,9 +940,12 @@ class Bridge:
             return None
         before = " ".join(json.loads(t["content"]).get("say", "") if t["role"] == "assistant" else t["content"]
                           for t in list(turns)[-2:])
+        if hunt:
+            before = self.hunt_before(r, text)
         mood, say, proposed, model_insult = result
         job = r.get("job")
-        action = self.decide(job, text, proposed, before)
+        # A typo inside a word ("cam,p") still asks for it
+        action = self.decide(job, re.sub(r"(?<=[A-Za-z])[,.;](?=[A-Za-z])", "", text), proposed, before)
         first = str(r.get("first") or str(r.get("name") or "").split(" ")[0])
         flags = ",".join(["insult"] if self.insulted(text, model_insult, first) else [])
         turns.append({"role": "user", "content": text})

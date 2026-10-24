@@ -180,6 +180,22 @@ BotLines.ranger = {
 		"There's a lair too close for a camp. Let's move off a bit.",
 		"I won't camp by a lair. Further out.",
 	},
+	-- Refused for a lair (or a camp or building) close by: the ranger goes looking
+	campSearchLair = {
+		"Lair's too close here. Hang on, I'll find us clear ground.",
+		"Not by a lair. Give me a minute to find a better spot.",
+	},
+	campSearch = {
+		"Ground's taken here. Let me find somewhere clear.",
+	},
+	-- Placed out there: {metres} and {way} from the leader
+	campUpThere = {
+		"Camp's up, {metres} metres {way}. Come on over.",
+		"Found a spot. Fire's going {metres} metres {way} of you.",
+	},
+	campSearchFail = {
+		"No clear ground anywhere near. We'll have to move on and try somewhere else.",
+	},
 	campAlready = {
 		"Camp's already up. Sit down.",
 	},
