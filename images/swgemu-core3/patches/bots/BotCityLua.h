@@ -13,7 +13,10 @@
  *   botCheckPlacement(pBot, deedOid, x, y, angle)      -> ok, reason (what Core3 would say, without placing)
  *   botPlaceStructure(pBot, deedOid, x, y, angle)      -> bool: checked and logged, then the real /placestructure, and a
  *                                                         watcher: event "placed" (pOther the structure, detail its
- *                                                         template) or "placeFailed" (detail the reason)
+ *                                                         template) or "placeFailed" (detail the reason). The bot
+ *                                                         must be outdoors, within 100 m of the spot, and standing or
+ *                                                         walking: /placestructure refuses a running bot (the reason
+ *                                                         says "locomotion 3"), so stop it first (botStop)
  *   botCityDeposit(name, credits[, pFrom])             -> bool (queued; pFrom a bot pays from its cash, then bank)
  *   botCitySetTax(name, index, value)                  -> bool (0 income, 1 property, 2 sales, 3 travel, 4 garage)
  *   botCitySetSpec(name, spec)                         -> bool ("entertainer", "city_spec_entertainer", "" clears)
@@ -25,7 +28,7 @@
  *   botPlaceDecoration(pMayor, template)               -> oid or 0 (at the mayor's feet)
  *
  * The console tools (global table BotCityDev, so `console runLuaFunction BotCityDev:<fn>:<arg>:...` works; the
- * changing ones need botSetDevHuman on): probe, probeRing, info, owned, grant, surrender, bring, found, house,
+ * changing ones need botSetDevHuman on): probe, probeRing, map, profile, info, owned, grant, surrender, bring, found, house,
  * declare, expand, deposit, decorate, zoning, tax, spec, register, candidate, vote, destroy, raze. Usage is in
  * BotCityLua.cpp.
  */
@@ -65,6 +68,8 @@ private:
 	// BotCityDev:<fn> (console; the arguments are strings, after self)
 	static int devProbe(lua_State* L);
 	static int devProbeRing(lua_State* L);
+	static int devMap(lua_State* L);
+	static int devProfile(lua_State* L);
 	static int devInfo(lua_State* L);
 	static int devOwned(lua_State* L);
 	static int devGrant(lua_State* L);

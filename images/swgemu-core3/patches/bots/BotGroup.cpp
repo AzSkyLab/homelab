@@ -256,6 +256,55 @@ uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, Strin
 		return 0;
 	}
 
+	if (bot->isSwimming() || bot->isInWater()) {
+		error = "in water";
+		return 0;
+	}
+
+	if (bot->getCurrentCamp() != nullptr) {
+		error = "in another camp";
+		return 0;
+	}
+
+	// The kit's scan for what is too close (it tells only a client): buildings within 100 m, camps and lairs by their radii
+	{
+		SortedVector<ManagedReference<TreeEntry*>> nearby;
+		zone->getInRangeObjects(bot->getPositionX(), bot->getPositionZ(), bot->getPositionY(), 512, &nearby, true, false);
+
+		for (int i = 0; i < nearby.size(); ++i) {
+			SceneObject* object = static_cast<SceneObject*>(nearby.get(i).get());
+
+			if (object == nullptr || object == bot)
+				continue;
+
+			float distance = object->getDistanceTo(bot);
+
+			if (object->isCampStructure() && distance <= object->getObjectTemplate()->getNoBuildRadius() + campData->getRadius()) {
+				error = "camp too close";
+				return 0;
+			}
+
+			if (!object->isCampStructure() && object->isStructureObject() && distance <= 100) {
+				error = "building too close";
+				return 0;
+			}
+
+			if (distance <= object->getObjectTemplate()->getNoBuildRadius() + campData->getRadius()
+					&& (object->getObserverCount(ObserverEventType::OBJECTDESTRUCTION) > 0 || object->getObserverCount(ObserverEventType::CREATUREDESPAWNED) > 0)) {
+				// A lair has one of these two observers; the kit looks for the lair type among them
+				SortedVector<ManagedReference<Observer*>> observers = object->getObservers(ObserverEventType::OBJECTDESTRUCTION);
+				observers.addAll(object->getObservers(ObserverEventType::CREATUREDESPAWNED));
+
+				for (int j = 0; j < observers.size(); ++j) {
+					if (observers.get(j)->isObserverType(ObserverType::LAIR)) {
+						error = "lair too close";
+						return 0;
+					}
+				}
+			}
+		}
+	}
+
 	if (!bot->isStanding())
 		bot->setPosture(CreaturePosture::UPRIGHT, true);
 

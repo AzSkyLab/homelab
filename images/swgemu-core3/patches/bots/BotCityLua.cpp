@@ -6,6 +6,8 @@
  *   probe:<planet>:<x>:<y>[:<radius>:<areaRadius>]          a site probe (default radius 30, area 150)
  *   probeRing:<planet>:<cx>:<cy>:<r1>:<r2>:<rStep>:<degStep>  probes on rings around a point (bearing 0 = north), then
  *                                                            logs the best five
+ *   map:<planet>:<x0>:<y0>:<x1>:<y1>[:<step>]                an ASCII height map, north at the top
+ *   profile:<planet>:<x0>:<y0>:<x1>:<y1>[:<step>]            heights along a line
  *   info:<city>                     the city's state           owned:<first>                  a bot's structures
  *   grant:<first>:<skill>           award a skill box and what it requires (politician boxes cost no skill points)
  *   surrender:<first>:<prefix>      surrender every box starting with prefix ("social_politician")
@@ -19,7 +21,17 @@
  *   candidate:<first>:<city>        vote:<first>:<city>:<candidate's first name, or 0 to abstain>
  *   destroy:<city>                  CityManager::destroyCity (the city, its civic buildings and decorations)
  *   raze:<first>                    destroy every structure the bot owns (houses, cantinas...)
- * Clean-up of a test city: destroy:<city>, then raze:<each bot that placed something>, then surrender the skills granted.
+ *
+ * Cleaning a test city out of the dev world (the city's bots are job-driven: while the mayor is online and a human is
+ * "online", its job founds the city again at once, so destroy last, with the bots offline):
+ *   1. BotJobs:devHuman:on, BotJobs:login:<first> for each city bot, and wait until BotJobs:list shows them online
+ *      (a login queue of ten takes a minute; raze and the other dev tools need an online bot);
+ *   2. BotCityDev:raze:<first> for each: its houses and commercial buildings (the cantina, hospital, theater);
+ *   3. BotJobs:logout:<first> for each, then BotCityDev:destroy:<city> (the hall, civic buildings and decorations),
+ *      then BotJobs:devHuman:off (destroy is a dev tool and refuses once it is off);
+ *   4. BotCityDev:surrender:<first>:social_politician for any bot that was granted politician boxes.
+ * Starting over from nothing is also simple: stop the stack, delete CORE3_DEV_DATA/databases (and mysql for the bots'
+ * accounts, which then are made again); the navmesh files can stay.
  */
 
 #include "BotCityLua.h"
@@ -28,6 +40,9 @@
 #include "server/ServerCore.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/Zone.h"
+#include "server/zone/managers/planet/PlanetManager.h"
+#include "terrain/manager/TerrainManager.h"
+#include "terrain/ProceduralTerrainAppearance.h"
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "server/zone/objects/player/PlayerObject.h"
 #include "server/zone/objects/region/CityRegion.h"
@@ -399,6 +414,8 @@ void BotCityLua::registerFunctions(Lua* lua) {
 	static const luaL_Reg devFunctions[] = {
 		{"probe", devProbe},
 		{"probeRing", devProbeRing},
+		{"map", devMap},
+		{"profile", devProfile},
 		{"info", devInfo},
 		{"owned", devOwned},
 		{"grant", devGrant},
@@ -451,6 +468,10 @@ int BotCityLua::botCheckSite(lua_State* L) {
 	pushStringArray(L, site.warnings);
 	lua_setfield(L, -2, "warnings");
 	setField(L, "z", site.z);
+
+	if (site.waterLevel > -9000)
+		setField(L, "waterLevel", site.waterLevel);
+
 	setField(L, "heightDiff", site.heightDiff);
 	setField(L, "heightDiffArea", site.heightDiffArea);
 	setField(L, "blocked", site.blocked);
@@ -698,6 +719,85 @@ int BotCityLua::devProbeRing(lua_State* L) {
 
 		BotCity::log().info(true) << msg.toString();
 	}, "BotCityDevProbeRing", "slowQueue");
+
+	return 0;
+}
+
+// map:<planet>:<x0>:<y0>:<x1>:<y1>[:<step>]: an ASCII height map, north at the top, one log line per row
+//   ~ water, # can't be built on, . ground below -150 (the sunken plains), : -150..0, 0-9 every 10 m up from 0 (9 is 90+)
+int BotCityLua::devMap(lua_State* L) {
+	String planet = toString(L, 2);
+	float x0 = toNumber(L, 3), y0 = toNumber(L, 4), x1 = toNumber(L, 5), y1 = toNumber(L, 6), step = toNumber(L, 7, 100);
+
+	Core::getTaskManager()->executeTask([planet, x0, y0, x1, y1, step]() {
+		ZoneServer* zoneServer = ServerCore::getZoneServer();
+		Zone* zone = zoneServer != nullptr ? zoneServer->getZone(planet) : nullptr;
+
+		if (zone == nullptr || step < 5) {
+			BotCity::log().warning() << "BotCityDev map: the planet " << planet << " isn't loaded, or the step is under 5 m";
+			return;
+		}
+
+		PlanetManager* planetManager = zone->getPlanetManager();
+		ProceduralTerrainAppearance* appearance = planetManager->getTerrainManager()->getProceduralTerrainAppearance();
+
+		if (appearance != nullptr)
+			BotCity::log().info(true) << "map " << planet << ": global water table " << (appearance->getUseGlobalWaterTable() ? "on" : "off") << " at "
+				<< appearance->getGlobalWaterTableHeight() << " m";
+
+		BotCity::log().info(true) << "map " << planet << " x " << (int)x0 << ".." << (int)x1 << " (columns, west to east), step " << (int)step << " m";
+
+		for (float y = y1; y >= y0; y -= step) {
+			StringBuffer row;
+
+			for (float x = x0; x <= x1; x += step) {
+				float z = zone->getHeight(x, y);
+
+				if (planetManager->isInWater(x, y))
+					row << '~';
+				else if (!planetManager->isBuildingPermittedAt(x, y, nullptr))
+					row << '#';
+				else if (z < -150)
+					row << '.';
+				else if (z < 0)
+					row << ':';
+				else
+					row << (char)('0' + Math::min(9, (int)(z / 10)));
+			}
+
+			BotCity::log().info(true) << "map " << (int)y << "\t" << row.toString();
+		}
+	}, "BotCityDevMap", "slowQueue");
+
+	return 0;
+}
+
+// profile:<planet>:<x0>:<y0>:<x1>:<y1>[:<step>]: terrain height and water along a line, in one log line
+int BotCityLua::devProfile(lua_State* L) {
+	String planet = toString(L, 2);
+	float x0 = toNumber(L, 3), y0 = toNumber(L, 4), x1 = toNumber(L, 5), y1 = toNumber(L, 6), step = toNumber(L, 7, 25);
+
+	Core::getTaskManager()->executeTask([planet, x0, y0, x1, y1, step]() {
+		ZoneServer* zoneServer = ServerCore::getZoneServer();
+		Zone* zone = zoneServer != nullptr ? zoneServer->getZone(planet) : nullptr;
+
+		if (zone == nullptr || step < 1)
+			return;
+
+		PlanetManager* planetManager = zone->getPlanetManager();
+		float length = Math::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+		StringBuffer msg;
+
+		msg << "profile " << planet << " (" << (int)x0 << ", " << (int)y0 << ") to (" << (int)x1 << ", " << (int)y1 << "), every " << (int)step << " m:";
+
+		for (float d = 0; d <= length + 0.1f; d += step) {
+			float x = x0 + (x1 - x0) * d / length, y = y0 + (y1 - y0) * d / length;
+
+			msg << " " << (int)zone->getHeight(x, y) << (planetManager->isInWater(x, y) ? "w" : "");
+		}
+
+		BotCity::log().info(true) << msg.toString();
+	}, "BotCityDevProfile", "slowQueue");
 
 	return 0;
 }

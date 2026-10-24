@@ -5,7 +5,7 @@
 -- custom_scripts/screenplays/bots/. living_cities_sim.lua loads this file and lends it its clock, shared memory and
 -- world:
 --
---   lua living_cities_sim.lua ../../custom_scripts city cityweeks cityelection cityrestart cityroutine
+--   lua living_cities_sim.lua ../../custom_scripts city cityweeks cityelection cityrestart cityroutine citysafety
 --
 -- It uses the real roster's city bots and the real plan (custom_scripts/bots/city.lua) when they're there, else test
 -- ones. city: founding, the houses and residences, a dev fast-forward to rank 5 with every building and decoration,
@@ -13,7 +13,7 @@
 -- updates with the bots online a couple of hours a week, the upkeep always paid. cityelection: a human candidate wins,
 -- the bot mayor stands aside while a human holds the seat, and runs again when they leave. cityrestart: a server
 -- restart (shared memory lost, the world kept) and a second login: no second city, house, building or deed.
--- cityroutine: a day of the citizens' lives.
+-- cityroutine: a day of the citizens' lives. citysafety: citizens attacked, knocked down and killed outdoors.
 
 return function(ctx)
 	local sim, Obj, fail, realPrint = ctx.sim, ctx.Obj, ctx.fail, ctx.realPrint
@@ -621,6 +621,13 @@ return function(ctx)
 		function botCitySetTax(name, index, value)
 			assert(math.type(index) == "integer" and index >= 0 and index <= 4, "botCitySetTax: index " .. tostring(index))
 			if W.city == nil then return false end
+			-- Core3 (BotCity::setTax): rank 2 to tax at all, and the travel tax needs a shuttleport
+			if W.city.rank < 2 then W.taxRefused = (W.taxRefused or 0) + 1 return false end
+			if index == 3 then
+				local port = false
+				for _, st in ipairs(W.city.structures) do if st.kind == "shuttleport" then port = true end end
+				if not port then W.taxRefused = (W.taxRefused or 0) + 1 return false end
+			end
 			W.city.taxes[index] = value
 			return true
 		end
@@ -956,10 +963,11 @@ return function(ctx)
 		if c.zoning then
 			fail("city: zoning still on")
 		end
+		-- Rank 1 cannot be taxed (Core3 refuses): nothing is set, and nothing is asked until rank 2
 		local taxes = 0
 		for _ in pairs(c.taxes) do taxes = taxes + 1 end
-		if taxes ~= #BotCityJobs:plan().taxes then
-			fail("city: " .. taxes .. " taxes set, the plan has " .. #BotCityJobs:plan().taxes)
+		if taxes ~= 0 or (W.taxRefused or 0) ~= 0 then
+			fail("city: " .. taxes .. " taxes set and " .. tostring(W.taxRefused) .. " refused at rank 1, expected none tried")
 		end
 		checkHouses("city day 0", plan)
 		checkRankBuildings("city day 0", 1)
@@ -984,6 +992,16 @@ return function(ctx)
 			fail("city: rank " .. c.rank .. " after the fast-forward")
 		end
 		checkRankBuildings("city rank 5", 5)
+		do
+			local taxes = 0
+			for _ in pairs(c.taxes) do taxes = taxes + 1 end
+			if taxes ~= #BotCityJobs:plan().taxes then
+				fail("city: " .. taxes .. " taxes set at rank 5, the plan has " .. #BotCityJobs:plan().taxes)
+			end
+			if (W.taxRefused or 0) ~= 0 then
+				fail("city: " .. W.taxRefused .. " tax calls Core3 would refuse (rank 1, or travel without a shuttleport)")
+			end
+		end
 		if #c.decorations ~= #BotCityJobs:plan().decorations then
 			fail("city: " .. #c.decorations .. " decorations of " .. #BotCityJobs:plan().decorations)
 		end
@@ -1298,9 +1316,125 @@ return function(ctx)
 		teardown()
 	end
 
+	-- citysafety: a citizen attacked outdoors goes into its house and the town keeps in; one knocked down goes in once it
+	-- is up; one that dies is cloned and put back at its house, and carries on with its day
+	function scenarios.citysafety()
+		setup("citysafety")
+		loginAll()
+		sim.run(900)
+		BotCityJobs:toRank("3")
+		sim.run(1800)
+
+		local citizens = {}
+		for _, b in pairs(W.bots) do
+			if b.job == "citizen" then table.insert(citizens, b) end
+		end
+		table.sort(citizens, function(a, b) return a.oid < b.oid end)
+
+		-- The mock creature that can be fought, knocked down and killed
+		local savedCombat, savedClear, savedClone = Obj.isInCombat, Obj.clearCombatState, botClone
+		function Obj:isInCombat()
+			if self.simCombat ~= nil then return self.simCombat end
+			return savedCombat(self)
+		end
+		function Obj:clearCombatState(_) self.simCombat = false end
+		local cloned = 0
+		function botClone(bot)
+			if not bot.dead then return false end
+			cloned = cloned + 1
+			bot.dead = false
+			-- the nearest cloner is far away
+			bot.x, bot.y, bot.cell = -5200, 4200, 0
+			sim.call("BotJobs", "onEvent", bot, "cloned", nil, "")
+			return true
+		end
+
+		local street = BotCityJobs:plan().streets[1] or BotCityJobs:plan().center
+		local a, b, c = citizens[1], citizens[2], citizens[3]
+		local function out(bot, dx)
+			bot.cell, bot.x, bot.y = 0, street.x + dx, street.y
+			bot.walk = nil
+			writeStringData("bot:" .. bot.oid .. ":cityAt", "streets")
+			writeData("bot:" .. bot.oid .. ":cityLingerUntil", os.time() + 3600)
+		end
+		local function indoors(bot)
+			return bot.cell ~= 0
+		end
+
+		-- Attacked outdoors
+		BotCityJobs:moveEnded(a, a.oid, "put")
+		out(a, 0)
+		out(b, 20)
+		a.simCombat = true
+		sim.run(15)
+		if not indoors(a) then
+			fail("citysafety: the attacked citizen is still outdoors")
+		end
+		if a.simCombat then
+			fail("citysafety: the attacked citizen is still in combat after sheltering")
+		end
+		if readData("botcity:danger") <= os.time() then
+			fail("citysafety: no alarm after an attack")
+		end
+		-- The other one, out in the street, heads home
+		sim.run(240)
+		if not indoors(b) then
+			fail("citysafety: a citizen outdoors didn't go home when the alarm went up")
+		end
+		-- While the alarm is up nobody picks an outdoor errand
+		local outdoorErrand = false
+		for _, bot in ipairs(citizens) do
+			local errand = readStringData("bot:" .. bot.oid .. ":cityErrand")
+			if errand ~= "" and errand ~= "home" and errand ~= "cantina" then outdoorErrand = true end
+		end
+		if outdoorErrand then
+			fail("citysafety: an outdoor errand while the alarm was up")
+		end
+
+		-- Knocked down: up again after a while, then in
+		sim.run(2000)
+		out(c, 0)
+		c.incap = true
+		sim.call("BotJobs", "onEvent", c, "incapacitated", nil, "")
+		sim.run(8)
+		c.incap = false
+		sim.run(30)
+		if not indoors(c) then
+			fail("citysafety: the knocked-down citizen didn't go in once it was up")
+		end
+
+		-- Dead: cloned far away, put back home, and back to its day
+		sim.run(2000)
+		out(a, 5)
+		a.dead = true
+		sim.call("BotJobs", "onEvent", a, "died", nil, "")
+		sim.run(120)
+		if cloned ~= 1 then
+			fail("citysafety: " .. cloned .. " clonings, expected 1")
+		end
+		if not indoors(a) then
+			fail("citysafety: the cloned citizen wasn't put back at its house")
+		end
+		sim.run(2 * 3600)
+		local at = readStringData("bot:" .. a.oid .. ":cityAt")
+		if at == "" and not BotCityJobs:moving(a.oid) then
+			fail("citysafety: the cloned citizen never took up its day again")
+		end
+		if BotCityJobs:placing(a.oid) then
+			fail("citysafety: the cloned citizen is stuck placing")
+		end
+
+		Obj.isInCombat, Obj.clearCombatState, botClone = savedCombat, savedClear, savedClone
+		report("citysafety")
+		realPrint("             sheltered " .. readData("botcity:stat:sheltered") .. ", knocked down " .. readData("botcity:stat:hurt") ..
+			", died " .. readData("botcity:stat:died") .. ", cloned " .. cloned)
+		teardown()
+	end
+
 	table.insert(order, "city")
 	table.insert(order, "cityweeks")
 	table.insert(order, "cityelection")
 	table.insert(order, "cityrestart")
 	table.insert(order, "cityroutine")
+	table.insert(order, "citysafety")
 end

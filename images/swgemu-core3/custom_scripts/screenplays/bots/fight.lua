@@ -20,6 +20,7 @@
 --   runLuaFunction BotFight:devInsult:<first>:<from>   bot <from> insults bot <first> (as if the brain flagged it)
 --   runLuaFunction BotFight:devDuel:<first>:<from>     bot <from> challenges bot <first> to a duel
 --   runLuaFunction BotFight:devList                    every online bot's fight state
+--   runLuaFunction BotFight:devInfo:<first>            one bot: combat, target, posture, health and range
 
 BotFight = ScreenPlay:new {
 	screenplayName = "BotFight",
@@ -690,6 +691,12 @@ function BotFight:acceptDuel(pBot, oid, pOther)
 		return
 	end
 
+	-- A third incap within ten minutes kills (Core3): a duel ends at the first incap, so it can't start at two
+	if botRecentIncaps ~= nil and botRecentIncaps(pOther) >= 2 then
+		self:say(pBot, oid, otherOid, "spatial", "tooHurt", "")
+		return
+	end
+
 	botFace(pBot, pOther)
 	botEnqueue(pBot, "duel", otherOid, "")
 	self:say(pBot, oid, otherOid, "spatial", "duelAccept", "")
@@ -830,4 +837,27 @@ function BotFight:devList()
 			print("BotJobs:   " .. tostring(bot.name) .. ": " .. (state == "" and "at peace" or state:sub(3)))
 		end
 	end
+end
+
+function BotFight:devInfo(first)
+	local pBot = botGetCreature ~= nil and botGetCreature(first or "") or nil
+
+	if pBot == nil then
+		print("BotJobs: no online bot called " .. tostring(first))
+		return
+	end
+
+	local bot = CreatureObject(pBot)
+	local oid = SceneObject(pBot):getObjectID()
+	local withOid = readData(fkey(oid, "with"))
+	local text = first .. ": inCombat " .. tostring(bot:isInCombat()) .. ", posture " .. tostring(bot:getPosture()) ..
+		", target " .. tostring(bot:getTargetID()) .. ", with " .. tostring(withOid) .. ", health " ..
+		tostring(bot:getHAM(0)) .. "/" .. tostring(bot:getMaxHAM(0))
+	local pWith = withOid ~= 0 and getSceneObject(withOid) or nil
+
+	if pWith ~= nil then
+		text = text .. ", range " .. string.format("%.1f", SceneObject(pBot):getDistanceTo(pWith))
+	end
+
+	print("BotJobs: " .. text)
 end

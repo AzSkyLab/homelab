@@ -52,3 +52,6 @@ ansible/roles/argocd/files/*.key
 .env.*
 home-lab-root-ca.crt
 
+
+# Python bytecode (the talk bridge, dev tools)
+__pycache__/

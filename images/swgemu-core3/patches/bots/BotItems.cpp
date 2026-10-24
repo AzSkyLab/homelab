@@ -62,6 +62,8 @@ bool isCombatPackTemplate(SharedObjectTemplate* objectTemplate) {
 		|| objectTemplate->getGameObjectType() == SceneObjectType::REVIVEPACK;
 }
 
+const float REVIVE_POWER = 400;
+
 // The fields each combat pack's updateCraftingValues reads, as a crafting session would set them. What stockPack
 // doesn't set (medicine use, range, area) stays as the pack has it. Pre: pack locked
 bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power) {
@@ -116,6 +118,11 @@ bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power) {
 		cast<StatePack*>(pack)->updateCraftingValues(&values, true);
 	} else if (pack->isRevivePack()) {
 		RevivePack* revive = cast<RevivePack*>(pack);
+
+		// A template revive pack has no power of its own (it heals one point and no wounds): 0 asks for a good
+		// crafted one
+		if (power <= 0)
+			power = REVIVE_POWER;
 
 		// Its crafting turns power into wounds healed, 2x for health
 		if (revive->getHealthWoundHealed() == 2 * power && enoughUses)

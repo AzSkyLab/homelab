@@ -65,6 +65,11 @@ BotLines.fight = {
 		"I've had enough of you for now. Ask me later.",
 	},
 	-- Already fighting someone else
+	-- A duel asked by someone who'd die at the next incap (two in the last ten minutes)
+	tooHurt = {
+		"You can barely stand, {name}. Get patched up first, then we'll see.",
+		"Not like that. Go see a medic and come back when you can take a hit.",
+	},
 	busy = {
 		"Busy right now. Ask me later.",
 	},

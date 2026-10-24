@@ -12,7 +12,10 @@
  *   and between buildings with no pathfinding. It keeps followNear-followFar metres behind (the distance and a little
  *   side offset outdoors are fixed per bot), runs when the leader runs or it is more than 8 m behind, checks a
  *   building's entry permission before stepping into a cell, and copies a jump in the trail (an elevator) with a
- *   teleport. More than 80 m behind, or stuck for 5 s, it appears about 10 m behind the leader on its trail.
+ *   teleport. More than 80 m behind, or stuck for 5 s, it appears about 10 m behind the leader on its trail. With no
+ *   trail to walk, or one that starts in another cell far from the bot (the leader went through a door unseen), it
+ *   asks findPath once for a way to the leader; with none (two buildings) it appears beside the leader from 12 m.
+ *   Distances are on the ground plane (a navmesh height and the floor differ by metres).
  * - A leap (the leader changes planet, takes a shuttle, or is teleported far): if the bot was within 64 m, it follows
  *   2-6 s after the leader's load screen ends (switchZone to another planet, a teleport on the same one), as if it took
  *   the same flight. BotManager's watchdog makes it scene-ready.

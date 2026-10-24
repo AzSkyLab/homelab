@@ -12,6 +12,8 @@
  *   botEquip(pBot, template) -> oid             create if missing, equip (a weapon to hold_r), repair; 0 on failure
  *   botRepairGear(pBot) -> count
  *   botFindPack(pBot, template) -> oid          a pack of that template in the inventory, or 0
+ *   botRecentIncaps(pCreature) -> count         incaps in the last ten minutes; at 2 the next one kills, so no fight
+ *                                               (botStartFight refuses) and no duel worth accepting
  *
  * Also starts BotCombat's tick (its events: "incapacitated", "died", "revived", "cloned", "duel", "fightEnded").
  */
@@ -39,6 +41,7 @@ private:
 	static int botEquip(lua_State* L);
 	static int botRepairGear(lua_State* L);
 	static int botFindPack(lua_State* L);
+	static int botRecentIncaps(lua_State* L);
 };
 
 } // namespace bot

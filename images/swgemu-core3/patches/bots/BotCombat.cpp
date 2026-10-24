@@ -86,6 +86,7 @@ Vector<Reference<FightRecord*>> fights;
 VectorMap<uint64, Reference<IncapRecord*>> incaps;
 VectorMap<uint64, ManagedWeakReference<CreatureObject*>> watchedHumans;	// humans with humanObserver on them
 ManagedReference<LambdaObserver*> humanObserver;
+Time watchStarted;	// when the first tick ran: incaps before it (this boot) weren't seen
 
 const uint32 lifeEvents[] = {ObserverEventType::POSTURECHANGED, ObserverEventType::PLAYERKILLED, ObserverEventType::CREATUREREVIVED};
 
@@ -722,6 +723,12 @@ void BotCombat::start() {
 	if (started.exchange(true))
 		return;
 
+	{
+		Locker locker(&stateMutex);
+
+		watchStarted.updateToCurrentTime();
+	}
+
 	Reference<Task*> task = new BotCombatTickTask();
 	task->schedule(TICK_MS * 10);
 }
@@ -940,8 +947,17 @@ int BotCombat::recentIncaps(CreatureObject* creature) {
 		}
 	}
 
-	// Core3's list holds every recent incap (and maybe old ones); ours only what we saw
-	return Math::min(listed, seen);
+	// Core3's list holds every recent incap (and maybe old ones, until the next incap prunes them); ours only what we
+	// saw. Within the window of our start, incaps from before it are only in Core3's list
+	bool sawAll = false;
+
+	{
+		Locker locker(&stateMutex);
+
+		sawAll = watchStarted.miliDifference() >= INCAP_WINDOW * 1000;
+	}
+
+	return sawAll ? Math::min(listed, seen) : listed;
 }
 
 bool BotCombat::startFight(CreatureObject* bot, CreatureObject* human) {

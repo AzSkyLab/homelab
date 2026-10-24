@@ -365,6 +365,7 @@ FOLLOWUPS = [
     ("ranger", "sure, do it", "camp", "Want me to throw down a camp here?", "camp"),
     ("tank", "yeah", "join", "Need a tank? I'm free if you're hunting.", "join"),
     ("ranger", "nah, keep moving", "camp", "Want me to throw down a camp here?", ""),
+    ("medic", "heal my wounds too", "buff", "Camp's up, buffs coming. Anyone else?", "wounds"),
 ]
 # Reply line 5, no model (--check): (what the player says, the model's "insult", whether the flag is set)
 INSULT_CHECKS = [

@@ -5,8 +5,9 @@
  *   botGetGroupInviter(pBot)           the oid of whoever invited the bot, or 0 (also event "groupInvite", pOther the
  *                                      inviter); the jobs answer with botEnqueue(pBot, "join" / "decline", 0, "")
  *   botPlaceCamp(pBot[, kitTemplate])  the camp's oid, or 0 and why ("skill", "in combat", "inside", "in a city",
- *                                      "no camping here", "not placed ..."); an existing camp's oid and "already
- *                                      camping". The default kit is the master camp (camp_luxury)
+ *                                      "no camping here", "in water", "in another camp", "building too close", "camp
+ *                                      too close", "lair too close", "not placed ..."); an existing camp's oid and
+ *                                      "already camping". The default kit is the master camp (camp_luxury)
  *   botRemoveCamp(pBot)                disbands the bot's camp
  *   botGetCamp(pBot)                   the bot's camp's oid, or 0
  *   botTrack(pBot[, type])             array of {name, distance, bearing, degrees, oid, kind, level}, nearest first;
@@ -20,6 +21,11 @@
  *   runLuaFunction BotGroupDev:camp:<first>[:<kit>]    (uncamp:<first>)
  *   runLuaFunction BotGroupDev:track:<first>[:<type>]
  *   runLuaFunction BotGroupDev:skillmod:<first>:<mod>  a bot's skill mod (e.g. private_medical_rating, camp)
+ *   runLuaFunction BotGroupDev:group:<first>            who is in its group, the loot rule (lootrule:<first>:<0-3>, roomsay:<first>:<text>: typed into the group room)
+ *   runLuaFunction BotGroupDev:why:<enhancer>:<patient>  the checks of /healenhance, as a line (refusals go only to a client)
+ *   runLuaFunction BotGroupDev:fight:<first>:<oid>      the bot targets and attacks it (mob:<oid>: its state and threat map)
+ *   runLuaFunction BotGroupDev:grouploot:<first>:<corpse>:<2|3>  the lottery or random loot step on a corpse; weaken:<oid>
+ *   runLuaFunction BotGroupDev:spawn:<first>:<mobile>[:<m>]  a creature in front of the bot (logs its oid)
  *   runLuaFunction BotGroupDev:cmd:<first>:<command>[:<target bot or oid>[:<args>]]   any command, as botEnqueue
  */
 

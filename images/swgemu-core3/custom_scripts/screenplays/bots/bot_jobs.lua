@@ -533,15 +533,25 @@ function BotJobs:ask(pBot, oid, playerOid, playerName, text, channel, intent)
 	local id = LivingTalk:newId(oid)
 	local hour = LivingCities ~= nil and LivingCities:hour() or tonumber(os.date("*t").hour)
 
-	local sent = LivingTalk:send(id, {
+	local module = self:module(job) or {}
+	local request = {
 		type = "say", id = id, at = os.time(),
 		bot = 1, job = job, channel = channel,
 		npc = oid, name = self:name(oid), first = readStringData(key(oid, "first")),
 		species = entry.species or "human", sex = entry.sex or "male",
-		kit = (self:module(job) or {}).kit or self.kits[job] or "traveller", city = city,
-		place = (self:module(job) or {}).place or self.places[job] or "plaza", hour = hour,
+		kit = module.kit or self.kits[job] or "traveller", city = city,
+		place = module.place or self.places[job] or "plaza", hour = hour,
 		player = playerOid, playerName = playerName, text = text,
-	})
+	}
+
+	-- The job's own fields (a musician's instrument, a smuggler's prices, grouped, a city's news); they win
+	if module.requestFields ~= nil then
+		for field, value in pairs(module:requestFields(pBot, oid) or {}) do
+			request[field] = value
+		end
+	end
+
+	local sent = LivingTalk:send(id, request)
 
 	if not sent then
 		return "nobrain"

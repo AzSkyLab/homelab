@@ -662,5 +662,10 @@ function BotSmuggler:devCashNow(pBot, amount)
 	print("BotJobs: " .. CreatureObject(pBot):getFirstName() .. " has " .. CreatureObject(pBot):getCashCredits() .. " credits on hand")
 end
 
+-- For the brain (the request's extra fields): the prices it names
+function BotSmuggler:requestFields(pBot, oid)
+	return {priceArmor = self:price("armor"), priceWeapon = self:price("weapon")}
+end
+
 BotJobModules = BotJobModules or {}
 BotJobModules.smuggler = BotSmuggler

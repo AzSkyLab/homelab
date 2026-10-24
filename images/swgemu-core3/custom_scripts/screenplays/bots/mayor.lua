@@ -12,9 +12,9 @@
 -- When a human is mayor it no longer governs (it can't), but still keeps the treasury paid. Every step is an event on
 -- the mayor; chores run every minute (BotCityJobs:devFast: every 10 s).
 
-if BotCityJobs == nil then
-	includeFile("../custom_scripts/screenplays/bots/city_jobs.lua")
-end
+-- Always (re)loaded here, first: a console reloadscreenplays then picks up city_jobs.lua too (citizen.lua, loaded
+-- after this, finds it there)
+includeFile("../custom_scripts/screenplays/bots/city_jobs.lua")
 
 BotMayor = ScreenPlay:new {
 	screenplayName = "BotMayor",
@@ -76,7 +76,7 @@ function BotMayor:start(pBot, oid)
 	if BotCityJobs:freshLogin(pBot, oid) and BotCityJobs:info() ~= nil then
 		local s = self:station(oid)
 
-		SceneObject(pBot):teleport(s.x, getWorldFloor(s.x, s.y, BotCityJobs:plan().planet), s.y, 0)
+		SceneObject(pBot):teleport(s.x, BotCityJobs:ground(pBot, s.x, s.y), s.y, 0)
 	end
 end
 
@@ -99,6 +99,10 @@ function BotMayor:busy(oid)
 end
 
 function BotMayor:tick(pBot, oid, now)
+	if BotCityJobs:cloneIfDead(pBot, oid, now) then
+		return
+	end
+
 	BotCityJobs:checkMove(pBot, oid, now)
 
 	if self:busy(oid) then
@@ -184,7 +188,7 @@ function BotMayor:found(pBot, oid, now)
 	if math.sqrt((x - hall.x) ^ 2 + (y - hall.y) ^ 2) < (BotCityJobs.clearance.cityhall or 56) then
 		local s = self:station(oid)
 
-		BotCityJobs:go(pBot, oid, s.x, getWorldFloor(s.x, s.y, plan.planet), s.y, 0, "found")
+		BotCityJobs:go(pBot, oid, s.x, BotCityJobs:ground(pBot, s.x, s.y), s.y, 0, "found")
 		return
 	end
 
@@ -306,15 +310,32 @@ function BotMayor:govern(pBot, oid, info, now)
 		print("BotCity: zoning off: " .. tostring(botCityZoning(name, false)))
 	end
 
-	if readData(ck("taxesSet")) ~= 1 and botCitySetTax ~= nil then
-		local set = {}
+	-- Taxes: Core3 refuses them below rank 2, and the travel tax until a shuttleport stands (index 3). Each is set once,
+	-- as soon as it may be; a refusal is tried again later.
+	if botCitySetTax ~= nil and info.rank >= 2 and now >= readData(ck("taxRetry")) then
+		local set, failed = {}, false
 
 		for _, tax in ipairs(plan.taxes) do
-			table.insert(set, tax.index .. "=" .. tax.value .. " " .. tostring(botCitySetTax(name, tax.index, tax.value)))
+			if readData(ck("taxSet:" .. tax.index)) ~= 1 and (tax.index ~= 3 or self:shuttleportUp(pBot, info)) then
+				local ok = botCitySetTax(name, tax.index, tax.value)
+
+				if ok then
+					writeData(ck("taxSet:" .. tax.index), 1)
+				else
+					failed = true
+				end
+
+				table.insert(set, tax.index .. "=" .. tax.value .. " " .. tostring(ok))
+			end
 		end
 
-		writeData(ck("taxesSet"), 1)
-		print("BotCity: taxes " .. (#set > 0 and table.concat(set, ", ") or "left as they are"))
+		if failed then
+			writeData(ck("taxRetry"), now + (BotCityJobs:fast() and 30 or 300))
+		end
+
+		if #set > 0 then
+			print("BotCity: taxes " .. table.concat(set, ", "))
+		end
 	end
 
 	-- The rank's civic buildings (its own; the entertainers and the doctor place theirs)
@@ -360,6 +381,17 @@ function BotMayor:govern(pBot, oid, info, now)
 	return false
 end
 
+-- Is the shuttleport standing (the travel tax needs it)?
+function BotMayor:shuttleportUp(pBot, info)
+	for _, item in ipairs(BotCityJobs:plan().civic) do
+		if item.kind == "shuttleport" and BotCityJobs:builtOid(item, info, pBot) ~= nil then
+			return true
+		end
+	end
+
+	return false
+end
+
 -- The next planned decoration not yet standing: by position when the C++ lists them, else in plan order by count
 function BotMayor:nextDecoration(info)
 	if botPlaceDecoration == nil then
@@ -391,7 +423,7 @@ end
 function BotMayor:startDecoration(pBot, oid, item)
 	writeStringData(bk(oid, "cityPlacing"), item.id)
 	writeData(bk(oid, "cityPlacingSince"), os.time())
-	BotCityJobs:go(pBot, oid, item.x, getWorldFloor(item.x, item.y, BotCityJobs:plan().planet), item.y, 0, "deco:" .. item.index)
+	BotCityJobs:go(pBot, oid, item.x, BotCityJobs:ground(pBot, item.x, item.y), item.y, 0, "deco:" .. item.index)
 end
 
 -- The walk is over (BotCityJobs:moved): out of the hall's way to found the city, a decoration spot, or back at the
@@ -484,7 +516,7 @@ function BotMayor:backToStation(pBot, oid)
 		return
 	end
 
-	local z = (s.z ~= nil and s.z ~= 0) and s.z or getWorldFloor(s.x, s.y, BotCityJobs:plan().planet)
+	local z = (s.z ~= nil and s.z ~= 0) and s.z or BotCityJobs:ground(pBot, s.x, s.y)
 
 	BotCityJobs:go(pBot, oid, s.x, z, s.y, s.cell or 0, "station")
 end

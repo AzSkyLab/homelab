@@ -73,6 +73,9 @@ public:
 	// From BotManager::logoutBot (bot locked): aborts an open trade, and hands back an owed item if it can
 	static void abortAtLogout(server::zone::objects::creature::CreatureObject* bot);
 
+	// From BotManager's login (bot locked): reads back what it owed at its last logout, to hand back
+	static void restoreOwed(server::zone::objects::creature::CreatureObject* bot);
+
 	// Hand an item in the bot's inventory to its owner: straight into the owner's inventory if there's room, else
 	// through a give-back trade (the bot asks the owner to trade, offers the item and verifies once the owner has).
 	// Pre: bot locked. Returns true if the item went straight in (returned), false if a trade was started or the

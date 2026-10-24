@@ -680,15 +680,22 @@ core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) a
   - tags `dev-bots` for the local test server (`CORE3_IMAGE=ghcr.io/azskylab/swgemu-core3:dev-bots docker compose
     up -d`);
   - the first build takes about 20 minutes, the rest only what changed.
-- **Bot players.** Six characters the server plays itself, with no client: a master doctor and a master dancer in Mos
-  Eisley, Coronet and Theed.
-  - **Roster:** `custom_scripts/bots/roster.lua`.
+- **Bot players.** 26 characters the server plays itself, with no client:
+  - in Mos Eisley, Coronet and Theed, a master doctor, dancer, musician and smuggler (who slices by trade);
+  - in the Mos Eisley cantina, a hunting crew of four (tank, rifleman, medic, ranger) you can group with;
+  - Varenhal, a bot-run player city on Naboo at (-3291, 4911): a mayor, a dancer, musician and doctor, six citizens.
+  - **Roster:** `custom_scripts/bots/roster.lua`; the city's plan `custom_scripts/bots/city.lua`.
   - **Accounts and characters:** `bot_<firstname>` accounts with unusable passwords, made on first boot.
-  - **When they're online:** they log in a minute after the first human and out 10 minutes after the last.
+  - **When they're online:** they log in a minute after the first human and out 10 minutes after the last. The ten
+    Varenhal bots only while a human is on Naboo.
+  - **Fights:** any bot fights a player who insults it three times in 10 minutes, or accepts a `/duel`, to the
+    first incap.
+  - **Credits:** the city's bots pay its upkeep from credits the server gives them: the one place we create credits.
   - **Status port:** never counts them, so `scripts/swgemu-deploy.sh`'s players check still means humans.
   - **A stuck bot:** `BotJobs:logout:<first>` then `login:<first>`. A restart also puts every bot back at its
     station.
-  - Spec: `~/github/swgemu/specs/2026-10-23-bot-players/`.
+  - Specs: `~/github/swgemu/specs/2026-10-23-bot-players/` (the contract in `interfaces.md`),
+    `2026-10-23-musicians-smugglers/`, `2026-10-23-bot-group-mates/`, `2026-10-23-player-city/`.
 
 ### Common Tasks
 
@@ -711,6 +718,9 @@ kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:dump
 kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:list
 kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:login:Hesk
 kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:devBuffs:Hesk
+# The bot city (rank, citizens, treasury, next update and election), and every bot's fight state
+kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotCityJobs:status
+kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotFight:devList
 ```
 
 ### Recreating K8s Secrets

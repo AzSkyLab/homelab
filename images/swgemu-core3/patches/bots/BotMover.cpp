@@ -14,6 +14,7 @@
 #include "server/zone/objects/scene/WorldCoordinates.h"
 #include "server/zone/objects/scene/variables/ContainerPermissions.h"
 #include "server/zone/managers/planet/PlanetManager.h"
+#include "terrain/manager/TerrainManager.h"
 #include "server/zone/managers/player/PlayerManager.h"
 #include "server/zone/managers/collision/CollisionManager.h"
 #include "server/zone/managers/collision/IntersectionResults.h"
@@ -31,6 +32,8 @@ const float JUMP_DIST = 6.0f;			// a hop this long into or out of a cell between
 const float RUN_BEHIND = 8.0f;
 const float CATCH_UP_DIST = 80.0f;
 const float CATCH_UP_BEHIND = 10.0f;
+const float OFF_TRAIL_DIST = 8.0f;		// the next breadcrumb is in another cell and this far: the bot isn't on the trail
+const float NO_WAY_SNAP_DIST = 12.0f;	// no path to a leader in another room or building: appear beside it from this far
 const float TOGETHER_DIST = 64.0f;		// within this the bot is with the leader, and follows it across a leap
 const float MOVED_AWAY_DIST = 5.0f;		// further than this from where the mover put it: someone else moved it
 const float ARRIVE_DIST = 0.3f;
@@ -157,6 +160,8 @@ public:
 	Zone* goalZone = nullptr;
 	bool run = false;
 	uint64 gotoStuckSince = 0;
+	float gotoBest = 0;		// the least way left so far, and when it last got shorter by half a metre
+	uint64 gotoBestAt = 0;
 	BotMovePath patrol;		// dev: a loop of goals
 	int patrolIndex = 0;
 	int patrolPace = BotMover::PACE_AUTO;
@@ -319,7 +324,16 @@ float worldFloor(CreatureObject* bot, Zone* zone, float x, float y, float z, Int
 
 	CollisionManager::getWorldFloorCollisions(x, y, zone, intersections, closeObjects);
 
-	return planetManager->findClosestWorldFloor(x, y, z, bot->getSwimHeight(), intersections, closeObjects);
+	float floor = planetManager->findClosestWorldFloor(x, y, z, bot->getSwimHeight(), intersections, closeObjects);
+
+	// It picks the floor nearest the hint, and a hint that is metres off (a crumb on a slope, a height carried over)
+	// can land on a mesh under the ground. Nothing outdoors walks below the terrain: shooting from there has no line of sight
+	float terrain = zone->getHeight(x, y);
+
+	if (floor < terrain - 0.5f)
+		floor = terrain;
+
+	return floor;
 }
 
 // The cell's floor mesh under x, y nearest to z. False if the point is off the floor
@@ -349,7 +363,7 @@ float pathLength(const Vector3& from, const BotMovePath& path) {
 		const BotMovePoint* point = path.get(i);
 
 		if (!point->jump)
-			length += previous.distanceTo(point->world);
+			length += previous.distanceTo2d(point->world);
 
 		previous = point->world;
 	}
@@ -493,7 +507,16 @@ void teleportTo(BotMoveJob* job, CreatureObject* bot, const BotMovePoint& point)
 		job->moving = false;
 	}
 
-	bot->teleport(point.local.getX(), point.local.getZ(), point.local.getY(), point.cell != nullptr ? point.cell->getObjectID() : 0);
+	float z = point.local.getZ();
+	Zone* zone = bot->getZone();
+
+	if (point.cell == nullptr && zone != nullptr) {
+		IntersectionResults intersections;
+
+		z = worldFloor(bot, zone, point.local.getX(), point.local.getY(), z, &intersections);
+	}
+
+	bot->teleport(point.local.getX(), z, point.local.getY(), point.cell != nullptr ? point.cell->getObjectID() : 0);
 
 	job->ownTeleportAt = System::getMiliTime();
 	job->placedValid = false;
@@ -543,7 +566,7 @@ BotMoveResult advance(BotMoveJob* job, CreatureObject* bot, Zone* zone, const Bo
 			return result;
 		}
 
-		float distance = current.world.distanceTo(next->world);
+		float distance = current.world.distanceTo2d(next->world);
 
 		if (distance <= left) {
 			current.set(*next);
@@ -677,7 +700,7 @@ bool findWay(Zone* zone, const BotMovePoint& from, const BotMovePoint& to, BotMo
 	}
 
 	// End exactly on the goal
-	if (out.isEmpty() || out.get(out.size() - 1)->world.distanceTo(to.world) > 0.05f || !sameCell(out.get(out.size() - 1)->cell, to.cell)) {
+	if (out.isEmpty() || out.get(out.size() - 1)->world.distanceTo2d(to.world) > 0.05f || !sameCell(out.get(out.size() - 1)->cell, to.cell)) {
 		Reference<BotMovePoint*> point = new BotMovePoint(to);
 		point->jump = false;
 		out.add(point);
@@ -764,7 +787,7 @@ void recordCrumb(BotMoveJob* job, CreatureObject* leader, const BotMovePoint& se
 		}
 	}
 
-	if (last != nullptr && sameCell(seen.cell, last->cell) && seen.world.distanceTo(last->world) < CRUMB_SPACING)
+	if (last != nullptr && sameCell(seen.cell, last->cell) && seen.world.distanceTo2d(last->world) < CRUMB_SPACING)
 		return;
 
 	Reference<BotMovePoint*> crumb = new BotMovePoint(seen);
@@ -830,7 +853,7 @@ bool catchUp(BotMoveJob* job, CreatureObject* bot, CreatureObject* leader, const
 	for (int i = job->trail.size() - 1; i >= 0; --i) {
 		const BotMovePoint* crumb = job->trail.get(i);
 
-		behind += previous.distanceTo(crumb->world);
+		behind += previous.distanceTo2d(crumb->world);
 		previous = crumb->world;
 		index = i;
 
@@ -958,7 +981,7 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 	}
 
 	// A leap: another planet, a load screen (a shuttle), or far on this planet in one look (a teleport)
-	bool farHop = job->lastSeenValid && job->lastSeenZone == leaderZone && seen.world.distanceTo(job->lastSeen.world) > TOGETHER_DIST;
+	bool farHop = job->lastSeenValid && job->lastSeenZone == leaderZone && seen.world.distanceTo2d(job->lastSeen.world) > TOGETHER_DIST;
 
 	if ((!sameZone || loading || farHop) && !job->leapPending) {
 		job->leapPending = true;
@@ -975,7 +998,7 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 	}
 
 	if (job->leapPending) {
-		float distance = sameZone ? here.world.distanceTo(seen.world) : -1;
+		float distance = sameZone ? here.world.distanceTo2d(seen.world) : -1;
 
 		if (loading) {
 			job->leapAt = 0;
@@ -1011,7 +1034,7 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 		}
 	}
 
-	float distance = here.world.distanceTo(seen.world);
+	float distance = here.world.distanceTo2d(seen.world);
 
 	job->lastDistance = distance;
 
@@ -1045,13 +1068,14 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 		job->pathTried = false;
 
 	// The leader in plain sight: the trail behind the bot doesn't matter any more
-	if (sameFrame && distance <= job->followDist + 1.5f && !trailHasJump(job->trail))
-		job->trail.removeAll();
+	// (keeping its last look, so the trail still starts where the bot is if the leader now goes through a door)
+	if (sameFrame && distance <= job->followDist + 1.5f && !trailHasJump(job->trail) && job->trail.size() > 1)
+		job->trail.removeRange(0, job->trail.size() - 1);
 
 	skipLoops(job, here);
 
 	const BotMovePoint* last = job->trail.isEmpty() ? nullptr : job->trail.get(job->trail.size() - 1).get();
-	float remaining = last == nullptr ? distance : pathLength(here.world, job->trail) + last->world.distanceTo(seen.world);
+	float remaining = last == nullptr ? distance : pathLength(here.world, job->trail) + last->world.distanceTo2d(seen.world);
 	bool wantMove = remaining > job->followDist + (job->moving ? 0.25f : 1.5f);
 
 	if (paused || !wantMove) {
@@ -1063,19 +1087,36 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 		return;
 	}
 
-	// No trail to walk and a wall between (another cell, or in and out of a building): find a way once
-	if (job->trail.isEmpty() && !sameFrame && !job->pathTried) {
+	// No trail to walk, or a trail that doesn't start where the bot is (the leader went through a door the bot didn't
+	// see) and a wall between: find a way once, to where the leader is now
+	bool offTrail = !job->trail.isEmpty() && !job->trail.get(0)->jump && !sameCell(job->trail.get(0)->cell, here.cell)
+			&& job->trail.get(0)->world.distanceTo2d(here.world) > OFF_TRAIL_DIST;
+
+	if (((job->trail.isEmpty() && !sameFrame) || offTrail) && !job->pathTried) {
 		job->pathTried = true;
 
 		BotMovePath way;
 
 		if (findWay(zone, here, seen, way)) {
+			moverLog().info(true) << "BotMover: " << bot->getFirstName() << " found a way to " << leader->getFirstName() << ": "
+				<< way.size() << " points, " << (int)pathLength(here.world, way) << " m (" << (offTrail ? "off the trail" : "no trail")
+				<< ", cell " << (here.cell != nullptr ? here.cell->getObjectID() : 0) << " to " << (seen.cell != nullptr ? seen.cell->getObjectID() : 0)
+				<< ", first crumb cell " << (offTrail && job->trail.get(0)->cell != nullptr ? job->trail.get(0)->cell->getObjectID() : 0) << ")";
+
 			// The last point is the leader's spot; the bot stops short of it anyway
+			job->trail.removeAll();
+
 			for (int i = 0; i < way.size(); ++i)
 				job->trail.add(way.get(i));
 
 			trimTrail(job);
 			remaining = pathLength(here.world, job->trail);
+		} else if (distance > NO_WAY_SNAP_DIST) {
+			// Two buildings, or a room the paths don't know: don't walk through the walls
+			job->trail.removeAll();
+			catchUp(job, bot, leader, seen, zone, "no way");
+			publish(job, "follow", job->leaderOid, distance, false);
+			return;
 		}
 	}
 
@@ -1152,6 +1193,7 @@ void finishGoto(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 			job->goal = new BotMovePoint(*next);
 			job->run = job->patrolPace == BotMover::PACE_RUN || (job->patrolPace == BotMover::PACE_AUTO && pathLength(here.world, way) > AUTO_RUN_PATH);
 			job->gotoStuckSince = 0;
+			job->gotoBestAt = 0;
 
 			moverLog().info(true) << "BotMover: " << bot->getFirstName() << " patrol leg " << job->patrolIndex << ", " << way.size() << " points";
 
@@ -1204,6 +1246,7 @@ void tickGoto(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMovePoi
 			stopMoving(job, bot, nullptr);
 
 		job->gotoStuckSince = 0;
+		job->gotoBestAt = 0;
 		publish(job, "goto", 0, remaining, false);
 		return;
 	}
@@ -1221,6 +1264,15 @@ void tickGoto(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMovePoi
 	} else if (job->gotoStuckSince == 0) {
 		job->gotoStuckSince = now;
 	} else if (now - job->gotoStuckSince >= (uint64)BotMover::GOTO_STUCK_MS) {
+		giveUp(job, bot, "blocked", events);
+		return;
+	}
+
+	// Walking but not getting there (jittering at a point): the way left must shrink
+	if (job->gotoBestAt == 0 || result.teleported || remaining < job->gotoBest - 0.5f) {
+		job->gotoBest = remaining;
+		job->gotoBestAt = now;
+	} else if (now - job->gotoBestAt >= (uint64)BotMover::GOTO_STUCK_MS) {
 		giveUp(job, bot, "blocked", events);
 		return;
 	}
@@ -1256,6 +1308,7 @@ void applyOrder(BotMoveJob* job) {
 	job->leaderAwaySince = 0;
 	job->stuckSince = 0;
 	job->gotoStuckSince = 0;
+	job->gotoBestAt = 0;
 	job->pathTried = false;
 	job->blockedLogged = false;
 	job->lastDistance = -1;
@@ -1338,9 +1391,23 @@ int step(BotMoveJob* job, CreatureObject* bot, BotMoveEvents& events) {
 		return BotMover::WAIT_MS;
 	}
 
+	// Below the terrain outdoors (a bad height from a teleport, a spawn): stand on the ground, or nothing it does has line of sight
+	if (here.cell == nullptr && bot->getParent().get() == nullptr && here.world.getZ() < zone->getHeight(here.world.getX(), here.world.getY()) - 1.0f) {
+		moverLog().info(true) << "BotMover: " << bot->getFirstName() << " was under the ground (" << here.world.getZ() << " at "
+			<< (int)here.world.getX() << " " << (int)here.world.getY() << "), standing it on the terrain";
+
+		BotMovePoint fixed(here);
+
+		place(job, bot, zone, fixed, here.world, 0);
+		stopMoving(job, bot, nullptr);
+
+		here.set(fixed);
+		job->placedValid = false;
+	}
+
 	// Moved by someone else (a teleport, cloning, a zone switch it didn't make): its trail or path no longer fits
-	if (job->placedValid && (job->placedZone != zone || here.world.distanceTo(job->placedWorld) > MOVED_AWAY_DIST)) {
-		moverLog().info(true) << "BotMover: " << bot->getFirstName() << " was moved (" << (int)here.world.distanceTo(job->placedWorld)
+	if (job->placedValid && (job->placedZone != zone || here.world.distanceTo2d(job->placedWorld) > MOVED_AWAY_DIST)) {
+		moverLog().info(true) << "BotMover: " << bot->getFirstName() << " was moved (" << (int)here.world.distanceTo2d(job->placedWorld)
 			<< " m), dropping its " << (job->mode == BotMoveJob::FOLLOW ? "trail" : "path");
 
 		job->placedValid = false;
@@ -1354,7 +1421,7 @@ int step(BotMoveJob* job, CreatureObject* bot, BotMoveEvents& events) {
 
 			BotMovePoint there;
 
-			job->together = leaderZone == zone && samplePosition(leader, there) && there.world.distanceTo(here.world) <= TOGETHER_DIST;
+			job->together = leaderZone == zone && samplePosition(leader, there) && there.world.distanceTo2d(here.world) <= TOGETHER_DIST;
 		} else if (job->goal != nullptr) {
 			job->path.removeAll();
 
@@ -1453,8 +1520,13 @@ bool makeGoal(CreatureObject* bot, Zone* zone, float x, float z, float y, uint64
 	goal.jump = false;
 
 	if (cellOid == 0) {
-		if (z == 0)
-			z = CollisionManager::getWorldFloorCollision(x, y, zone, false);
+		if (z == 0) {
+			// The ground, not the highest roof over it (the 4-argument getWorldFloorCollision): the path gives the height
+			PlanetManager* planetManager = zone->getPlanetManager();
+			TerrainManager* terrainManager = planetManager != nullptr ? planetManager->getTerrainManager() : nullptr;
+
+			z = terrainManager != nullptr ? terrainManager->getHeight(x, y) : 0;
+		}
 
 		goal.cell = nullptr;
 		goal.local = Vector3(x, y, z);
@@ -1520,7 +1592,7 @@ bool BotMover::follow(CreatureObject* bot, CreatureObject* leader, float nearDis
 	job->status.leader = leader->getObjectID();
 	BotMovePoint here, there;
 
-	job->status.distance = leader->getZone() == bot->getZone() && samplePosition(bot, here) && samplePosition(leader, there) ? here.world.distanceTo(there.world) : -1;
+	job->status.distance = leader->getZone() == bot->getZone() && samplePosition(bot, here) && samplePosition(leader, there) ? here.world.distanceTo2d(there.world) : -1;
 	job->status.stuck = false;
 
 	giveOrder(job);

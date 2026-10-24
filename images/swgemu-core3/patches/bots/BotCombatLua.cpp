@@ -64,6 +64,7 @@ void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botEquip", botEquip);
 	lua->registerFunction("botRepairGear", botRepairGear);
 	lua->registerFunction("botFindPack", botFindPack);
+	lua->registerFunction("botRecentIncaps", botRecentIncaps);
 
 	BotCombat::start();
 }
@@ -148,6 +149,15 @@ int BotCombatLua::botFindPack(lua_State* L) {
 	}
 
 	lua_pushinteger(L, (lua_Integer) oid);
+
+	return 1;
+}
+
+// botRecentIncaps(pCreature) -> incaps in the last ten minutes (2: the next one kills)
+int BotCombatLua::botRecentIncaps(lua_State* L) {
+	CreatureObject* creature = toCreature(L, 1);
+
+	lua_pushinteger(L, creature != nullptr ? BotCombat::recentIncaps(creature) : 0);
 
 	return 1;
 }

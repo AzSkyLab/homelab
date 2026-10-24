@@ -29,6 +29,9 @@ Logger& tradeLog() {
 
 enum { STAGE_NONE, STAGE_REQUESTED, STAGE_OPEN, STAGE_VERIFIED };
 
+// What the bot got in a trade goes back by itself if the jobs haven't handed it back this long after (ms)
+const int HELD_MS = 120000;
+
 // What the watcher last saw of one bot's trade, and what the jobs last read. Changed only with the bot locked; the map
 // itself is guarded by watchMutex
 class Watched : public Object {
@@ -53,6 +56,10 @@ public:
 	Vector<uint64> heldItems;
 	uint64 heldFrom = 0;
 	Time heldSince;
+	int heldCredits = 0;	// what was paid for them, refunded if they go back unsliced
+
+	// Items owed from before a restart (item -> owner), read back at login: handed back one at a time
+	VectorMap<uint64, uint64> owed;
 
 	void reset() {
 		partner = 0;
@@ -99,7 +106,7 @@ void forget(uint64 oid) {
 
 	Watched* entry = watched.elementAt(pos).getValue();
 
-	if (entry->giveItem == 0 && entry->heldItems.isEmpty())
+	if (entry->giveItem == 0 && entry->heldItems.isEmpty() && entry->owed.isEmpty())
 		watched.drop(oid);
 }
 
@@ -351,6 +358,119 @@ bool runGive(CreatureObject* bot, CreatureObject* owner, Watched* entry) {
 	return getTradeSession(bot) == nullptr;
 }
 
+// Hands back what the bot got in its last trade and still holds (the jobs never sliced it). Pre: bot locked
+void returnHeld(CreatureObject* bot, Watched* entry, const char* why) {
+	ZoneServer* zoneServer = bot->getZoneServer();
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+	ManagedReference<CreatureObject*> owner = zoneServer != nullptr ? zoneServer->getObject(entry->heldFrom).castTo<CreatureObject*>() : nullptr;
+	Vector<uint64> items = entry->heldItems;
+
+	for (int i = 0; i < items.size(); ++i) {
+		uint64 oid = items.get(i);
+		ManagedReference<SceneObject*> item = zoneServer != nullptr ? zoneServer->getObject(oid) : nullptr;
+
+		if (item == nullptr || inventory == nullptr || !inventory->hasObjectInContainer(oid) || owner == nullptr) {
+			entry->heldItems.removeElement(oid);
+			continue;
+		}
+
+		tradeLog().info(true) << bot->getFirstName() << " still holds " << item->getDisplayedName() << " from " << owner->getFirstName()
+			<< " (" << why << "): handing it back";
+
+		// Never sliced: the credits go back too (once)
+		if (entry->heldCredits > 0) {
+			Locker clocker(owner, bot);
+
+			if (bot->getCashCredits() >= entry->heldCredits) {
+				bot->subtractCashCredits(entry->heldCredits);
+				owner->addCashCredits(entry->heldCredits, true);
+				tradeLog().info(true) << bot->getFirstName() << " refunds " << entry->heldCredits << " credits to " << owner->getFirstName();
+			}
+
+			entry->heldCredits = 0;
+		}
+
+		String error;
+		BotTrade::returnItem(bot, item, owner, error);
+
+		if (entry->giveItem != 0)
+			break;	// one give-back trade at a time; the rest wait
+	}
+}
+
+// Hands back the first owed item whose owner is online (pre: bot locked). Items no longer in the inventory are dropped
+void returnOwed(CreatureObject* bot, Watched* entry) {
+	ZoneServer* zoneServer = bot->getZoneServer();
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	for (int i = entry->owed.size() - 1; i >= 0; --i) {
+		uint64 itemOid = entry->owed.elementAt(i).getKey();
+		uint64 ownerOid = entry->owed.elementAt(i).getValue();
+
+		if (zoneServer == nullptr || inventory == nullptr || !inventory->hasObjectInContainer(itemOid)) {
+			entry->owed.drop(itemOid);
+			continue;
+		}
+
+		ManagedReference<CreatureObject*> owner = zoneServer->getObject(ownerOid).castTo<CreatureObject*>();
+
+		if (owner == nullptr) {
+			entry->owed.drop(itemOid);
+			continue;
+		}
+
+		if (!owner->isOnline())
+			continue;
+
+		ManagedReference<SceneObject*> item = zoneServer->getObject(itemOid);
+
+		if (item == nullptr) {
+			entry->owed.drop(itemOid);
+			continue;
+		}
+
+		tradeLog().info(true) << bot->getFirstName() << " still owes " << item->getDisplayedName() << " to " << owner->getFirstName()
+			<< " from before a restart: handing it back";
+
+		// Straight back, or a give-back trade / held for room (returnItem takes it over either way)
+		entry->owed.drop(itemOid);
+
+		String error;
+		BotTrade::returnItem(bot, item, owner, error);
+
+		return;
+	}
+}
+
+// What the bot owes, as "item:owner,..." on its own character (saved with it): read back at the next login
+void saveOwed(CreatureObject* bot, Watched* entry) {
+	PlayerObject* ghost = bot->getPlayerObject();
+
+	if (ghost == nullptr)
+		return;
+
+	VectorMap<uint64, uint64> all = entry->owed;
+
+	if (entry->giveItem != 0)
+		all.put(entry->giveItem, entry->giveTo);
+
+	for (int i = 0; i < entry->heldItems.size(); ++i)
+		all.put(entry->heldItems.get(i), entry->heldFrom);
+
+	if (all.isEmpty()) {
+		ghost->deleteScreenPlayData("BotTrade", "owed");
+		return;
+	}
+
+	StringBuffer list;
+
+	for (int i = 0; i < all.size(); ++i)
+		list << (i > 0 ? "," : "") << all.elementAt(i).getKey() << ":" << all.elementAt(i).getValue();
+
+	ghost->setScreenPlayData("BotTrade", "owed", list.toString());
+	tradeLog().info(true) << bot->getFirstName() << " logs out owing " << all.size() << " item(s): " << list.toString();
+}
+
 class BotTradeWatchTask : public Task {
 public:
 	BotTradeWatchTask() {
@@ -453,7 +573,7 @@ void BotTrade::watch() {
 
 			if (pos != -1) {
 				Watched* entry = watched.elementAt(pos).getValue();
-				tracked = entry->stage != STAGE_NONE || entry->giveItem != 0 || !entry->heldItems.isEmpty();
+				tracked = entry->stage != STAGE_NONE || entry->giveItem != 0 || !entry->heldItems.isEmpty() || !entry->owed.isEmpty();
 			}
 		}
 
@@ -579,6 +699,14 @@ void BotTrade::check(CreatureObject* bot, uint64 requester) {
 			}
 		}
 	}
+
+	// The bot never keeps a customer's item: what the jobs didn't hand back in HELD_MS goes back by itself
+	if (!entry->heldItems.isEmpty() && session == nullptr && entry->giveItem == 0 && entry->heldSince.miliDifference() > HELD_MS)
+		returnHeld(bot, entry, "not handed back");
+
+	// Owed from before a restart: one at a time, once nothing else is going on and the owner is online
+	if (!entry->owed.isEmpty() && session == nullptr && entry->giveItem == 0 && entry->heldItems.isEmpty())
+		returnOwed(bot, entry);
 
 	int previous = entry->stage;
 	uint64 previousPartner = entry->partner;
@@ -783,6 +911,12 @@ int BotTrade::verify(CreatureObject* bot, int minCredits, uint64 itemOid, String
 
 	entry->reset();
 
+	// Held until the jobs hand it back (botSlice), or HELD_MS
+	entry->heldItems = items;
+	entry->heldFrom = partnerOid;
+	entry->heldSince.updateToCurrentTime();
+	entry->heldCredits = credits;
+
 	fireEventLater(bot, partnerOid, "done");
 
 	why = "done";
@@ -859,6 +993,9 @@ void BotTrade::abortAtLogout(CreatureObject* bot) {
 
 	entry->reset();
 
+	if (!entry->heldItems.isEmpty() && entry->giveItem == 0)
+		returnHeld(bot, entry, "logging out");
+
 	if (entry->giveItem != 0) {
 		ZoneServer* zoneServer = bot->getZoneServer();
 		ManagedReference<SceneObject*> item = zoneServer != nullptr ? zoneServer->getObject(entry->giveItem) : nullptr;
@@ -881,7 +1018,45 @@ void BotTrade::abortAtLogout(CreatureObject* bot) {
 		}
 	}
 
+	// Kept on the character too, so a restart doesn't lose it (an empty list clears it)
+	saveOwed(bot, entry);
+
 	forget(oid);
+}
+
+void BotTrade::restoreOwed(CreatureObject* bot) {
+	// pre: bot locked
+	PlayerObject* ghost = bot->getPlayerObject();
+
+	if (ghost == nullptr)
+		return;
+
+	String list = ghost->getScreenPlayData("BotTrade", "owed");
+
+	if (list.isEmpty())
+		return;
+
+	Reference<Watched*> entry = getWatched(bot->getObjectID(), true);
+	StringTokenizer pairs(list);
+	pairs.setDelimeter(",");
+
+	while (pairs.hasMoreTokens()) {
+		String pair;
+		pairs.getStringToken(pair);
+
+		int colon = pair.indexOf(":");
+
+		if (colon <= 0)
+			continue;
+
+		uint64 itemOid = UnsignedLong::valueOf(pair.subString(0, colon));
+		uint64 ownerOid = UnsignedLong::valueOf(pair.subString(colon + 1));
+
+		if (itemOid != 0 && ownerOid != 0)
+			entry->owed.put(itemOid, ownerOid);
+	}
+
+	tradeLog().info(true) << bot->getFirstName() << " logs in owing " << entry->owed.size() << " item(s)";
 }
 
 bool BotTrade::returnItem(CreatureObject* bot, SceneObject* item, CreatureObject* owner, String& error) {
@@ -892,6 +1067,11 @@ bool BotTrade::returnItem(CreatureObject* bot, SceneObject* item, CreatureObject
 	}
 
 	bool done = false;
+	uint64 itemOid = item->getObjectID();
+	Reference<Watched*> entry = getWatched(bot->getObjectID(), true);
+
+	// Handed back (sliced, or refused by the jobs): no refund owed any more; returnHeld refunds before it gets here
+	entry->heldCredits = 0;
 
 	{
 		Locker clocker(owner, bot);
@@ -899,12 +1079,21 @@ bool BotTrade::returnItem(CreatureObject* bot, SceneObject* item, CreatureObject
 		done = transferToOwner(bot, item, owner, error);
 	}
 
-	if (done)
+	if (done) {
+		entry->heldItems.removeElement(itemOid);
 		return true;
+	}
 
 	if (error == "inventory full" || error == "owner offline") {
-		// Hold it for the owner: a give-back trade, or straight back once there's room
-		give(bot, owner, item->getObjectID());
+		if (entry->giveItem == 0 || entry->giveItem == itemOid) {
+			// Hold it for the owner: a give-back trade, or straight back once there's room
+			entry->heldItems.removeElement(itemOid);
+			give(bot, owner, itemOid);
+		} else if (!entry->heldItems.contains(itemOid)) {
+			// Another give-back is under way: this one waits its turn
+			entry->heldItems.add(itemOid);
+			entry->heldFrom = owner->getObjectID();
+		}
 	}
 
 	return false;
@@ -1010,7 +1199,7 @@ bool BotTrade::devVerify(CreatureObject* from) {
 
 	playerManager->handleVerifyTradeMessage(from);
 
-	tradeLog().info(true) << "dev: " << from->getFirstName() << " verifies" << (getTradeSession(from) == nullptr ? ": trade complete" : "");
+	tradeLog().info(true) << "dev: " << from->getFirstName() << " verifies" << (getTradeSession(from) == nullptr ? ": trade closed (complete, or Core3 refused it: too far, no room, ...)" : "");
 
 	return true;
 }

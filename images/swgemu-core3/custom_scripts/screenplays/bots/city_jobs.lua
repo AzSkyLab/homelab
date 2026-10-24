@@ -59,6 +59,10 @@ BotCityJobs = ScreenPlay:new {
 	-- doctor wait for their buildings (metres to the side of the mayor). A plan's mayorSpot / waitSpots replace these.
 	frontMetres = 52,
 	waitSide = {dancer = -9, musician = -6, doctor = 8},
+	-- A dead bot is cloned after this long (ms)
+	cloneDelayMs = 5000,
+	-- After botStop, wait this long (ms) before /placestructure: a bot still in motion is refused
+	stopSettleMs = 1200,
 	-- After /placestructure, check after this long (ms): a house goes up after its construction marker (lots x 3 s)
 	checkHouseMs = 25000,
 	checkCivicMs = 6000,
@@ -80,8 +84,8 @@ BotCityJobs = ScreenPlay:new {
 	bankSeed = 150000,
 	treasuryWeeks = 3,
 	treasuryTopUpWeeks = 5,
-	-- When a human is mayor, the old bot mayor still keeps the treasury paid (a patron of the city)
-	fundWhenHumanMayor = true,
+	-- When a human is mayor, the human pays the upkeep (the creator's call, 2026-10-24): no server-made credits
+	fundWhenHumanMayor = false,
 
 	-- Walking: seconds allowed per metre outdoors, plus a margin; indoors, a flat time
 	walkSecondsPerMetre = 1.0,
@@ -276,6 +280,18 @@ local function pointOf(t)
 	end
 
 	return x, y
+end
+
+-- The ground height outdoors at x, y. getWorldFloor returns the highest surface (a roof, once the town has houses);
+-- getTerrainHeight is the terrain under the bot's own zone, so it is used while the bot is on the city's planet.
+function BotCityJobs:ground(pBot, x, y)
+	local planet = self:plan().planet
+
+	if pBot ~= nil and getTerrainHeight ~= nil and SceneObject(pBot):getZoneName() == planet then
+		return getTerrainHeight(pBot, x, y)
+	end
+
+	return getWorldFloor(x, y, planet)
 end
 
 -- city.lua, read into one shape (see the header of city.lua for its own). Cached per Lua state: it is data.
@@ -983,6 +999,28 @@ function BotCityJobs:stopPerforming(pBot)
 	return was
 end
 
+-- Dead (a bot that died while the server was down logs in dead, and a death event can be missed): clone it, after a
+-- pause, trying again every 30 s. True while it is dead (the caller does nothing else).
+function BotCityJobs:cloneIfDead(pBot, oid, now)
+	if not CreatureObject(pBot):isDead() then
+		return false
+	end
+
+	if now - readData(bk(oid, "cityCloneTry")) >= 30 then
+		writeData(bk(oid, "cityCloneTry"), now)
+		print("BotCity: " .. BotJobs:name(oid) .. " is dead; cloning")
+		createEvent(self.cloneDelayMs, "BotCityJobs", "cloneNow", pBot, tostring(readData(bk(oid, "gen"))))
+	end
+
+	return true
+end
+
+function BotCityJobs:cloneNow(pBot, gen)
+	if BotJobs:current(pBot, gen) and CreatureObject(pBot):isDead() and botClone ~= nil then
+		botClone(pBot)
+	end
+end
+
 -- Walking
 
 -- Walk the bot to a point (cell 0 outdoors, else cell-local) for a purpose: what to do on arrival (see moved). With no
@@ -1188,7 +1226,7 @@ function BotCityJobs:placeApproach(pBot, args)
 		local len = math.sqrt(ux * ux + uy * uy)
 		local tx, ty = item.x + ux / len * short, item.y + uy / len * short
 
-		self:go(pBot, oid, tx, getWorldFloor(tx, ty, self:plan().planet), ty, 0, "place:" .. item.id)
+		self:go(pBot, oid, tx, BotCityJobs:ground(pBot, tx, ty), ty, 0, "place:" .. item.id)
 		return
 	end
 
@@ -1196,7 +1234,7 @@ function BotCityJobs:placeApproach(pBot, args)
 end
 
 -- The deed and /placestructure
-function BotCityJobs:placeNow(pBot, oid, id)
+function BotCityJobs:placeNow(pBot, oid, id, stopped)
 	local item = self:plan().items[id]
 
 	if item == nil or readStringData(bk(oid, "cityPlacing")) ~= id then
@@ -1205,6 +1243,14 @@ function BotCityJobs:placeNow(pBot, oid, id)
 
 	if SceneObject(pBot):getParentID() ~= 0 then
 		self:placeFailed(pBot, oid, item, "still indoors")
+		return
+	end
+
+	-- /placestructure is refused to a bot that is still walking or running (locomotion): stop it and give the stop a
+	-- moment to land
+	if not stopped and botStop ~= nil then
+		botStop(pBot)
+		createEvent(self.stopSettleMs, "BotCityJobs", "placeLater", pBot, packArgs(readData(bk(oid, "gen")), id))
 		return
 	end
 
@@ -1238,6 +1284,17 @@ function BotCityJobs:placeNow(pBot, oid, id)
 	end
 
 	createEvent(item.house and self.checkHouseMs or self.checkCivicMs, "BotCityJobs", "placeCheck", pBot, packArgs(gen, id, 1))
+end
+
+-- The stop has landed (placeNow)
+function BotCityJobs:placeLater(pBot, args)
+	local a = unpackArgs(args)
+
+	if not BotJobs:current(pBot, a[1]) then
+		return
+	end
+
+	self:placeNow(pBot, SceneObject(pBot):getObjectID(), a[2], true)
 end
 
 -- botPlaceStructure's watcher: "placed" (pOther the structure) or "placeFailed" (detail why)
@@ -1508,7 +1565,7 @@ function BotCityJobs:jobLogin(pBot, oid, job)
 		local wait = self:plan().waitSpots[job]
 
 		if info ~= nil and wait ~= nil then
-			SceneObject(pBot):teleport(wait.x, getWorldFloor(wait.x, wait.y, self:plan().planet), wait.y, 0)
+			SceneObject(pBot):teleport(wait.x, BotCityJobs:ground(pBot, wait.x, wait.y), wait.y, 0)
 		end
 
 		return false
@@ -1536,7 +1593,7 @@ function BotCityJobs:goWait(pBot, oid, job)
 
 	self:hold(oid, "walking to the square")
 	self:stopPerforming(pBot)
-	self:go(pBot, oid, wait.x, getWorldFloor(wait.x, wait.y, self:plan().planet), wait.y, 0, "post:square")
+	self:go(pBot, oid, wait.x, BotCityJobs:ground(pBot, wait.x, wait.y), wait.y, 0, "post:square")
 
 	return true
 end
@@ -1645,6 +1702,10 @@ function BotCityJobs:wrap(job)
 	end
 
 	proxy.tick = function(self, pBot, oid, now)
+		if BotCityJobs:isCityBot(oid) and BotCityJobs:cloneIfDead(pBot, oid, now) then
+			return
+		end
+
 		if BotCityJobs:isCityBot(oid) and BotCityJobs:jobTick(pBot, oid, now, job) then
 			return
 		end

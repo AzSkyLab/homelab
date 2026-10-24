@@ -28,6 +28,7 @@ includeFile("../custom_scripts/screenplays/bots/crew_lines.lua")
 -- CreatureAttribute, CreaturePosture, CreatureState
 local HEALTH, ACTION, MIND = 0, 3, 6
 local SITTING = 8
+local CROUCHED = 1
 local STATES = {0x1000, 0x2000, 0x4000, 0x8000} -- stunned, blinded, dizzy, intimidated: what healstate cures
 local POISONED, DISEASED = 0x800000, 0x2000000
 
@@ -438,6 +439,8 @@ function BotCrew:leaderOf(pBot, oid, g, now)
 	if g.leader.oid == oid and now - readData(ckey(oid, "handedAt")) > 5 then
 		put(ckey(oid, "handedAt"), now)
 		print("BotJobs: " .. self:name(oid) .. " hands the group's lead to " .. self:firstName(human.p))
+		-- Master looter first, while it's still the leader: Core3 gave it that with the lead, and a bot never loots
+		botEnqueue(pBot, "makemasterlooter", human.oid, "")
 		botEnqueue(pBot, "makeleader", human.oid, "")
 	end
 
@@ -472,6 +475,10 @@ function BotCrew:start(pBot, oid)
 
 	if CreatureObject(pBot):isGrouped() then
 		putString(ckey(oid, "mode"), "group")
+		self:startLoop(pBot, oid, 1000)
+	elseif CreatureObject(pBot):isDead() then
+		-- Logged in dead with no death event: the loop sees to the cloning
+		putString(ckey(oid, "mode"), "home")
 		self:startLoop(pBot, oid, 1000)
 	else
 		putString(ckey(oid, "mode"), "home")
@@ -687,7 +694,10 @@ function BotCrew:humanNear(pBot, range)
 end
 
 function BotCrew:standUp(pBot, oid)
-	if CreatureObject(pBot):getPosture() == SITTING then
+	-- Sitting, or crouched (a fight or a heal can leave it so, and BotMover doesn't walk a bot that isn't upright)
+	local posture = CreatureObject(pBot):getPosture()
+
+	if posture == SITTING or posture == CROUCHED then
 		botEnqueue(pBot, "stand", 0, "")
 	end
 
@@ -824,8 +834,11 @@ function BotCrew:step(pBot, oid, now)
 
 	local role = self:role(oid)
 
-	-- Healing first: the medic looks after the group; anyone with stims keeps itself alive
-	if g ~= nil and role == "medic" then
+	-- Healing first: the medic looks after the group; anyone with stims keeps itself alive. A medic in a provoked
+	-- fight or duel of its own fights it and only heals itself.
+	local ownFight = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) or 0
+
+	if g ~= nil and role == "medic" and ownFight == 0 then
 		if self:medicTurn(pBot, oid, g, now) then
 			return self.fightMs
 		end
@@ -837,6 +850,11 @@ function BotCrew:step(pBot, oid, now)
 
 	if pTarget ~= nil then
 		self:fight(pBot, oid, pTarget, pLeader, g, now)
+		return self.fightMs
+	end
+
+	-- A provoked fight or a duel belongs to BotFight (it ends it at the first incap): no peace of ours while it's on
+	if BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) ~= 0 then
 		return self.fightMs
 	end
 
@@ -1136,7 +1154,8 @@ function BotCrew:scanHuman(pHuman, args)
 end
 
 -- A creature this bot may attack, or nil: alive and standing (never a death blow), near, attackable, not in the
--- group. Players only when allowPlayer (a duel or a provoked fight with this bot).
+-- group. Players only when allowPlayer (a duel or a provoked fight with this bot); allowPlayer "opponent" is that
+-- fight's opponent, who may be in the group.
 function BotCrew:validTarget(pBot, pTarget, g, allowPlayer)
 	if pTarget == nil or not SceneObject(pTarget):isCreatureObject() then
 		return nil
@@ -1144,7 +1163,7 @@ function BotCrew:validTarget(pBot, pTarget, g, allowPlayer)
 
 	local targetOid = SceneObject(pTarget):getObjectID()
 
-	if targetOid == SceneObject(pBot):getObjectID() or (g ~= nil and g.byOid[targetOid] ~= nil) then
+	if targetOid == SceneObject(pBot):getObjectID() or (g ~= nil and g.byOid[targetOid] ~= nil and allowPlayer ~= "opponent") then
 		return nil
 	end
 
@@ -1179,7 +1198,7 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 	local opponent = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) or 0
 
 	if opponent ~= 0 then
-		local pOpponent = self:validTarget(pBot, getSceneObject(opponent), g, true)
+		local pOpponent = self:validTarget(pBot, getSceneObject(opponent), g, "opponent")
 
 		if pOpponent ~= nil then
 			return pOpponent
@@ -1515,10 +1534,23 @@ function BotCrew:medicTurn(pBot, oid, g, now)
 		BotDoctor:clear(oid)
 	end
 
+	-- Never heal someone a crew mate is fighting (a provoked fight or a duel with a group member)
+	local opponents = {}
+
+	if BotFight ~= nil and BotFight.fighting ~= nil then
+		for _, m in ipairs(g.members) do
+			local opponent = BotFight:fighting(m.oid)
+
+			if opponent ~= nil and opponent ~= 0 then
+				opponents[opponent] = true
+			end
+		end
+	end
+
 	local patients = {}
 
 	for _, m in ipairs(g.members) do
-		if m.player then
+		if m.player and not opponents[m.oid] then
 			local dist = m.oid == oid and 0 or BotJobs:distance(pBot, m.p)
 
 			if dist ~= nil and dist <= 64 then
@@ -2069,7 +2101,22 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 
 	if campOid == 0 then
 		print("BotJobs: " .. self:name(oid) .. " couldn't place a camp here (" .. tostring(why) .. ")")
-		self:say(pBot, oid, playerOid, channel, "campFail", name)
+		local why = tostring(why or "")
+		local kind = "campFail"
+
+		if why == "in water" then
+			kind = "campWater"
+		elseif why == "in a city" then
+			kind = "campCity"
+		elseif why == "lair too close" then
+			kind = "campLair"
+		elseif why == "camp too close" or why == "building too close" or why == "in another camp" then
+			kind = "campCrowded"
+		elseif why == "skill" or why == "in combat" or why == "inside" then
+			kind = why == "in combat" and "campCombat" or (why == "inside" and "campIndoors" or "campFail")
+		end
+
+		self:say(pBot, oid, playerOid, channel, kind, name)
 		return
 	end
 
@@ -2127,6 +2174,11 @@ function BotCrew:trackWanted(text, found)
 
 	for _, word in ipairs(self.notCreatures) do
 		skip[word] = true
+	end
+
+	-- (not a bot's own first name: "Weeta, find me krayts")
+	for _, entry in ipairs(botList ~= nil and botList() or {}) do
+		skip[tostring(entry.firstName or ""):lower()] = true
 	end
 
 	local asked = nil
@@ -2288,6 +2340,11 @@ function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 	elseif (action == "buff" or action == "wounds") and self:role(oid) == "medic" then
 		self:medicBuff(pBot, oid, pPlayer, action, channel, brainLine)
 	end
+end
+
+-- Extra fields for the brain's request (BotJobs:ask): grouped is 1 while this bot is in a player's group
+function BotCrew:requestFields(pBot, oid)
+	return {grouped = (pBot ~= nil and CreatureObject(pBot):isGrouped()) and 1 or 0}
 end
 
 function BotCrew:onSpoken(pBot, oid, pSpeaker, channel)
@@ -2659,7 +2716,7 @@ end
 function BotCrew:devSpawnNow(pBot, args)
 	local a = unpackArgs(args)
 	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY() + tonumber(a[2])
-	local z = getWorldFloor(x, y, SceneObject(pBot):getZoneName())
+	local z = SceneObject(pBot):getWorldPositionZ() -- (getWorldFloor can read a roof)
 	local pMobile = spawnMobile(SceneObject(pBot):getZoneName(), a[1], 0, x, z, y, 0, 0)
 
 	print("BotCrew: spawned " .. a[1] .. ": " .. (pMobile ~= nil and tostring(SceneObject(pMobile):getObjectID()) or "failed"))
@@ -2679,10 +2736,101 @@ end
 function BotCrew:devWalkNow(pBot, args)
 	local a = unpackArgs(args)
 	local x, y = tonumber(a[1]), tonumber(a[2])
-	local z = getWorldFloor(x, y, SceneObject(pBot):getZoneName())
+	local z = SceneObject(pBot):getWorldPositionZ() -- (getWorldFloor can read a roof)
 
 	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " walks to " .. x .. " " .. y .. ": " ..
 		tostring(bot("botMoveTo", pBot, x, z, y, 0)))
+end
+
+-- A bot attacks an object (botSetTarget) and, with a command, uses it on it: devFire:<first>:<oid>[:<command>]
+function BotCrew:devFire(first, targetOid, cmd)
+	local pBot = devBot(first)
+
+	if pBot == nil or tonumber(targetOid or "") == nil then
+		print("BotCrew: usage devFire:<bot>:<target oid>[:<command>]")
+		return
+	end
+
+	createEvent(10, "BotCrew", "devFireNow", pBot, packArgs(targetOid, cmd or ""))
+end
+
+function BotCrew:devFireNow(pBot, args)
+	local a = unpackArgs(args)
+	local target = math.floor(tonumber(a[1]))
+	local set = bot("botSetTarget", pBot, target)
+
+	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " botSetTarget " .. target .. ": " .. tostring(set) ..
+		(a[2] ~= nil and (", " .. a[2] .. ": " .. tostring(botEnqueue(pBot, a[2], target, ""))) or ""))
+end
+
+-- Hurt a bot: devHurt:<first>[:<amount>] takes that much health (default: all and more, so it is incapacitated; a third
+-- incap within ten minutes kills)
+function BotCrew:devHurt(first, amount)
+	local pBot = devBot(first)
+
+	if pBot == nil then
+		print("BotCrew: no online bot called " .. tostring(first))
+		return
+	end
+
+	createEvent(10, "BotCrew", "devHurtNow", pBot, tostring(tonumber(amount or "") or 0))
+end
+
+function BotCrew:devHurtNow(pBot, amount)
+	local damage = tonumber(amount) or 0
+
+	if damage <= 0 then
+		damage = CreatureObject(pBot):getHAM(HEALTH) + 100
+	end
+
+	CreatureObject(pBot):inflictDamage(pBot, HEALTH, damage, 1)
+	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " takes " .. damage .. " damage, health " ..
+		CreatureObject(pBot):getHAM(HEALTH) .. ", incap " .. tostring(CreatureObject(pBot):isIncapacitated()) .. ", dead " ..
+		tostring(CreatureObject(pBot):isDead()))
+end
+
+-- A bot's combat state, and (with an oid) its view of that creature
+function BotCrew:devProbe(first, targetOid)
+	local pBot = devBot(first)
+
+	if pBot == nil then
+		print("BotCrew: no online bot called " .. tostring(first))
+		return
+	end
+
+	local c = CreatureObject(pBot)
+	local line = "BotCrew: " .. tostring(first) .. " inCombat " .. tostring(c:isInCombat()) .. ", target " ..
+		tostring(c:getTargetID()) .. ", incap " .. tostring(c:isIncapacitated()) .. ", dead " .. tostring(c:isDead())
+
+	local states = ""
+
+	for name, bit in pairs({stunned = 0x1000, blinded = 0x2000, dizzy = 0x4000, intimidated = 0x8000, poisoned = POISONED,
+		diseased = DISEASED}) do
+		if hasState(pBot, bit) then
+			states = states .. " " .. name
+		end
+	end
+
+	line = line .. ", states [" .. states .. " ]"
+
+	local pHeld = SceneObject(pBot):getSlottedObject("hold_r")
+
+	line = line .. ", holding " .. (pHeld ~= nil and SceneObject(pHeld):getTemplateObjectPath() or "nothing") ..
+		", weapon type " .. tostring(c:getWeaponType()) .. ", queue " .. tostring(c:getQueueSize()) .. ", posture " ..
+		tostring(c:getPosture()) .. ""
+
+	local pTarget = getSceneObject(tonumber(targetOid or "") or 0)
+
+	if pTarget ~= nil then
+		local t = CreatureObject(pTarget)
+
+		line = line .. "; target dead " .. tostring(t:isDead()) .. ", attackable " .. tostring(t:isAttackableBy(pBot)) ..
+			", dist " .. tostring(BotJobs:distance(pBot, pTarget)) .. ", inCombat " .. tostring(t:isInCombat()) ..
+			", HAM " .. t:getHAM(HEALTH) .. string.format(", z %.1f vs %.1f, 3d %.1f", SceneObject(pBot):getWorldPositionZ(),
+			SceneObject(pTarget):getWorldPositionZ(), SceneObject(pBot):getDistanceTo3d(pTarget))
+	end
+
+	print(line)
 end
 
 function BotCrew:devState(first)

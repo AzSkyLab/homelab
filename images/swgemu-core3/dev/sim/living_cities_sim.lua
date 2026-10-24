@@ -306,6 +306,7 @@ function makeCreatureName()
 end
 
 function getWorldFloor(x, y, planet) return 5.0 end
+function getTerrainHeight(pCreature, x, y) return 5.0 end
 function isZoneEnabled(planet) return true end
 function getTimestampMilli() return sim.now * 1000 + (sim.subMs or 0) end
 function getChatMessage(m) return m.text end

@@ -522,11 +522,16 @@ return function(ctx)
 		return {state = m.state or "idle", leader = m.leader or 0, distance = leader and dist(b, leader) or 0, stuck = false}
 	end
 	-- combat
-	function api.botSetTarget(b, oid)
+	function api.botSetTarget(b, oid, engage)
 		assert(math.type(oid) == "integer", "botSetTarget: oid must be an integer")
 		if b == nil then return false end
 		b.target = oid
 		table.insert(log.targets, {bot = b.oid, t = nowMs(), target = oid})
+		-- Unless engage is false, a target the bot may attack gets a real attack queued
+		local t = ctx.objects[oid]
+		if oid ~= 0 and engage ~= false and t ~= nil and not t.dead and t:isAttackableBy(b) then
+			startCombat(b, t)
+		end
 		return true
 	end
 	function api.botClone(b)
@@ -558,7 +563,7 @@ return function(ctx)
 	function api.botPlaceCamp(b, kit)
 		assert(type(kit) == "string" and kit:match("^object/tangible/scout/camp/[%w_]+%.iff$"), "botPlaceCamp: bad kit " .. tostring(kit))
 		if b == nil or b.cell ~= 0 or b.inTown then
-			return 0
+			return 0, (b ~= nil and b.cell ~= 0) and "inside" or "in a city"
 		end
 		local camp = ctx.newObject({isCamp = true, planet = b.planet, x = b.x, y = b.y, z = 5, cell = 0, inWorld = true,
 			radius = 20, name = "a camp"})
@@ -843,6 +848,14 @@ return function(ctx)
 		end
 	end
 
+	-- Did the bot set this target (and so attack it) since t?
+	local function engaged(b, oid, since)
+		for _, e in ipairs(entries(log.targets, b, since)) do
+			if e.target == oid then return true end
+		end
+		return false
+	end
+
 	local function moveState(b)
 		return (b.move or {}).state or "idle"
 	end
@@ -1038,7 +1051,7 @@ return function(ctx)
 		sim.run(3)
 		each(function(role, b)
 			local set = entries(log.targets, b, t)
-			if #set == 0 or set[1].target ~= rat.oid or #okCommands(b, "attack", t) == 0 then
+			if #set == 0 or set[1].target ~= rat.oid or not engaged(b, rat.oid, t) then
 				fail("crew: the " .. role .. " didn't attack the leader's target")
 			end
 		end)
@@ -1060,10 +1073,12 @@ return function(ctx)
 		for cmd in pairs(tankSpecials) do if SPECIAL[cmd] ~= "unarmed" then fail("crew: the tank used " .. cmd) end end
 		for cmd in pairs(riflemanSpecials) do if SPECIAL[cmd] ~= "rifle" then fail("crew: the rifleman used " .. cmd) end end
 		for cmd in pairs(rangerSpecials) do if SPECIAL[cmd] ~= "carbine" then fail("crew: the ranger used " .. cmd) end end
-		if not (tankSpecials.unarmedhit3 and (tankSpecials.unarmedcombo2 or tankSpecials.unarmedspinattack2)) then
+		-- (picked by weight at random: a rotation is several different specials, not any one of them)
+		local function kinds(set) local n = 0 for _ in pairs(set) do n = n + 1 end return n end
+		if kinds(tankSpecials) < 2 then
 			fail("crew: the tank's rotation: " .. list(tankSpecials))
 		end
-		if not (riflemanSpecials.headshot3 and (riflemanSpecials.flurryshot2 or riflemanSpecials.strafeshot2)) then
+		if kinds(riflemanSpecials) < 2 then
 			fail("crew: the rifleman's rotation: " .. list(riflemanSpecials))
 		end
 		if next(rangerSpecials) == nil then
@@ -1115,7 +1130,7 @@ return function(ctx)
 		if used > 0 then
 			fail("crew: the tank used " .. used .. " specials with its mind under the threshold")
 		end
-		if #okCommands(tank, "attack", t) == 0 then
+		if not engaged(tank, rat2.oid, t) then
 			fail("crew: the tired tank didn't attack at all")
 		end
 		tank.noRegen = false
@@ -1359,14 +1374,14 @@ return function(ctx)
 		t = nowMs()
 		startCombat(zed, tank)
 		sim.run(12)
-		if #okCommands(tank, "attack", t) == 0 or entries(log.targets, tank, t)[1] == nil or entries(log.targets, tank, t)[1].target ~= zed.oid then
+		if not engaged(tank, zed.oid, t) or entries(log.targets, tank, t)[1] == nil or entries(log.targets, tank, t)[1].target ~= zed.oid then
 			fail("crew: the tank didn't fight back in a duel")
 		end
 		zed.incap = true
 		local after = nowMs() + 2000
 		sim.run(10)
 		local blows = 0
-		for _, c in ipairs(commands(tank, nil, after)) do if SPECIAL[c.cmd] or c.cmd == "attack" then blows = blows + 1 end end
+		for _, c in ipairs(commands(tank, nil, after)) do if SPECIAL[c.cmd] then blows = blows + 1 end end
 		if blows > 0 then
 			fail("crew: the tank kept attacking an incapacitated player (" .. blows .. ")")
 		end

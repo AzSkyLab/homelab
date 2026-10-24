@@ -27,6 +27,8 @@
 #include "server/zone/managers/city/CitySpecialization.h"
 #include "server/zone/managers/city/CityTax.h"
 #include "server/zone/managers/structure/StructureManager.h"
+#include "server/zone/managers/objectcontroller/ObjectController.h"
+#include "server/zone/objects/creature/commands/QueueCommand.h"
 #include "server/zone/managers/planet/PlanetManager.h"
 #include "server/zone/managers/name/NameManager.h"
 #include "server/zone/managers/collision/CollisionManager.h"
@@ -203,9 +205,157 @@ Reference<SceneObject*> findFootprintOverlap(Zone* zone, SharedStructureObjectTe
 
 String describeObject(SceneObject* object) {
 	StringBuffer buffer;
+	SharedObjectTemplate* objectTemplate = object->getObjectTemplate();
+
 	buffer << object->getDisplayedName() << " (" << object->getObjectID() << ") at " << formatPosition(object->getWorldPositionX(), object->getWorldPositionY());
 
+	if (objectTemplate != nullptr)
+		buffer << " [" << objectTemplate->getFullTemplateString() << "]";
+
 	return buffer.toString();
+}
+
+bool isSpawn(SceneObject* object) {
+	return object->isLairObject() || object->isPoiBuilding() || object->isTheaterObject();
+}
+
+// Core3's spawn manager puts creature lairs (mounds, thickets, nests), spawn theaters and camps (a mauler camp is a
+// "poi" building) on the plains, and a placement is refused within their no-build radius. A player would fight them
+// away; the bots have no use for them, so one on the spot is removed as DespawnLairOnPlayerDisappear does. Only these
+// spawns: any other object in the way still refuses the placement. Bot locked. Returns how many it removed
+int clearLairs(Zone* zone, CreatureObject* bot, float x, float y) {
+	PlanetManager* planetManager = zone->getPlanetManager();
+	int cleared = 0;
+
+	for (int i = 0; i < 20; ++i) {
+		Reference<SceneObject*> object = planetManager->findObjectInNoBuildZone(x, y, 0.f);
+
+		if (object == nullptr || !isSpawn(object))
+			break;
+
+		Locker lairLocker(object, bot);
+
+		BotCity::log().info(true) << "clearing the spawn in the way at " << formatPosition(x, y) << ": " << describeObject(object);
+
+		object->destroyObjectFromWorld(true);
+		++cleared;
+	}
+
+	return cleared;
+}
+
+// PlanetManager::isBuildingPermittedAt for a site probe: the same, but a lair, camp or theater doesn't count (they come
+// and go with the spawn manager, and the placement clears them). spawn is set to what stands on the point, if anything
+bool permittedIgnoringSpawns(Zone* zone, float x, float y, Reference<SceneObject*>* spawn) {
+	PlanetManager* planetManager = zone->getPlanetManager();
+
+	if (!zone->isWithinBoundaries(Vector3(x, y, 0)))
+		return false;
+
+	SortedVector<ManagedReference<ActiveArea*>> areas;
+	zone->getInRangeActiveAreas(x, 0, y, &areas, true);
+
+	for (int i = 0; i < areas.size(); ++i) {
+		ActiveArea* area = areas.get(i).get();
+
+		if (area != nullptr && area->isNoBuildZone())
+			return false;
+	}
+
+	if (planetManager->isInWater(x, y) || planetManager->isInRangeWithPoi(x, y, 150))
+		return false;
+
+	// PlanetManager::findObjectInNoBuildZone, minus the spawns
+	SortedVector<TreeEntry*> closeObjects;
+	Vector3 target(x, y, zone->getHeight(x, y));
+
+	zone->getInRangeObjects(x, 0, y, 512, &closeObjects, true, false);
+
+	for (int i = 0; i < closeObjects.size(); ++i) {
+		SceneObject* object = static_cast<SceneObject*>(closeObjects.get(i));
+		SharedObjectTemplate* objectTemplate = object->getObjectTemplate();
+
+		if (objectTemplate == nullptr)
+			continue;
+
+		float radius = objectTemplate->getNoBuildRadius();
+
+		if (radius > 0 && object->getWorldPosition().squaredDistanceTo(target) < radius * radius) {
+			if (isSpawn(object)) {
+				if (spawn != nullptr)
+					*spawn = object;
+
+				continue;
+			}
+
+			return false;
+		}
+
+		if (objectTemplate->isSharedStructureObjectTemplate() && StructureManager::instance()->isInStructureFootprint(cast<StructureObject*>(object), x, y, 0.f))
+			return false;
+	}
+
+	return true;
+}
+
+// Why PlanetManager::isBuildingPermittedAt says no, as far as it can be told
+String describeNotPermitted(Zone* zone, float x, float y, bool footprint) {
+	PlanetManager* planetManager = zone->getPlanetManager();
+
+	if (!zone->isWithinBoundaries(Vector3(x, y, 0)))
+		return "outside the planet's boundaries";
+
+	if (planetManager->isInWater(x, y))
+		return "in water";
+
+	SortedVector<ManagedReference<ActiveArea*>> areas;
+	zone->getInRangeActiveAreas(x, 0, y, &areas, true);
+
+	for (int i = 0; i < areas.size(); ++i) {
+		ActiveArea* area = areas.get(i).get();
+
+		if (area != nullptr && area->isNoBuildZone())
+			return "in the no-build area " + (area->getAreaName().isEmpty() ? "(unnamed: " + describeObject(area) + ")" : area->getAreaName());
+	}
+
+	if (planetManager->isInRangeWithPoi(x, y, 150))
+		return "within 150 m of a point of interest";
+
+	Reference<SceneObject*> object = planetManager->findObjectInNoBuildZone(x, y, 0.f, footprint);
+
+	if (object != nullptr)
+		return "in the no-build zone or footprint of " + describeObject(object);
+
+	return "building is not permitted here";
+}
+
+// PlanetManager::validateRegionName misses some NPC cities (a city called "Keren" passes it), so the displayed names of
+// every NPC city on every loaded planet are checked as well: the name may not be, contain or sit inside one. "" if none
+String findNpcCityNameClash(ZoneServer* zoneServer, const String& cityName) {
+	String lower = cityName.toLowerCase();
+
+	for (int z = 0; z < zoneServer->getZoneCount(); ++z) {
+		Zone* other = zoneServer->getZone(z);
+
+		if (other == nullptr || other->getPlanetManager() == nullptr)
+			continue;
+
+		PlanetManager* otherManager = other->getPlanetManager();
+
+		for (int i = 0; i < otherManager->getCityRegionCount(); ++i) {
+			Reference<CityRegion*> city = otherManager->getCityRegion(i);
+
+			if (city == nullptr || !city->isClientRegion())
+				continue;
+
+			String shown = city->getRegionDisplayedName().toLowerCase();
+
+			if (shown.length() >= 3 && (lower.contains(shown) || shown.contains(lower)))
+				return "\"" + cityName + "\" clashes with the NPC city " + city->getRegionDisplayedName() + " on " + other->getZoneName();
+		}
+	}
+
+	return "";
 }
 
 // PlaceStructureCommand, the deed's component and StructureManager::placeStructureFromDeed, in their order.
@@ -228,6 +378,15 @@ String checkPlacementInternal(CreatureObject* bot, StructureDeed* deed, float x,
 	// PlaceStructureCommand::doQueueCommand
 	if (bot->isRidingMount())
 		return "mounted";
+
+	ObjectController* objectController = zoneServer->getObjectController();
+	const QueueCommand* command = objectController != nullptr ? objectController->getQueueCommand(String("placestructure").hashCode()) : nullptr;
+
+	if (command != nullptr && (!command->checkStateMask(bot) || !command->checkInvalidLocomotions(bot))) {
+		reason << "the bot's state doesn't allow /placestructure (state mask " << String::hexvalueOf((int64)bot->getStateBitmask()) << ", locomotion "
+			<< (int)bot->getLocomotion() << (bot->isPlayingMusic() ? ", playing music" : "") << (bot->isDancing() ? ", dancing" : "") << ")";
+		return reason.toString();
+	}
 
 	if (bot->getParent().get() != nullptr)
 		return "inside a building (the command needs the bot outdoors)";
@@ -258,8 +417,16 @@ String checkPlacementInternal(CreatureObject* bot, StructureDeed* deed, float x,
 	for (int i = 0; i < areas.size(); ++i) {
 		ActiveArea* area = areas.get(i).get();
 
-		if (area != nullptr && area->isNoBuildZone())
-			return "in the no-build area " + area->getAreaName();
+		if (area != nullptr && area->isNoBuildZone()) {
+			reason << "in the no-build area ";
+
+			if (!area->getAreaName().isEmpty())
+				reason << area->getAreaName();
+			else
+				reason << "(unnamed: " << describeObject(area) << ", radius " << (int)area->getRadius() << " m)";
+
+			return reason.toString();
+		}
 	}
 
 	Reference<SceneObject*> conflict = planetManager->findObjectInNoBuildZone(x, y, 0.f);
@@ -300,23 +467,8 @@ String checkPlacementInternal(CreatureObject* bot, StructureDeed* deed, float x,
 	if (!serverTemplate->isAllowedZone(zone->getZoneName()))
 		return serverTemplatePath + " isn't allowed on " + zone->getZoneName();
 
-	if (!planetManager->isBuildingPermittedAt(x, y, bot)) {
-		if (!zone->isWithinBoundaries(Vector3(x, y, 0)))
-			return "outside the planet's boundaries";
-
-		if (planetManager->isInWater(x, y))
-			return "in water";
-
-		if (planetManager->isInRangeWithPoi(x, y, 150))
-			return "within 150 m of a point of interest";
-
-		Reference<SceneObject*> object = planetManager->findObjectInNoBuildZone(x, y, 0.f, true);
-
-		if (object != nullptr)
-			return "in the no-build zone or footprint of " + describeObject(object);
-
-		return "building is not permitted here";
-	}
+	if (!planetManager->isBuildingPermittedAt(x, y, bot))
+		return describeNotPermitted(zone, x, y, true);
 
 	Reference<CityRegion*> city = getCityAt(zone, x, y);
 
@@ -821,9 +973,16 @@ bool BotCity::checkSite(const String& planet, float x, float y, float radius, fl
 	// The centre: what PlaceCityHallSuiCallback and placeStructureFromDeed would refuse
 	out.z = zone->getHeight(x, y);
 
+	Reference<SceneObject*> spawnAtCentre;
+
+	float surface = 0;
+
+	if (terrain->getWaterHeight(x, y, surface))
+		out.waterLevel = surface;
+
 	if (!zone->isWithinBoundaries(Vector3(x, y, 0))) {
 		out.reasons.add("outside the planet's boundaries");
-	} else if (!planetManager->isBuildingPermittedAt(x, y, nullptr)) {
+	} else if (!permittedIgnoringSpawns(zone, x, y, &spawnAtCentre)) {
 		SortedVector<ManagedReference<ActiveArea*>> areas;
 		zone->getInRangeActiveAreas(x, 0, y, &areas, true);
 
@@ -842,12 +1001,15 @@ bool BotCity::checkSite(const String& planet, float x, float y, float radius, fl
 
 		Reference<SceneObject*> object = planetManager->findObjectInNoBuildZone(x, y, 0.f, true);
 
-		if (object != nullptr)
+		if (object != nullptr && !isSpawn(object))
 			out.reasons.add("in the no-build zone of " + describeObject(object));
 
 		if (out.reasons.isEmpty())
 			out.reasons.add("building is not permitted here");
 	}
+
+	if (spawnAtCentre != nullptr)
+		out.warnings.add("a spawn stands on the spot (" + describeObject(spawnAtCentre) + "): founding and placing clear it");
 
 	Reference<CityRegion*> inside = getCityAt(zone, x, y);
 
@@ -955,7 +1117,7 @@ bool BotCity::checkSite(const String& planet, float x, float y, float radius, fl
 			if (planetManager->isInWater(x + dx, y + dy))
 				++water;
 
-			if (!planetManager->isBuildingPermittedAt(x + dx, y + dy, nullptr) || getCityAt(zone, x + dx, y + dy) != nullptr)
+			if (!permittedIgnoringSpawns(zone, x + dx, y + dy, nullptr) || getCityAt(zone, x + dx, y + dy) != nullptr)
 				++blocked;
 		}
 	}
@@ -989,7 +1151,7 @@ bool BotCity::checkSite(const String& planet, float x, float y, float radius, fl
 	for (int i = 0; i < out.reasons.size(); ++i)
 		msg << (i == 0 ? " - " : "; ") << out.reasons.get(i);
 
-	msg << " | z " << (int)out.z << ", height diff " << out.heightDiff << " m within " << (int)radius << " m, " << out.heightDiffArea << " m within "
+	msg << " | z " << (int)out.z << ", water level " << (out.waterLevel > -9000 ? String::valueOf((int)out.waterLevel) : String("none")) << ", height diff " << out.heightDiff << " m within " << (int)radius << " m, " << out.heightDiffArea << " m within "
 		<< (int)areaRadius << " m, blocked " << (int)(out.blocked * 100) << "%, water " << (int)(out.water * 100) << "%";
 
 	if (!out.nearestCity.isEmpty())
@@ -1015,6 +1177,9 @@ bool BotCity::placeStructure(CreatureObject* bot, uint64 deedOid, float x, float
 
 	ZoneServer* zoneServer = bot->getZoneServer();
 	ManagedReference<StructureDeed*> deed = zoneServer != nullptr ? zoneServer->getObject(deedOid).castTo<StructureDeed*>() : nullptr;
+	if (deed != nullptr && bot->getZone() != nullptr)
+		clearLairs(bot->getZone(), bot, x, y);
+
 	String reason = deed == nullptr ? String("there's no structure deed with that id") : checkPlacement(bot, deed, x, y, angle);
 	String templatePath = deed != nullptr ? deed->getGeneratedObjectTemplate() : String("?");
 
@@ -1169,6 +1334,8 @@ uint64 BotCity::foundCity(CreatureObject* mayor, float x, float y, int angle, co
 			reason = "\"" + cityName + "\" contains or is a region's name";
 		else if (!cityManager->validateCityName(cityName))
 			reason = "another city is called " + cityName;
+		else
+			reason = findNpcCityNameClash(zoneServer, cityName);
 	}
 
 	// The distances, with the reasons
@@ -1214,6 +1381,8 @@ uint64 BotCity::foundCity(CreatureObject* mayor, float x, float y, int angle, co
 			return 0;
 		}
 	}
+
+	clearLairs(zone, mayor, x, y);
 
 	// Everything placeStructureFromDeed and the command check, logged
 	reason = checkPlacementInternal(mayor, deed, x, y, angle, true);
@@ -1704,6 +1873,9 @@ uint64 BotCity::placeDecoration(CreatureObject* mayor, const String& templatePat
 	bool fountain = templatePath.contains("object/tangible/furniture/city/fountain");
 	String reason;
 
+	if (city != nullptr && city->isMayor(mayor->getObjectID()))
+		clearLairs(zone, mayor, x, y);
+
 	// CityDecorationTask::placeDecoration, in its order
 	if (objectTemplate == nullptr)
 		reason = "no template " + templatePath;
@@ -1718,7 +1890,7 @@ uint64 BotCity::placeDecoration(CreatureObject* mayor, const String& templatePat
 	else if (!cityManager->canSupportMoreDecorations(city))
 		reason = "the city can't support more decorations at its rank";
 	else if (!planetManager->isBuildingPermittedAt(x, y, mayor, 0, false))
-		reason = "building is not permitted here";
+		reason = describeNotPermitted(zone, x, y, false);
 	else if (!lamp) {
 		Reference<SceneObject*> tooClose = planetManager->findObjectTooCloseToDecoration(x, y, objectTemplate->getNoBuildRadius());
 

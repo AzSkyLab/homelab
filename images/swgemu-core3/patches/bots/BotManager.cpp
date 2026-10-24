@@ -687,6 +687,13 @@ void BotManager::sceneReady(CreatureObject* creature) {
 
 	ghost->notifySceneReady();
 
+	// Standing still: a bot saved mid-walk (a restart while it moved) keeps its speed, and Core3 won't start a
+	// dance or a song while it's "running"
+	if (creature->getCurrentSpeed() != 0) {
+		creature->setCurrentSpeed(0);
+		creature->updateLocomotion();
+	}
+
 	setState(oid, BotRuntime::ONLINE);
 
 	info(true) << "BotManager: " << creature->getDisplayedName() << " logged in, skill mod private_medical_rating "
@@ -705,6 +712,8 @@ void BotManager::sceneReady(CreatureObject* creature) {
 				ghost->unloadSpawnedChildren(true);
 		}, "BotStoreHelperDroid", 8000);
 	}
+
+	BotTrade::restoreOwed(creature);
 
 	BotLua::callJobsEvent("onLogin", creature);
 }

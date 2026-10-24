@@ -53,9 +53,9 @@ BotLines.smuggler = {
 	},
 	-- A trade window opened
 	open = {
-		"Let's see it. Armor's {armor}, weapons {weapon}. One piece at a time.",
-		"Alright, put it in the window. {armor} for armor, {weapon} for a weapon.",
-		"Business. Put the piece in with the credits, {armor} for armor, {weapon} for weapons.",
+		"Let's see it. Armor's {armor}, weapons {weapon}. One piece at a time, and stay close or the deal's off.",
+		"Alright, put it in the window. {armor} for armor, {weapon} for a weapon. Don't wander off mid-deal.",
+		"Business. Put the piece in with the credits, {armor} for armor, {weapon} for weapons. Stay within arm's reach.",
 	},
 	-- The same customer again within a few minutes
 	openAgain = {

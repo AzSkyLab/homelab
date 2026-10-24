@@ -363,7 +363,7 @@ CREW_ROLES = {
              "unarmed in light armor: you pull the big things, taunt them off the others and hold them while the rest "
              "shoot"),
     "rifleman": ("a master rifleman, with master marksman and master carbineer behind it. You carry a T21 rifle and a "
-                 "carbine in composite armor, stay at range and drop things with headshots, strafes and burst shots"),
+                 "carbine in bounty hunter armor, stay at range and drop things with headshots, strafes and burst shots"),
     "medic": ("a master combat medic and master doctor. In padded armor with a pistol, you keep the group alive with "
               "stims and ranged stims, cure poisons, diseases and states, and revive anyone who goes down. Your doctor "
               "buffs (the six enhancements: health, action, strength, constitution, quickness and stamina) and your "
@@ -868,8 +868,11 @@ class Bridge:
             return not aside(action) and not negated(action)
 
         if proposed in allowed and ok(proposed):
+            # A short reply carries the action on from the exchange before, unless it asks for something else itself
+            # ("heal my wounds too" after "buff us up")
+            elsewhere = any(a != proposed and mentioned(a, text) for a in allowed)
             if mentioned(proposed, text) or (mentioned(proposed, before) and len(text.split()) <= 6 and
-                                             not words(proposed).search(text)):
+                                             not words(proposed).search(text) and not elsewhere):
                 return proposed
         for action in allowed:
             if mentioned(action, text) and ok(action) and \

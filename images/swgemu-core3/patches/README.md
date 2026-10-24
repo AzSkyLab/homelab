@@ -14,10 +14,11 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
 |---|---|---|
 | `0001-start-bot-manager` | `ZoneServerImplementation.cpp` | Starts BotManager after the managers |
 | `0002-bots-shutdown-logout` | `ServerCore.cpp` | Logs bots out at shutdown, before players are disconnected |
-| `0003-bots-hear-chat` | `ChatManagerImplementation.cpp` | Spatial chat and tells from humans reach the bots |
+| `0003-bots-hear-chat` | `ChatManagerImplementation.cpp` | Spatial chat, tells and group chat (`handleGroupChat`, `handleChatRoomMessage`) from humans reach the bots |
 | `0004-bots-lua-bindings` | `DirectorManager.cpp` | Registers the bot Lua functions in every Lua state |
 | `0005-bots-close-sui-boxes` | `PlayerObjectImplementation.cpp` | Closes any game window a bot gets |
 | `0006-sui-page-null-client` | `SuiPageData.cpp` | Null-client check in `sendTo` (an upstream crash with a clientless player) |
+| `0007-bots-fairness` | group loot, mission rewards, XP | Bots are left out of the credit split, random loot and lottery candidates, the mission reward divisor and the XP damage share |
 
 The Dockerfile applies both after the checkout. A patch that doesn't apply fails the build, so after a `CORE3_REF`
 bump, fix the patches first (`dev/build-core3.sh` shows which one fails).

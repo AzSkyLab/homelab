@@ -323,5 +323,44 @@ function BotMusician:act(pBot, pPlayer, action, channel, brainLine)
 	end
 end
 
+-- Development, bot on bot: another bot listens to the musician (there is no game client on the local server):
+--   runLuaFunction BotMusician:devListen:<first>:<musician>      /listen (devStopListen:<first>: stop)
+function BotMusician:devListen(first, musician)
+	local pBot = botGetCreature ~= nil and botGetCreature(first or "") or nil
+	local pMusician = botGetCreature ~= nil and botGetCreature(musician or "") or nil
+
+	if pBot == nil or pMusician == nil then
+		print("BotJobs: usage devListen:<bot>:<musician bot>, both online")
+		return
+	end
+
+	print("BotJobs: " .. tostring(first) .. " listens to " .. tostring(musician) .. ": " ..
+		tostring(botEnqueue(pBot, "listen", SceneObject(pMusician):getObjectID(), "")))
+end
+
+function BotMusician:devStopListen(first)
+	local pBot = botGetCreature ~= nil and botGetCreature(first or "") or nil
+
+	if pBot == nil then
+		print("BotJobs: no online bot called " .. tostring(first))
+		return
+	end
+
+	print("BotJobs: " .. tostring(first) .. " stops listening: " .. tostring(botEnqueue(pBot, "stoplistening", 0, "")))
+end
+
+-- For the brain (the request's extra fields): the roster's instrument
+function BotMusician:requestFields(pBot, oid)
+	local entry = BotJobs:entry(CreatureObject(pBot):getFirstName()) or {}
+
+	for _, template in ipairs(entry.outfit or {}) do
+		if tostring(template):find("/instrument/", 1, true) ~= nil then
+			return {instrument = template}
+		end
+	end
+
+	return {}
+end
+
 BotJobModules = BotJobModules or {}
 BotJobModules.musician = BotMusician

@@ -42,6 +42,24 @@ BotCitizen = ScreenPlay:new {
 	voteEvery = 1800,
 	-- Errands at a stroll (botMoveTo's pace)
 	pace = "walk",
+
+	-- Safety. The plain around the city has aggressive creatures (spineflap soldiers, nightspiders) that wander in and
+	-- hurt citizens caught outdoors. A citizen under attack (in combat while outdoors) or knocked down goes straight
+	-- into its house (put there: it can't outrun them), and the whole town keeps to houses and the cantina for
+	-- dangerSeconds, so the next ones aren't caught out either. A citizen that dies clones itself (the nearest cloner:
+	-- the city's own centre once it stands) and is put back at its house.
+	handlesDeath = true,
+	dangerSeconds = 900,
+	shelterStay = {300, 900},
+	-- Only these places while it isn't safe
+	safePlaces = {home = true, cantina = true},
+	-- Wait this long (ms) after it falls before checking it is up, and after dying before cloning, and after being
+	-- cloned before putting it home
+	hurtCheckMs = 12000,
+	cloneDelayMs = 10000,
+	homeAfterCloneMs = 15000,
+	-- At most one shelter per bot this often (seconds)
+	shelterEvery = 20,
 }
 
 local function bk(oid, field)
@@ -92,7 +110,16 @@ function BotCitizen:clear(oid)
 end
 
 function BotCitizen:tick(pBot, oid, now)
+	if BotCityJobs:cloneIfDead(pBot, oid, now) then
+		return
+	end
+
 	BotCityJobs:checkMove(pBot, oid, now)
+
+	-- Attacked on the way to its lot too: in, and the placement tried again later
+	if BotCityJobs:placing(oid) and self:danger(pBot, oid, now, true) then
+		return
+	end
 
 	if BotCityJobs:placing(oid) then
 		if now - readData(bk(oid, "cityPlacingSince")) > BotCityJobs.holdTimeout then
@@ -102,6 +129,10 @@ function BotCitizen:tick(pBot, oid, now)
 			BotCityJobs:release(oid)
 		end
 
+		return
+	end
+
+	if self:danger(pBot, oid, now) then
 		return
 	end
 
@@ -154,15 +185,18 @@ function BotCitizen:pick(pBot, oid)
 	local here = readStringData(bk(oid, "cityAt"))
 	local choices, total = {}, 0
 
+	local unsafe = self:unsafe()
+
 	for place, weight in pairs(weights) do
-		if (place ~= here or place == "home") and self:destination(pBot, oid, place, true) ~= nil then
+		if (place ~= here or place == "home") and (not unsafe or self.safePlaces[place]) and
+			self:destination(pBot, oid, place, true) ~= nil then
 			table.insert(choices, {place = place, weight = weight})
 			total = total + weight
 		end
 	end
 
 	if total == 0 then
-		return "streets"
+		return unsafe and "home" or "streets"
 	end
 
 	table.sort(choices, function(a, b) return a.place < b.place end)
@@ -186,7 +220,7 @@ function BotCitizen:destination(pBot, oid, place, check)
 	local planet = plan.planet
 
 	local function outdoors(x, y)
-		return {x = x, z = getWorldFloor(x, y, planet), y = y, cell = 0}
+		return {x = x, z = BotCityJobs:ground(pBot, x, y), y = y, cell = 0}
 	end
 
 	local function towardCentre(x, y, metres)
@@ -394,7 +428,7 @@ function BotCitizen:nextErrand(pBot, oid, now)
 
 	local point = self:destination(pBot, oid, place, false)
 
-	if point == nil then
+	if point == nil and not self:unsafe() then
 		place = "streets"
 		point = self:destination(pBot, oid, place, false)
 	end
@@ -531,7 +565,225 @@ function BotCitizen:onSpoken(pBot, oid, pSpeaker, channel)
 end
 
 function BotCitizen:onEvent(pBot, oid, name, pOther, detail)
-	BotCityJobs:onMoveEvent(pBot, oid, name, pOther, detail)
+	if name == "incapacitated" then
+		self:hurt(pBot, oid)
+	elseif name == "died" then
+		self:died(pBot, oid)
+	elseif name == "cloned" then
+		self:cloned(pBot, oid)
+	else
+		BotCityJobs:onMoveEvent(pBot, oid, name, pOther, detail)
+	end
+end
+
+-- Safety
+
+-- Is the town on its guard (somebody was attacked lately)?
+function BotCitizen:unsafe()
+	return os.time() < readData(ck("danger"))
+end
+
+local function down(pBot)
+	local creature = CreatureObject(pBot)
+
+	return creature:isDead() or creature:isIncapacitated()
+end
+
+-- From the tick: attacked outdoors (not in a fight it chose), or the town on its guard and this one still out. True if
+-- it did something (the rest of the tick waits).
+function BotCitizen:danger(pBot, oid, now, attackOnly)
+	if down(pBot) or SceneObject(pBot):getParentID() ~= 0 then
+		return false
+	end
+
+	local creature = CreatureObject(pBot)
+
+	if creature:isInCombat() and not (BotFight ~= nil and BotFight:busy(oid)) then
+		self:shelter(pBot, oid, now, "attacked")
+		return true
+	end
+
+	if attackOnly then
+		return false
+	end
+
+	if self:unsafe() and not self.safePlaces[readStringData(bk(oid, "cityAt"))] and readStringData(bk(oid, "cityErrand")) ~= "home" and
+		not BotCityJobs:placing(oid) and readData(bk(oid, "cityDangerHome")) < now then
+		-- Out when the alarm went up: home now
+		writeData(bk(oid, "cityDangerHome"), now + 60)
+		self:leaving(pBot, oid)
+
+		local point = self:destination(pBot, oid, "home", false)
+
+		if point ~= nil then
+			deleteStringData(bk(oid, "cityAt"))
+			writeStringData(bk(oid, "cityErrand"), "home")
+			BotCityJobs:go(pBot, oid, point.x, point.z, point.y, point.cell, "errand:home")
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Put it indoors at home (else beside the city hall), stop whatever it was doing, and keep it in for a while
+function BotCitizen:shelter(pBot, oid, now, why)
+	if now - readData(bk(oid, "cityShelterAt")) < self.shelterEvery then
+		return
+	end
+
+	writeData(bk(oid, "cityShelterAt"), now)
+	writeData(ck("danger"), now + self.dangerSeconds)
+	writeData(ck("stat:sheltered"), readData(ck("stat:sheltered")) + 1)
+
+	if botStop ~= nil then
+		botStop(pBot)
+	end
+
+	deleteStringData(bk(oid, "cityMove"))
+	deleteData(bk(oid, "cityMoveUntil"))
+	deleteStringData(bk(oid, "cityErrand"))
+
+	if BotCityJobs:placing(oid) then
+		-- Its placement is off for now (the house chores start it again; a check left over is ignored)
+		writeData(bk(oid, "cityPlaceSeq"), readData(bk(oid, "cityPlaceSeq")) + 1)
+		deleteStringData(bk(oid, "cityPlacing"))
+		deleteData(bk(oid, "cityPlacingSince"))
+		BotCityJobs:release(oid)
+	end
+
+	self:leaving(pBot, oid)
+
+	local point = self:destination(pBot, oid, "home", false)
+	local at = "home"
+
+	-- No house of its own yet: any finished house in town (or the cantina), else the square
+	if point == nil then
+		for _, lot in ipairs(BotCityJobs:plan().houses) do
+			local built = readData(ck("built:" .. lot.id))
+			local inside = built ~= 0 and self:homeInside(oid, {oid = built}) or nil
+
+			if inside ~= nil then
+				point, at = inside, "home"
+				break
+			end
+		end
+	end
+
+	if point == nil then
+		local _, cell = BotCityJobs:workplace("cantina", nil, nil)
+		local spots = BotCityJobs:plan().interiors.cantina.spots or {}
+
+		if cell ~= nil and #spots > 0 then
+			point, at = {x = spots[1].x, z = spots[1].z, y = spots[1].y, cell = cell}, "cantina"
+		end
+	end
+
+	if point == nil then
+		local plan = BotCityJobs:plan()
+		local spot = plan.squareSpots[1] or plan.center
+
+		point = {x = spot.x, z = BotCityJobs:ground(pBot, spot.x, spot.y), y = spot.y, cell = 0}
+		at = "hall"
+	end
+
+	local creature = CreatureObject(pBot)
+
+	if creature:isInCombat() then
+		creature:clearCombatState(false)
+	end
+
+	SceneObject(pBot):teleport(point.x, point.z, point.y, point.cell)
+	writeStringData(bk(oid, "cityAt"), at)
+	writeData(bk(oid, "cityLingerUntil"), now + between(self.shelterStay))
+	print("BotCity: " .. BotJobs:name(oid) .. " sheltered (" .. why .. ")")
+end
+
+-- Knocked down: whatever it was doing is over; once it is up it goes in
+function BotCitizen:hurt(pBot, oid)
+	writeData(ck("danger"), os.time() + self.dangerSeconds)
+
+	if botStop ~= nil then
+		botStop(pBot)
+	end
+
+	deleteStringData(bk(oid, "cityMove"))
+	deleteData(bk(oid, "cityMoveUntil"))
+	deleteStringData(bk(oid, "cityErrand"))
+	writeData(ck("stat:hurt"), readData(ck("stat:hurt")) + 1)
+	print("BotCity: " .. BotJobs:name(oid) .. " was knocked down")
+	createEvent(self.hurtCheckMs, "BotCitizen", "afterHurt", pBot, tostring(readData(bk(oid, "gen"))) .. "|6")
+end
+
+function BotCitizen:afterHurt(pBot, args)
+	local gen, tries = tostring(args):match("^(%d+)|(%d+)$")
+
+	if gen == nil or not BotJobs:current(pBot, gen) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local creature = CreatureObject(pBot)
+
+	if creature:isDead() then
+		return
+	end
+
+	if creature:isIncapacitated() then
+		if tonumber(tries) > 0 then
+			createEvent(5000, "BotCitizen", "afterHurt", pBot, gen .. "|" .. (tonumber(tries) - 1))
+		end
+
+		return
+	end
+
+	self:shelter(pBot, oid, os.time(), "knocked down")
+end
+
+-- Dead: the job's own business is over; cloned after a pause
+function BotCitizen:died(pBot, oid)
+	writeData(ck("danger"), os.time() + self.dangerSeconds)
+	writeData(ck("stat:died"), readData(ck("stat:died")) + 1)
+
+	if botStop ~= nil then
+		botStop(pBot)
+	end
+
+	self:clear(oid)
+	print("BotCity: " .. BotJobs:name(oid) .. " died; cloning")
+	createEvent(self.cloneDelayMs, "BotCitizen", "cloneNow", pBot, tostring(readData(bk(oid, "gen"))))
+end
+
+function BotCitizen:cloneNow(pBot, gen)
+	if BotJobs:current(pBot, gen) and CreatureObject(pBot):isDead() then
+		if botClone == nil then
+			print("BotCity: " .. BotJobs:name(SceneObject(pBot):getObjectID()) .. " died, and this build can't clone it")
+			return
+		end
+
+		botClone(pBot)
+	end
+end
+
+function BotCitizen:cloned(pBot, oid)
+	createEvent(self.homeAfterCloneMs, "BotCitizen", "backFromCloning", pBot, tostring(readData(bk(oid, "gen"))))
+end
+
+-- Cloned: put back at its house, and kept in for a while
+function BotCitizen:backFromCloning(pBot, gen)
+	if not BotJobs:current(pBot, gen) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+
+	if down(pBot) then
+		createEvent(5000, "BotCitizen", "backFromCloning", pBot, gen)
+		return
+	end
+
+	writeData(bk(oid, "cityShelterAt"), 0)
+	self:shelter(pBot, oid, os.time(), "cloned")
 end
 
 -- For the brain (the request's extra fields, if BotJobs:ask asks the module): the city's news, the citizen's trade,

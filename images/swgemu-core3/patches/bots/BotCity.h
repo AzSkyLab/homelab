@@ -5,6 +5,10 @@
  * client. No upstream hooks: everything calls Core3's own CityManager, StructureManager and PlanetManager.
  * - Founding: PlaceCityHallSuiCallback::run minus the name window (bots close every window, patch 0005), with the
  *   same checks, the city hall deed made here, and idempotent by name.
+ * - Spawns in the way: Core3's spawn manager puts creature lairs, camps ("poi" buildings) and theaters on the plains, and
+ *   a placement is refused inside their no-build radius. A player would fight them away; placeStructure, foundCity and
+ *   placeDecoration remove one that stands on the spot (as DespawnLairOnPlayerDisappear does), and logs it. Site probes
+ *   leave them out of the numbers.
  * - Site probes, placement checks, and a watcher that logs each placement's outcome. Core3 sends every refusal as a
  *   system message, which a bot's missing client never shows, so the reasons are worked out here and logged.
  * - Residence, elections, the mayor's controls (treasury, taxes, specialization, zoning, registration), decorations.
@@ -52,6 +56,7 @@ public:
 	Vector<String> reasons;			// what stops a city hall at the centre (empty when ok)
 	Vector<String> warnings;		// what makes the site poor without stopping it
 	float z = 0;					// terrain height at the centre
+	float waterLevel = -9999;		// the water surface at the centre (a water boundary or the global table), or -9999 if none
 	float heightDiff = 0;			// highest height difference over the footprint square (centre +/- radius)
 	float heightDiffArea = 0;		// the same over the area square (centre +/- areaRadius)
 	float blocked = 0;				// share of grid points in the area circle where building isn't permitted (0..1)

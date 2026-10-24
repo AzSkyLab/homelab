@@ -294,7 +294,7 @@ BotRoster = {
 			skills = {"social_musician_master"},
 			outfit = {
 				"object/tangible/wearables/shirt/shirt_s15.iff",		-- Trim Lined Shirt
-				"object/tangible/wearables/jacket/jacket_s26.iff",		-- Flared Jacket
+				"object/tangible/wearables/jacket/jacket_s17.iff",		-- Belted Jacket
 				"object/tangible/wearables/pants/pants_s15.iff",		-- Dress Slacks
 				"object/tangible/wearables/shoes/shoes_s02.iff",		-- Casual Shoes
 				"object/tangible/instrument/slitherhorn.iff",		-- Slitherhorn (held)
@@ -347,8 +347,9 @@ BotRoster = {
 			},
 			station = {planet = "tatooine", x = 18.5, z = -0.895, y = -0.2, cell = 1082877, heading = 45},
 		},
-		-- Rifleman: Rifleman, Marksman and Carbineer masters (203 points); composite armor, a T21 in hand and an E-11
-		-- carbine in the pack
+		-- Rifleman: Rifleman, Marksman and Carbineer masters (203 points); bounty hunter armor (a piece weighs
+		-- 1 in encumbrance; a full composite set weighs about 1000 and no bot's secondary stats carry it), a T21 in hand and
+		-- an E-11 carbine in the pack
 		{
 			name = "Senna Delmont",
 			account = "bot_senna",
@@ -359,15 +360,15 @@ BotRoster = {
 			city = "mos_eisley",
 			skills = {"combat_rifleman_master", "combat_marksman_master", "combat_carbine_master"},
 			outfit = {
-				"object/tangible/wearables/armor/composite/armor_composite_chest_plate.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_leggings.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_bicep_l.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_bicep_r.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_bracer_l.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_bracer_r.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_boots.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_gloves.iff",
-				"object/tangible/wearables/armor/composite/armor_composite_helmet.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_chest_plate.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_leggings.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_bicep_l.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_bicep_r.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_bracer_l.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_bracer_r.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_boots.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_gloves.iff",
+				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_helmet.iff",
 				"object/weapon/ranged/rifle/rifle_t21.iff",		-- T21 (held)
 			},
 			carry = {"object/weapon/ranged/carbine/carbine_e11.iff"},
@@ -446,7 +447,7 @@ BotRoster = {
 				"object/tangible/wearables/robe/robe_s12.iff",		-- Grand Mayoral Robe
 				"object/tangible/wearables/shoes/shoes_s01.iff",		-- Dress Shoes
 			},
-			station = {planet = "naboo", x = -3143.0, z = 0, y = 4701.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3281.0, z = 0, y = 4862.0, cell = 0, heading = 180},
 		},
 		-- The city's dancer (Master Dancer; she places the cantina at rank 2)
 		{
@@ -466,7 +467,7 @@ BotRoster = {
 				"object/tangible/wearables/necklace/necklace_rosy_pearl.iff",		-- Rosy Pearl
 				"object/tangible/wearables/bracelet/bracelet_s03_r.iff",		-- Golden Bracelet
 			},
-			station = {planet = "naboo", x = -3193.0, z = 0, y = 4700.0, cell = 0, heading = 160},
+			station = {planet = "naboo", x = -3331.0, z = 0, y = 4861.0, cell = 0, heading = 160},
 		},
 		-- The city's musician (Master Musician; he places the theater at rank 4)
 		{
@@ -486,7 +487,7 @@ BotRoster = {
 				"object/tangible/wearables/shoes/shoes_s02.iff",		-- Casual Shoes
 				"object/tangible/instrument/kloo_horn.iff",		-- Kloo Horn (held)
 			},
-			station = {planet = "naboo", x = -3196.0, z = 0, y = 4698.0, cell = 0, heading = 140},
+			station = {planet = "naboo", x = -3334.0, z = 0, y = 4859.0, cell = 0, heading = 140},
 		},
 		-- The city's doctor (Master Doctor; she places the hospital at rank 3)
 		{
@@ -505,7 +506,7 @@ BotRoster = {
 				"object/tangible/wearables/jacket/jacket_s03.iff",		-- Long Formal Jacket
 				"object/tangible/wearables/shoes/shoes_s08.iff",		-- Women's Shoes
 			},
-			station = {planet = "naboo", x = -3113.0, z = 0, y = 4700.0, cell = 0, heading = 200},
+			station = {planet = "naboo", x = -3251.0, z = 0, y = 4861.0, cell = 0, heading = 200},
 		},
 		-- Six citizens with their own trades. Every one has Novice Artisan, the citizens' starting profession
 
@@ -528,7 +529,7 @@ BotRoster = {
 				"object/tangible/wearables/gloves/gloves_s11.iff",		-- Workman's Gloves
 				"object/tangible/wearables/boots/boots_s04.iff",		-- Hide Boots
 			},
-			station = {planet = "naboo", x = -3073.0, z = 0, y = 4798.0, cell = 0, heading = 0},
+			station = {planet = "naboo", x = -3211.0, z = 0, y = 4959.0, cell = 0, heading = 0},
 		},
 		-- An armorsmith (Master Armorsmith, Master Artisan: 140 points)
 		{
@@ -548,7 +549,7 @@ BotRoster = {
 				"object/tangible/wearables/boots/boots_s15.iff",		-- Standard Boots
 				"object/tangible/wearables/gloves/gloves_s02.iff",		-- Leather Work Gloves
 			},
-			station = {planet = "naboo", x = -3233.0, z = 0, y = 4684.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3371.0, z = 0, y = 4845.0, cell = 0, heading = 180},
 		},
 		-- A tailor (Master Tailor, Master Artisan: 140 points)
 		{
@@ -567,7 +568,7 @@ BotRoster = {
 				"object/tangible/wearables/ithorian/ith_skirt_s03.iff",		-- Ithorian Patterned Skirt
 				"object/tangible/wearables/ithorian/ith_necklace_s07.iff",		-- Ithorian Emerald Pendant
 			},
-			station = {planet = "naboo", x = -3193.0, z = 0, y = 4686.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3331.0, z = 0, y = 4847.0, cell = 0, heading = 180},
 		},
 		-- A trader (Master Merchant, Master Artisan: 140 points)
 		{
@@ -587,7 +588,7 @@ BotRoster = {
 				"object/tangible/wearables/shoes/shoes_s08.iff",		-- Women's Shoes
 				"object/tangible/wearables/necklace/necklace_s09.iff",		-- Silver Pendant
 			},
-			station = {planet = "naboo", x = -3153.0, z = 0, y = 4686.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3291.0, z = 0, y = 4847.0, cell = 0, heading = 180},
 		},
 		-- A hunter (Master Scout, Master Rifleman: 184 points with Novice Artisan), an SG-82 rifle
 		{
@@ -608,7 +609,7 @@ BotRoster = {
 				"object/tangible/wearables/backpack/backpack_s01.iff",		-- Travel Pack
 				"object/weapon/ranged/rifle/rifle_sg82.iff",		-- SG-82 (held)
 			},
-			station = {planet = "naboo", x = -3113.0, z = 0, y = 4686.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3251.0, z = 0, y = 4847.0, cell = 0, heading = 180},
 		},
 		-- A hunter (Master Creature Handler, Master Ranger: 218 points with Novice Artisan), a bowcaster (Wookiees are
 		-- born certified)
@@ -629,7 +630,7 @@ BotRoster = {
 				"object/tangible/wearables/wookiee/wke_gloves_s04.iff",		-- Wookiee Strapped Gloves
 				"object/weapon/ranged/rifle/rifle_bowcaster.iff",		-- Bowcaster (held)
 			},
-			station = {planet = "naboo", x = -3073.0, z = 0, y = 4684.0, cell = 0, heading = 180},
+			station = {planet = "naboo", x = -3211.0, z = 0, y = 4845.0, cell = 0, heading = 180},
 		},
 	},
 }

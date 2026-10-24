@@ -163,6 +163,23 @@ BotLines.ranger = {
 		"Can't get a camp going here. Too close to town, maybe.",
 		"Ground's no good here. Let's move a bit and try again.",
 	},
+	-- botPlaceCamp's reasons
+	campWater = {
+		"Too wet here for a camp. Let's find dry ground.",
+		"No camp in the water. Move a bit and ask again.",
+	},
+	campCity = {
+		"Too close to town for a camp. Let's get further out.",
+		"Can't camp this near a city. Move on a bit.",
+	},
+	campCrowded = {
+		"Too close to a building or another camp. Move a bit and ask again.",
+		"Ground's taken here. Let's go a little further and try again.",
+	},
+	campLair = {
+		"There's a lair too close for a camp. Let's move off a bit.",
+		"I won't camp by a lair. Further out.",
+	},
 	campAlready = {
 		"Camp's already up. Sit down.",
 	},

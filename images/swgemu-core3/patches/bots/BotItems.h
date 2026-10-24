@@ -35,7 +35,7 @@ public:
 	//   (or wound) packs for the same attribute are destroyed.
 	// - Stims (crafted_stimpack_sm_s1_*), ranged stims (medpack_grenade_damage_*), state packs (medpack_blinded_* etc.),
 	//   cure packs (medpack_cure_*) and revive packs (medpack_revive): one per template (extra copies are destroyed);
-	//   `power` is ignored for state packs. Pass the pack's oid (findPack) as the command's argument, e.g. to
+	//   `power` is ignored for state packs, and 0 on a revive pack means a good crafted one (400). Pass the pack's oid (findPack) as the command's argument, e.g. to
 	//   "healdamage", when the bot carries more than one kind.
 	// The bot must be locked. Returns false if the pack can't be made.
 	static bool stockPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses, float power, int duration);

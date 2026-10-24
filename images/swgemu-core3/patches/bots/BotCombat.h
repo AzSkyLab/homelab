@@ -48,8 +48,10 @@ namespace bot {
 class BotCombat {
 public:
 	static const int TICK_MS = 1000;
-	static const int FIGHT_FLAG_MS = 15 * 60 * 1000;	// the flags' own expiry, in case a fight is never ended (a crash)
 	static const int FIGHT_MAX_MS = 5 * 60 * 1000;		// a fight that goes on this long ends ("ended")
+	// The flags' own expiry, in case a fight is never ended (a crash). Core3's expiry task can't be cancelled, so it
+	// must fire before the same pair can fight again: under fight.lua's fightCooldown (600 s) after the fight's end.
+	static const int FIGHT_FLAG_MS = FIGHT_MAX_MS + 60 * 1000;
 	static const int FIGHT_RANGE = 128;					// metres apart, or the fight ends ("ended")
 	static const int DUEL_RANGE = 30;					// challenges are looked for this close (/duel needs 25 m)
 	static const int CLONE_WAIT_MS = 60000;				// a clone not done by then is given up (botClone again)
@@ -72,8 +74,9 @@ public:
 	// incapacitated twice in the last ten minutes (the fight's incap would kill). True if this fight is already on.
 	static bool startFight(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* human);
 
-	// How many times the player was incapacitated in the last INCAP_WINDOW seconds (what BotCombat saw, capped by
-	// Core3's own list). At 2, the next incap kills: no fight, and no duel worth accepting
+	// How many times the player was incapacitated in the last INCAP_WINDOW seconds: what BotCombat saw, capped by Core3's
+	// own list (which only drops old entries when a new incap comes, so alone it overcounts); in the first INCAP_WINDOW
+	// after the first tick, Core3's list alone. At 2, the next incap kills: no fight, and no duel worth accepting
 	static int recentIncaps(server::zone::objects::creature::CreatureObject* creature);
 
 	// Ends a fight or a duel with that player now: event "fightEnded", detail "ended". False if there was none
