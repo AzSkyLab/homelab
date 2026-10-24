@@ -5,6 +5,8 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
 - **`bots/`**: our own source files. They are copied to `MMOCoreORB/src/server/zone/managers/bot/`, and Core3's
   `file(GLOB_RECURSE ...)` picks them up, so CMake needs no change. These are the bot players: characters the server
   plays itself (spec: `~/github/swgemu/specs/2026-10-23-bot-players/`).
+  Phase 7 adds `BotMission.*` / `BotMissionLua.*` (destroy missions through Core3's own list, accept and abort, and
+  their waypoints in the group leader's datapad; no upstream hook).
 - **`NNNN-name.patch`**: hooks into upstream files, applied in order with `git apply` at the root of the Core3 tree.
   Keep each hook to a few lines that call into `bots/`.
   - `0001`–`0009`: the lifecycle and chat hooks.

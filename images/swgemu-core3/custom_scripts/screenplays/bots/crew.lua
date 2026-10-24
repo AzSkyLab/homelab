@@ -508,6 +508,8 @@ function BotCrew:clear(oid)
 		deleteStringData(ckey(oid, field))
 	end
 
+	self:missionClear(oid)
+
 	if BotDoctor ~= nil then
 		BotDoctor:clear(oid)
 	end
@@ -948,6 +950,7 @@ function BotCrew:leftGroup(pBot, oid, now)
 end
 
 function BotCrew:leaveForHome(pBot, oid, now)
+	self:missionLeft(pBot, oid)
 	putString(ckey(oid, "mode"), "leaving")
 	put(ckey(oid, "leavingAt"), now)
 
@@ -1818,6 +1821,11 @@ end
 
 function BotCrew:outOfCombat(pBot, oid, g, pLeader, now)
 	local role = self:role(oid)
+
+	-- On a mission errand (it walks to a terminal itself), and the leader's mission waypoints (crew_missions.lua)
+	if self:missionTick(pBot, oid, pLeader, now) then
+		return
+	end
 
 	if role == "medic" and BotDoctor ~= nil then
 		BotDoctor:topUpMind(pBot)
@@ -2701,6 +2709,11 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
+	-- Missions (crew_missions.lua) are the crew's own business: the language model isn't asked
+	if channel == "group" and self:missionHeard(pBot, oid, pSpeaker, channel, text) then
+		return true
+	end
+
 	-- At home it turns to whoever talks to it
 	if channel == "spatial" and not CreatureObject(pBot):isGrouped() then
 		botFace(pBot, pSpeaker)
@@ -3195,6 +3208,9 @@ function BotCrew:devState(first)
 	print("BotCrew: " .. tostring(first) .. " (" .. self:role(oid) .. "): " .. self:state(pBot, oid) .. "; can " ..
 		readStringData(ckey(oid, "can")) .. "; specials " .. readStringData(ckey(oid, "specialsList")))
 end
+
+-- Destroy missions in the leader's direction (Phase 7)
+includeFile("../custom_scripts/screenplays/bots/crew_missions.lua")
 
 -- The four roles share this module; each has its own table (for the role-aware keywords and the brain's actions)
 BotJobModules = BotJobModules or {}
