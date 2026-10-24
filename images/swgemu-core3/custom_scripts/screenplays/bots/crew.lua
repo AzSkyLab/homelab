@@ -447,7 +447,8 @@ function BotCrew:leaderOf(pBot, oid, g, now)
 	if g.leader.oid == oid and now - readData(ckey(oid, "handedAt")) > 5 then
 		put(ckey(oid, "handedAt"), now)
 		print("BotJobs: " .. self:name(oid) .. " hands the group's lead to " .. self:firstName(human.p))
-		-- Master looter first, while it's still the leader: Core3 gave it that with the lead, and a bot never loots
+		-- Master looter first, while it's still the leader: Core3 gave it that with the lead (the crew loots through
+		-- botLootCorpse, which doesn't need the rule, but the human is the master looter)
 		botEnqueue(pBot, "makemasterlooter", human.oid, "")
 		botEnqueue(pBot, "makeleader", human.oid, "")
 	end
@@ -466,6 +467,7 @@ function BotCrew:start(pBot, oid)
 	self:learn(pBot, oid, role)
 	self:restock(pBot, oid)
 	self:equip(pBot, oid)
+	self:lootStart(pBot, oid)
 
 	-- Home is the station it logs in at (after BotJobs:restart it may be elsewhere: the last one is kept)
 	local entry = BotJobs:entry(readStringData(key(oid, "first")))
@@ -514,6 +516,8 @@ function BotCrew:clear(oid)
 	if BotDoctor ~= nil then
 		BotDoctor:clear(oid)
 	end
+
+	self:lootClear(oid)
 end
 
 -- Its specials and abilities, from its skills
@@ -926,6 +930,7 @@ function BotCrew:enterGroup(pBot, oid, g, pLeader, now)
 	self:standUp(pBot, oid)
 	print("BotJobs: " .. self:name(oid) .. " is in " .. self:firstName(pLeader) .. "'s group (" .. #g.members .. ")")
 	self:groupSay(pBot, oid, "joined", self:firstName(pLeader))
+	self:lootRegrouped(pBot, oid, pLeader, now)
 end
 
 -- Out of the group (dismissed, disbanded, or it left): say bye if the leader is near, and go home
@@ -948,6 +953,7 @@ function BotCrew:leftGroup(pBot, oid, now)
 	end
 
 	deleteData(ckey(oid, "saidBye"))
+	self:lootBeforeHome(pBot, oid, now)
 	self:leaveForHome(pBot, oid, now)
 end
 
@@ -974,6 +980,11 @@ function BotCrew:goHome(pBot, gen)
 	local oid = SceneObject(pBot):getObjectID()
 
 	if CreatureObject(pBot):isGrouped() or readStringData(ckey(oid, "mode")) ~= "leaving" then
+		return
+	end
+
+	-- Handing the loot over first (its chain sends it home when it ends)
+	if self:lootHolding(oid) then
 		return
 	end
 
@@ -1164,6 +1175,7 @@ function BotCrew:scanHuman(pHuman, args)
 
 	put("crew:human:" .. humanOid .. ":defender", defender)
 	put("crew:human:" .. humanOid .. ":at", os.time())
+	self:lootNoteHuman(humanOid, defender)
 end
 
 -- A creature this bot may attack, or nil: alive and standing (never a death blow), near, attackable, not in the
@@ -1321,6 +1333,7 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 	if previous ~= targetOid then
 		put(ckey(oid, "target"), targetOid)
 		put(ckey(oid, "targetAt"), now)
+		self:lootNote(oid, targetOid)
 		self:standUp(pBot, oid)
 		-- (botSetTarget queues a real attack, so auto-attack runs)
 		bot("botSetTarget", pBot, targetOid)
@@ -1832,6 +1845,11 @@ function BotCrew:outOfCombat(pBot, oid, g, pLeader, now)
 
 	if role == "medic" and BotDoctor ~= nil then
 		BotDoctor:topUpMind(pBot)
+	end
+
+	-- Harvesting and looting what the group killed (crew_loot.lua)
+	if self:lootTurn(pBot, oid, g, pLeader, now) then
+		return
 	end
 
 	local camp = self:activeCamp(g, pLeader)
@@ -2765,6 +2783,12 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 		end
 	end
 
+	-- Asked for the loot: the bots that hold some hand it over, no brain needed (crew_loot.lua)
+	if self:handoverWanted(text) then
+		self:handoverSpoken(pBot, oid, pSpeaker, "group", text, g)
+		return false
+	end
+
 	local role = self:role(oid)
 	local intent = self:intentFor(text, nil)
 
@@ -2899,6 +2923,7 @@ function BotCrew:applyOrder(pBot, oid, action, now)
 			BotDoctor:clear(oid)
 		end
 
+		self:lootBeforeHome(pBot, oid, now)
 		self:leaveForHome(pBot, oid, now)
 	end
 end
@@ -2958,6 +2983,9 @@ function BotCrew:onEvent(pBot, oid, name, pOther, detail)
 		if mode == "walkingHome" then
 			self:teleportHome(pBot, oid)
 		end
+	elseif name == "trade" then
+		-- A handover's result (BotTrade's bundleDone / bundleCancelled), see crew_loot.lua
+		self:lootTradeEvent(pBot, oid, pOther, detail)
 	elseif name == "leaderGone" then
 		-- The leader logged out a while ago: leave the group and go home
 		if CreatureObject(pBot):isGrouped() then
@@ -3221,3 +3249,6 @@ BotJobModules = BotJobModules or {}
 for role in pairs(CREW) do
 	BotJobModules[role] = BotCrew:new {crewRole = role, kit = role == "medic" and "medic" or "fighter"}
 end
+
+-- Phase 7: looting, harvesting and the handover (adds to BotCrew)
+includeFile("../custom_scripts/screenplays/bots/crew_loot.lua")

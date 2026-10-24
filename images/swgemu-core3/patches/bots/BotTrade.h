@@ -86,6 +86,19 @@ public:
 	// Starts a give-back trade of itemOid to owner. Pre: bot locked
 	static bool give(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner, uint64 itemOid);
 
+	// Phase 7: a give-back trade of many items (BotLoot's handover). Opens the trade window on the owner's client at
+	// once (it is a hand-over, not a request), puts the items in, accepts, and verifies last. Events to the jobs,
+	// BotJobs:onEvent(pBot, "trade", pOwner, detail): "bundleDone" (the owner took them) or "bundleCancelled" (the
+	// owner cancelled, walked off, logged out or took too long). Pre: bot locked. False if a bundle is already under way
+	static bool giveBundle(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner,
+			const Vector<uint64>& items);
+
+	// True while a bundle is under way (offered, not yet taken or cancelled). Pre: bot locked
+	static bool hasBundle(server::zone::objects::creature::CreatureObject* bot);
+
+	// Drops a bundle that hasn't been taken, closing its trade window. No event: the jobs asked for it. Pre: bot locked
+	static void cancelBundle(server::zone::objects::creature::CreatureObject* bot);
+
 	// Development: another bot plays the human's side through PlayerManager's own trade handlers
 	static bool devRequest(server::zone::objects::creature::CreatureObject* from, server::zone::objects::creature::CreatureObject* to);
 	static bool devOffer(server::zone::objects::creature::CreatureObject* from, uint64 itemOid, int credits);

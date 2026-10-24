@@ -82,6 +82,54 @@ BotLines.crew = {
 		"Back up. Thanks.",
 		"Up again, thanks.",
 	},
+	-- Looting what the group killed (group chat; {n} items now in the pack)
+	looted = {
+		"Looted it.",
+		"Corpse is picked clean.",
+		"Got what was on it.",
+		"Looted. It's in my pack.",
+		"Searched the body.",
+	},
+	-- Handing the loot over by trade ({goods} is what's in the trade, {name} the player). Accept the window
+	handover = {
+		"{goods}. Accept the trade.",
+		"Here you go, {name}: {goods}. Accept the trade.",
+		"{goods}. Trade's open.",
+		"Your share, {name}. {goods}. Accept the trade.",
+	},
+	-- A first trade that wasn't all of it
+	handoverPart = {
+		"{goods}, and more after that. Accept the trade.",
+		"That's what fits, {name}: {goods}. I've more for when you've made room.",
+	},
+	-- The next trade
+	handoverRest = {
+		"The rest, {name}: {goods}. Accept the trade.",
+		"And the last of it: {goods}.",
+	},
+	-- Opening the trade because the bot's pack is full
+	handoverFull = {
+		"My pack's full, {name}. {goods}. Accept the trade.",
+		"No room left in my pack. {goods}: take it off me.",
+	},
+	-- Holding goods from before when regrouped
+	holding = {
+		"Still carrying your loot from last time: {goods}.",
+		"Got {goods} in my pack from before, {name}. Taking it over.",
+	},
+	handoverNone = {
+		"Nothing on me, {name}.",
+		"My pack's empty of loot.",
+		"Haven't got anything for you.",
+	},
+	handoverRoom = {
+		"Your pack's full, {name}. Make some room and ask again.",
+		"No space in your pack, {name}. Clear some out and say the word.",
+	},
+	handoverCancelled = {
+		"Alright, I'll hang on to it.",
+		"No trade? I'll keep it safe until you want it.",
+	},
 	-- Now and then in the cantina, with someone near, while looking for a group
 	lfg = {
 		"Anyone heading out to hunt? Looking for a group.",
@@ -208,6 +256,12 @@ BotLines.medic = {
 }
 
 BotLines.ranger = {
+	-- After harvesting a creature ({amount} units of {what}, a kind of {kind})
+	harvested = {
+		"Skinned it: {amount} {what}.",
+		"Got {amount} {what} off that one.",
+		"{amount} units of {what} from the carcass.",
+	},
 	campUp = {
 		"Camp's up. Sit by the fire a while.",
 		"There, a fire. Rest up.",
