@@ -1,16 +1,27 @@
 diff --git a/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp b/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
-index 1c65ee1..c0f83d6 100644
+index 1c65ee1..79d1ad6 100644
 --- a/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
 +++ b/MMOCoreORB/src/server/chat/ChatManagerImplementation.cpp
-@@ -50,6 +50,7 @@
+@@ -50,6 +50,8 @@
  #include "server/chat/room/ChatRoomMap.h"
  #include "templates/string/StringFile.h"
  #include "templates/faction/Factions.h"
 +#include "server/zone/managers/bot/BotChat.h"
++#include "server/zone/managers/bot/BotGroup.h"
  
  ChatManagerImplementation::ChatManagerImplementation(ZoneServer* serv, int initsize) : ManagedServiceImplementation() {
  	server = serv;
-@@ -1446,6 +1447,9 @@ void ChatManagerImplementation::handleSpatialChatInternalMessage(CreatureObject*
+@@ -755,6 +757,9 @@ void ChatManagerImplementation::handleChatRoomMessage(CreatureObject* sender, co
+ 	BaseMessage* amsg = new ChatOnSendRoomMessage(counter);
+ 	channel->broadcastMessage(amsg);
+ 
++	// The group's bot players hear their group's chat room (our patch)
++	if (channel->getChatRoomType() == ChatRoom::GROUP)
++		BotGroup::onGroupChat(sender, formattedMessage);
+ }
+ 
+ void ChatManagerImplementation::handleChatEnterRoomById(CreatureObject* player, uint32 roomID, int requestID, bool bypassSecurity) {
+@@ -1446,6 +1451,9 @@ void ChatManagerImplementation::handleSpatialChatInternalMessage(CreatureObject*
  
  		broadcastChatMessage(player, formattedMessage, targetID, spatialChatType, moodType, chatFlags, languageID);
  
@@ -20,7 +31,7 @@ index 1c65ee1..c0f83d6 100644
  		ManagedReference<ChatMessage*> cm = new ChatMessage();
  		cm->setString(formattedMessage.toString());
  		player->notifyObservers(ObserverEventType::CHAT, cm, 0);
-@@ -1557,6 +1561,9 @@ void ChatManagerImplementation::handleChatInstantMessageToCharacter(ChatInstantM
+@@ -1557,6 +1565,9 @@ void ChatManagerImplementation::handleChatInstantMessageToCharacter(ChatInstantM
  	BaseMessage* msg = new ChatInstantMessageToClient("SWG", sender->getZoneServer()->getGalaxyName(), name, text);
  	receiver->sendMessage(msg);
  
@@ -30,3 +41,13 @@ index 1c65ee1..c0f83d6 100644
  	BaseMessage* amsg = new ChatOnSendInstantMessage(message->getSequence(), IM_SUCCESS);
  	sender->sendMessage(amsg);
  }
+@@ -1648,6 +1659,9 @@ void ChatManagerImplementation::handleGroupChat(CreatureObject* sender, const Un
+ 	}
+ 
+ 	sender->wlock();
++
++	// The group's bot players hear it (our patch)
++	BotGroup::onGroupChat(sender, formattedMessage);
+ }
+ 
+ void ChatManagerImplementation::handleGuildChat(CreatureObject* sender, const UnicodeString& message) {

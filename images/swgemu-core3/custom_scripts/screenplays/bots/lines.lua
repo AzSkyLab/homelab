@@ -148,3 +148,7 @@ function BotLines:pick(job, kind, name, city)
 
 	return line
 end
+
+-- Phases 4-6: more jobs' lines, in files of their own
+includeFile("../custom_scripts/screenplays/bots/lines_musician_smuggler.lua")
+includeFile("../custom_scripts/screenplays/bots/lines_fight.lua")

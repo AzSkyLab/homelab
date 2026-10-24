@@ -1,8 +1,11 @@
 -- Living Cities: names for the crowd, in the style players picked on a 2004 server. A first name is unique per city
 -- while its owner is in town (Phase 2 lets players call an NPC by it). Species without a list here use the general one.
 --
--- Reserved for the bot players (custom_scripts/bots/roster.lua), so never in these lists: Hesk Torlan, Neela Kaavo,
--- Doran Halcott, Selka Marrovan, Ilyra Seawell, Saela Dawnmere. A first name a player calls out means one character.
+-- Reserved for the bot players (custom_scripts/bots/roster.lua), so never in these lists. Phase 3: Hesk Torlan, Neela
+-- Kaavo, Doran Halcott, Selka Marrovan, Ilyra Seawell, Saela Dawnmere. Phase 4: Tibbo Kressik, Dorvan Haldis, Vianne
+-- Corsell, Tarkon Veyle, Rhaan Telluro, Ylessa Tor'vani. Phase 5: Kragoth Ssival, Senna Delmont, Quillan Desh, Weeta
+-- Valsk. Phase 6: Aldren Vasche, Talia Marise, Ossin Valcourt, Brynna Solace, Garvik Thal, Mareth Kaine, Mowsha
+-- Glenhallow, Sarra Venlo, Neebo Tulluk, Rrowkarr. A first name a player calls out means one character.
 LivingCitiesNames = {
 	first = {
 		"Aren", "Bela", "Corvan", "Dahla", "Davin", "Eris", "Faela", "Garen", "Halia", "Ivo", "Jaela", "Jarek", "Kael",

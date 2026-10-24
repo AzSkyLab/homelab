@@ -5,6 +5,7 @@
 #include "BotManager.h"
 #include "BotFactory.h"
 #include "BotLua.h"
+#include "BotTrade.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/Zone.h"
 #include "server/zone/objects/creature/CreatureObject.h"
@@ -756,6 +757,9 @@ void BotManager::logoutBot(CreatureObject* creature, bool callLua) {
 
 	if (callLua)
 		BotLua::callJobsEvent("onLogout", creature);
+
+	// No trade left open, and no customer's item kept (BotTrade, Phase 4)
+	BotTrade::abortAtLogout(creature);
 
 	if (ghost->isOnline() || ghost->isLinkDead() || creature->getZone() != nullptr) {
 		ghost->setLastLogoutWorldPosition();

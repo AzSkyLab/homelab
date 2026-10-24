@@ -194,6 +194,15 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 
 		outfit.pop();
 
+		LuaObject carry = bot.getObjectField("carry");
+
+		if (carry.isValidTable()) {
+			for (int j = 1; j <= carry.getTableSize(); ++j)
+				entry->carry.add(carry.getStringAt(j));
+		}
+
+		carry.pop();
+
 		LuaObject station = bot.getObjectField("station");
 
 		if (station.isValidTable()) {
@@ -289,6 +298,13 @@ bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accep
 		}
 	}
 
+	for (int i = 0; i < entry.carry.size(); ++i) {
+		if (TemplateManager::instance()->getTemplate(entry.carry.get(i).hashCode()) == nullptr) {
+			reason = "unknown carry template " + entry.carry.get(i);
+			return false;
+		}
+	}
+
 	for (int i = 0; i < entry.outfit.size(); ++i) {
 		if (TemplateManager::instance()->getTemplate(entry.outfit.get(i).hashCode()) == nullptr) {
 			reason = "unknown outfit template " + entry.outfit.get(i);
@@ -378,6 +394,7 @@ uint64 BotFactory::ensureCharacter(ZoneServer* zoneServer, const BotEntry& entry
 	awardSkills(creature, entry);
 	ensureHair(zoneServer, creature, entry);
 	ensureOutfit(zoneServer, creature, entry);
+	ensureCarry(zoneServer, creature, entry);
 
 	if (creature->getZone() == nullptr && creature->getParent() == nullptr && !ghost->isOnline())
 		placeAtStation(zoneServer, creature, entry);
@@ -570,6 +587,7 @@ uint64 BotFactory::createCharacter(ZoneServer* zoneServer, const BotEntry& entry
 
 	awardSkills(playerCreature, entry);
 	ensureOutfit(zoneServer, playerCreature, entry);
+	ensureCarry(zoneServer, playerCreature, entry);
 
 	if (!placeAtStation(zoneServer, playerCreature, entry)) {
 		playerCreature->destroyPlayerCreatureFromDatabase(true);
@@ -769,6 +787,44 @@ void BotFactory::ensureOutfit(ZoneServer* zoneServer, CreatureObject* creature, 
 		}
 
 		creature->transferObject(item, 4, inWorld);
+	}
+}
+
+void BotFactory::ensureCarry(ZoneServer* zoneServer, CreatureObject* creature, const BotEntry& entry) {
+	SceneObject* inventory = creature->getSlottedObject("inventory");
+
+	if (inventory == nullptr)
+		return;
+
+	bool inWorld = creature->getZone() != nullptr;
+
+	for (int i = 0; i < entry.carry.size(); ++i) {
+		const String& templateName = entry.carry.get(i);
+		uint32 crc = templateName.hashCode();
+		bool has = false;
+
+		for (int j = 0; j < inventory->getContainerObjectsSize() && !has; ++j) {
+			SceneObject* item = inventory->getContainerObject(j);
+
+			has = item != nullptr && item->getServerObjectCRC() == crc;
+		}
+
+		if (has)
+			continue;
+
+		ManagedReference<SceneObject*> item = zoneServer->createObject(crc, 1);
+
+		if (item == nullptr) {
+			factoryLog().error() << entry.name << ": could not create " << templateName;
+			continue;
+		}
+
+		Locker locker(item, creature);
+
+		if (!inventory->transferObject(item, -1, inWorld)) {
+			factoryLog().error() << entry.name << ": no room in the inventory for " << templateName;
+			item->destroyObjectFromDatabase(true);
+		}
 	}
 }
 

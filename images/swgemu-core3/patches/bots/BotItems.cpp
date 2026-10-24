@@ -1,5 +1,5 @@
 /*
- * BotItems (Phase 3 bot players). See BotItems.h.
+ * BotItems (Phase 3 bot players; combat packs in Phase 5). See BotItems.h.
  */
 
 #include "BotItems.h"
@@ -12,6 +12,12 @@
 #include "server/zone/objects/tangible/pharmaceutical/PharmaceuticalObject.h"
 #include "server/zone/objects/tangible/pharmaceutical/EnhancePack.h"
 #include "server/zone/objects/tangible/pharmaceutical/WoundPack.h"
+#include "server/zone/objects/tangible/pharmaceutical/StimPack.h"
+#include "server/zone/objects/tangible/pharmaceutical/RangedStimPack.h"
+#include "server/zone/objects/tangible/pharmaceutical/StatePack.h"
+#include "server/zone/objects/tangible/pharmaceutical/CurePack.h"
+#include "server/zone/objects/tangible/pharmaceutical/RevivePack.h"
+#include "server/zone/objects/scene/SceneObjectType.h"
 #include "server/zone/objects/manufactureschematic/craftingvalues/CraftingValues.h"
 #include "templates/manager/TemplateManager.h"
 #include "templates/tangible/EnhancePackTemplate.h"
@@ -50,6 +56,81 @@ void addValue(CraftingValues& values, const String& name, const String& group, f
 	values.setCurrentValue(name, value);
 }
 
+// The combat packs (Phase 5), kept one per template: stims, ranged stims, state, cure and revive packs
+bool isCombatPackTemplate(SharedObjectTemplate* objectTemplate) {
+	return objectTemplate->isStimPackTemplate() || objectTemplate->isStatePackTemplate() || objectTemplate->isCurePackTemplate()
+		|| objectTemplate->getGameObjectType() == SceneObjectType::REVIVEPACK;
+}
+
+// The fields each combat pack's updateCraftingValues reads, as a crafting session would set them. What stockPack
+// doesn't set (medicine use, range, area) stays as the pack has it. Pre: pack locked
+bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power) {
+	CraftingValues values;
+	int useCount = Math::max(uses, pack->getUseCount());
+	bool enoughUses = pack->getUseCount() >= uses;
+
+	addValue(values, "charges", "exp_charges", useCount);
+	addValue(values, "skillmodmin", "expEaseOfUse", pack->getMedicineUseRequired());
+
+	if (pack->isRangedStimPack()) {
+		RangedStimPack* stim = cast<RangedStimPack*>(pack);
+
+		if (stim->getEffectiveness() == power && enoughUses)
+			return true;
+
+		addValue(values, "power", "exp_effectiveness", power);
+		addValue(values, "range", "exp_charges", stim->getRange());
+
+		if (stim->getArea() > 0)
+			addValue(values, "area", "null", stim->getArea());
+
+		stim->updateCraftingValues(&values, true);
+	} else if (pack->isStimPack()) {
+		StimPack* stim = cast<StimPack*>(pack);
+
+		if (stim->isDroidRepairKit() || stim->isPetStimPack())
+			return false;
+
+		if (stim->getEffectiveness() == power && enoughUses)
+			return true;
+
+		addValue(values, "power", "exp_effectiveness", power);
+
+		stim->updateCraftingValues(&values, true);
+	} else if (pack->isCurePack()) {
+		CurePack* cure = cast<CurePack*>(pack);
+
+		if (cure->getEffectiveness() == power && enoughUses)
+			return true;
+
+		addValue(values, "power", "exp_effectiveness", power);
+
+		if (cure->getArea() > 0)
+			addValue(values, "area", "null", cure->getArea());
+
+		cure->updateCraftingValues(&values, true);
+	} else if (pack->isStatePack()) {
+		if (enoughUses)
+			return true;
+
+		cast<StatePack*>(pack)->updateCraftingValues(&values, true);
+	} else if (pack->isRevivePack()) {
+		RevivePack* revive = cast<RevivePack*>(pack);
+
+		// Its crafting turns power into wounds healed, 2x for health
+		if (revive->getHealthWoundHealed() == 2 * power && enoughUses)
+			return true;
+
+		addValue(values, "power", "exp_effectiveness", power);
+
+		revive->updateCraftingValues(&values, true);
+	} else {
+		return false;
+	}
+
+	return true;
+}
+
 // Names for the buffs the bots give, by CRC (Core3 keeps only the CRC on a buff it makes in C++)
 const VectorMap<uint32, String>& getKnownBuffNames() {
 	static const VectorMap<uint32, String> names = []() {
@@ -86,26 +167,33 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 
 	uint32 crc = templateName.hashCode();
 	SharedObjectTemplate* objectTemplate = TemplateManager::instance()->getTemplate(crc);
+	bool combatPack = objectTemplate != nullptr && isCombatPackTemplate(objectTemplate);
 
-	if (objectTemplate == nullptr || !(objectTemplate->isEnhancePackTemplate() || objectTemplate->isWoundPackTemplate())) {
-		itemsLog().error() << "stockPack: " << templateName << " is not an enhance or wound pack";
+	if (objectTemplate == nullptr || !(objectTemplate->isEnhancePackTemplate() || objectTemplate->isWoundPackTemplate() || combatPack)) {
+		itemsLog().error() << "stockPack: " << templateName << " is not a pack a bot stocks";
 		return false;
 	}
 
 	bool enhance = objectTemplate->isEnhancePackTemplate();
-	uint8 attribute = enhance ? static_cast<EnhancePackTemplate*>(objectTemplate)->getAttribute() : static_cast<WoundPackTemplate*>(objectTemplate)->getAttribute();
+	uint8 attribute = 0;
+
+	if (enhance)
+		attribute = static_cast<EnhancePackTemplate*>(objectTemplate)->getAttribute();
+	else if (!combatPack)
+		attribute = static_cast<WoundPackTemplate*>(objectTemplate)->getAttribute();
+
 	bool inWorld = bot->getZone() != nullptr;
 
 	Locker locker(bot);
 
-	// One pack per kind and attribute: ours, the first of this template
+	// One pack per kind and attribute (combat packs: per template): ours, the first of this template
 	ManagedReference<PharmaceuticalObject*> pack;
 	Vector<ManagedReference<SceneObject*>> extras;
 
 	for (int i = 0; i < inventory->getContainerObjectsSize(); ++i) {
 		ManagedReference<SceneObject*> object = inventory->getContainerObject(i);
 
-		if (!isSameKind(object, enhance, attribute))
+		if (combatPack ? (object == nullptr || !object->isPharmaceuticalObject() || object->getServerObjectCRC() != crc) : !isSameKind(object, enhance, attribute))
 			continue;
 
 		if (pack == nullptr && object->getServerObjectCRC() == crc)
@@ -151,6 +239,15 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 
 	Locker plocker(pack, bot);
 
+	if (combatPack) {
+		if (!setCombatPackValues(pack, uses, power)) {
+			itemsLog().error() << "stockPack: " << templateName << " is a kind of pack a bot doesn't stock";
+			return false;
+		}
+
+		return true;
+	}
+
 	int useCount = Math::max(uses, pack->getUseCount());
 
 	if (enhance) {
@@ -183,6 +280,27 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 	}
 
 	return true;
+}
+
+uint64 BotItems::findPack(CreatureObject* bot, const String& templateName) {
+	if (bot == nullptr || templateName.isEmpty())
+		return 0;
+
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	if (inventory == nullptr)
+		return 0;
+
+	uint32 crc = templateName.hashCode();
+
+	for (int i = 0; i < inventory->getContainerObjectsSize(); ++i) {
+		SceneObject* object = inventory->getContainerObject(i);
+
+		if (object != nullptr && object->isPharmaceuticalObject() && object->getServerObjectCRC() == crc)
+			return object->getObjectID();
+	}
+
+	return 0;
 }
 
 int BotItems::getWounds(CreatureObject* creature, int pool) {

@@ -1,5 +1,26 @@
 /*
- * BotGroupLua: the Lua bindings for groups, group chat, the ranger's camp and tracking (Phase 5). Registered from BotLua::registerFunctions.
+ * BotGroupLua: the Lua bindings for groups, group chat, the ranger's camp and tracking (Phase 5). Registered from
+ * BotLua::registerFunctions.
+ *
+ *   botGetGroupInviter(pBot)           the oid of whoever invited the bot, or 0 (also event "groupInvite", pOther the
+ *                                      inviter); the jobs answer with botEnqueue(pBot, "join" / "decline", 0, "")
+ *   botPlaceCamp(pBot[, kitTemplate])  the camp's oid, or 0 and why ("skill", "in combat", "inside", "in a city",
+ *                                      "no camping here", "not placed ..."); an existing camp's oid and "already
+ *                                      camping". The default kit is the master camp (camp_luxury)
+ *   botRemoveCamp(pBot)                disbands the bot's camp
+ *   botGetCamp(pBot)                   the bot's camp's oid, or 0
+ *   botTrack(pBot[, type])             array of {name, distance, bearing, degrees, oid, kind, level}, nearest first;
+ *                                      type 0 (default) animals, 1 NPCs, 2 players. nil and why if it can't
+ * Group chat from humans reaches BotJobs:onHeard(pBot, pSpeaker, text, "group") (BotGroup, patches/0003).
+ *
+ * Development (console):
+ *   runLuaFunction BotGroupDev:invite:<from>:<to>      (join:<first>, decline:<first>, leave:<first>)
+ *   runLuaFunction BotGroupDev:gsay:<first>:<text>     group chat as a bot ("_" is a space)
+ *   runLuaFunction BotGroupDev:teleport:<first>:<x>:<y>   outdoors on its planet (z from the terrain)
+ *   runLuaFunction BotGroupDev:camp:<first>[:<kit>]    (uncamp:<first>)
+ *   runLuaFunction BotGroupDev:track:<first>[:<type>]
+ *   runLuaFunction BotGroupDev:skillmod:<first>:<mod>  a bot's skill mod (e.g. private_medical_rating, camp)
+ *   runLuaFunction BotGroupDev:cmd:<first>:<command>[:<target bot or oid>[:<args>]]   any command, as botEnqueue
  */
 
 #ifndef BOTGROUPLUA_H_
@@ -15,6 +36,13 @@ namespace bot {
 class BotGroupLua {
 public:
 	static void registerFunctions(Lua* lua);
+
+private:
+	static int botGetGroupInviter(lua_State* L);
+	static int botPlaceCamp(lua_State* L);
+	static int botRemoveCamp(lua_State* L);
+	static int botGetCamp(lua_State* L);
+	static int botTrack(lua_State* L);
 };
 
 } // namespace bot

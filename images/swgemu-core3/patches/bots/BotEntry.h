@@ -25,6 +25,7 @@ public:
 	String online;		// "" (online while a human is) or "planet" (only while a human is on its station's planet)
 	Vector<String> skills;	// each awarded with every skill it requires
 	Vector<String> outfit;	// wearable templates, equipped
+	Vector<String> carry;	// templates kept in the inventory (a spare weapon, a camp kit), not equipped
 
 	// Station: where it stands while online. cell 0 means world coordinates.
 	String planet;

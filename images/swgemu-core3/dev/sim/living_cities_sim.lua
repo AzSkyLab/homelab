@@ -775,6 +775,16 @@ if botsChunk ~= nil then
 	})
 end
 
+-- Phases 4-6: each part's own scenarios, in bots_<part>_sim.lua next to this file, loaded the same way
+for _, part in ipairs({"city", "jobsA", "crew"}) do
+	local chunk = loadfile(simDir .. "/bots_" .. part .. "_sim.lua")
+	if chunk ~= nil then
+		chunk()({sim = sim, Obj = Obj, newObject = newObject, objects = objects, fail = fail, realPrint = realPrint,
+			setHour = setHour, checkAll = checkAll, scenarios = scenarios, order = order,
+			players = function() return players end, addPlayer = function(p) table.insert(players, p) end})
+	end
+end
+
 math.randomseed(tonumber(os.getenv("SIM_SEED") or "") or 42)
 
 for _, name in ipairs(order) do

@@ -69,12 +69,37 @@ return function(ctx)
 	function Obj:getCashCredits() return self.cash or 0 end
 	function Obj:getBankCredits() return self.bank or 0 end
 	function Obj:getSkillMod(name) return (self.skillMods or {})[name] or 0 end
+	-- A bot has its roster skills (and everything they require, which the mock doesn't model: any box counts)
+	function Obj:hasSkill(name)
+		if self.skills ~= nil then
+			return self.skills[name] == true
+		end
+		return self.isBotFlag == true
+	end
 	function Obj:isDancing() return self.dancing ~= nil end
 	function Obj:getPosture() return self.posture == "sitting" and POSTURESITTING or UPRIGHT end
 	function Obj:isInCombat() return false end
 	function Obj:setWounds(pool, v) self.wounds = self.wounds or {}; self.wounds[pool] = v end
 	function Obj:setShockWounds(v) self.shock = v end
 	function Obj:getLastName() return self.last or "" end
+	-- What the crew (crew.lua) reads of any creature, at rest: no group, no fight, alive, nothing queued. Its own
+	-- scenarios (bots_crew_sim.lua) act groups and fights out.
+	function Obj:isGrouped() return self.groupId ~= nil end
+	function Obj:getGroupSize() return 0 end
+	function Obj:getGroupMember(i) return nil end
+	function Obj:getGroupID() return self.groupId or 0 end
+	function Obj:isDead() return self.dead == true end
+	function Obj:isIncapacitated() return self.incap == true end
+	function Obj:getMainDefender() return nil end
+	function Obj:hasState(state) return 0 end
+	function Obj:getQueueSize() return 0 end
+	function Obj:getCurrentSpeed() return 0 end
+	function Obj:isCreatureObject() return self.isPlayer == true end
+	function Obj:getDisplayedName() return self.name or self.first or "someone" end
+	function Obj:isAttackableBy(other) return false end
+	function Obj:getWorldPositionX() return self:getPositionX() end
+	function Obj:getWorldPositionY() return self:getPositionY() end
+	function Obj:switchZone(planet, x, z, y, cell) self.planet, self.x, self.z, self.y, self.cell = planet, x, z, y, cell end
 
 	-- The mock bot API (interfaces.md "Lua API")
 
@@ -263,7 +288,9 @@ return function(ctx)
 	end
 
 	function botEmote(bot, emote, target)
-		assert(SOCIALS[emote], "botEmote: unknown social " .. tostring(emote))
+		-- The real server checks names against the client's social_types table (an unknown one returns false); the
+		-- mock only insists on a plausible name
+		assert(SOCIALS[emote] or tostring(emote):match("^%l+$"), "botEmote: unknown social " .. tostring(emote))
 		assert(math.type(target) == "integer", "botEmote: target must be an integer oid")
 		table.insert(log.emotes, {bot = bot.oid, t = nowMs(), emote = emote, target = target})
 	end
@@ -275,7 +302,9 @@ return function(ctx)
 	end
 
 	function botStockPack(bot, template, uses, power, duration)
-		assert(type(template) == "string" and template:match("^object/tangible/medicine/crafted/medpack_%a+_%a+_%a%.iff$"),
+		-- Phase 3's enhance and wound packs; Phase 5's stims, ranged stims, state, cure and revive packs (any crafted
+		-- medicine template, as BotItems::stockPack takes)
+		assert(type(template) == "string" and template:match("^object/tangible/medicine/[%w_/]+%.iff$"),
 			"botStockPack: bad template " .. tostring(template))
 		bot.packs = bot.packs or {}
 		local pack = bot.packs[template]
@@ -333,24 +362,29 @@ return function(ctx)
 	-- The roster has what the jobs read
 	local function checkRoster(label)
 		local seen, jobs = {}, {}
-		if #BotRoster.bots ~= 6 then
-			fail(label .. ": " .. #BotRoster.bots .. " bots in the roster, expected 6")
+		local knownJobs = {doctor = true, dancer = true, musician = true, smuggler = true, tank = true, rifleman = true,
+			medic = true, ranger = true, mayor = true, citizen = true}
+		-- The player city (Phase 6) isn't a Living Cities city
+		local extraCities = {varenhal = "naboo"}
+		if #BotRoster.bots < 6 then
+			fail(label .. ": " .. #BotRoster.bots .. " bots in the roster, expected at least 6")
 		end
 		for _, e in ipairs(BotRoster.bots) do
 			local first = firstOf(e.name or "")
-			if first == nil or not e.name:match("^%S+ %S+$") then
+			local oneWord = e.species == "wookiee" and e.name:match("^%S+$")
+			if first == nil or not (e.name:match("^%S+ %S+$") or oneWord) then
 				fail(label .. ": roster name " .. tostring(e.name) .. " isn't Firstname Lastname")
 			elseif seen[first:lower()] then
 				fail(label .. ": first name " .. first .. " twice in the roster")
 			end
 			seen[(first or ""):lower()] = true
-			if e.job ~= "doctor" and e.job ~= "dancer" then
+			if not knownJobs[e.job or ""] then
 				fail(label .. ": " .. tostring(e.name) .. " has job " .. tostring(e.job))
 			end
-			if LivingCitiesData[e.city or ""] == nil then
+			local planet = extraCities[e.city or ""] or (LivingCitiesData[e.city or ""] or {}).planet
+			if planet == nil then
 				fail(label .. ": " .. tostring(e.name) .. " in unknown city " .. tostring(e.city))
-			end
-			if e.station == nil or e.station.planet ~= LivingCitiesData[e.city or ""].planet then
+			elseif e.station == nil or e.station.planet ~= planet then
 				fail(label .. ": " .. tostring(e.name) .. "'s station isn't on its city's planet")
 			end
 			if type(e.species) ~= "string" or (e.sex ~= "male" and e.sex ~= "female") then
@@ -377,7 +411,7 @@ return function(ctx)
 			local first = firstOf(entry.name)
 			local b = ctx.newObject({
 				isBotFlag = true, isPlayer = true, first = first, last = entry.name:match("%S+$"), name = entry.name,
-				planet = LivingCitiesData[entry.city].planet, x = entry.job == "doctor" and 1000 or 1300, y = 1000, z = 5,
+				planet = (LivingCitiesData[entry.city] or {}).planet or (entry.station or {}).planet or "naboo", x = entry.job == "doctor" and 1000 or 1300, y = 1000, z = 5,
 				cell = 0, inWorld = false, online = false, cash = 120, bank = 5000, packs = {}, buffs = {},
 				skillMods = entry.job == "doctor" and {healing_wound_speed = 100, healing_ability = 100} or {},
 			})
@@ -556,8 +590,9 @@ return function(ctx)
 		for _, b in ipairs(botList()) do
 			online = online + (b.online and 1 or 0)
 		end
-		if online ~= 6 then
-			fail("bots: " .. online .. " of 6 online")
+		-- botLogin forces every bot in, whatever its online rule
+		if online ~= #BotRoster.bots then
+			fail("bots: " .. online .. " of " .. #BotRoster.bots .. " online")
 		end
 
 		local doctor, dancer = nil, nil
@@ -1154,7 +1189,7 @@ return function(ctx)
 		player.buffs = {}
 		t = nowMs()
 		speak(doctor, player, "buff please")
-		sim.run(LivingTalk.deadline + 2)
+		sim.run(BotJobs.deadline + 2)
 		if #commands(doctor, "healenhance", t) == 0 then
 			fail("botbrain: no buff after a timeout")
 		end
@@ -1162,7 +1197,7 @@ return function(ctx)
 		sim.run(65)
 		t = nowMs()
 		speak(doctor, player, "nice hat")
-		sim.run(LivingTalk.deadline + 3)
+		sim.run(BotJobs.deadline + 3)
 		said = linesOf(doctor, t)
 		if #said ~= 1 or not anyLine(said, "doctor", "fallback") then
 			fail("botbrain: a timed-out chat got " .. #said .. " lines, expected one canned")

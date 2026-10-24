@@ -7,7 +7,9 @@ shared directory (an emptyDir in the core3 pod):
   req/<id>.json   written by Lua (temp file, then rename): {"type": "say" | "gone" | "warm", ...}
   rep/<id>.txt    written here (temp file, then rename), read and removed by Lua:
                     line 1: "ok" or "fallback"; line 2: a mood (may be empty); line 3: what the NPC says;
-                    line 4 (bot players only): the action, "buff", "wounds", "bufftarget" or empty
+                    line 4 (bot players only): the action ("buff", "wounds", "bufftarget", "join", "follow",
+                    "stay", "home", "camp", "track") or empty; line 5 (bot players only): flags, a comma list
+                    ("insult": the player insulted the bot) or empty
   alive           the time, rewritten 4 times a second; Lua sends nothing when it is over a minute old
 
 "say" carries the NPC's persona (name, species, sex, kit, city, place), the player's name and what they said; the
@@ -20,6 +22,13 @@ They get a veteran's persona for their job, and the reply carries an action. The
 lets through actions the job allows, and only when the player's words plausibly asked for it, and adds it when the
 model forgot a plain request ("buff plz"). Crowd replies stay three lines.
 
+Phases 4-6 add the jobs musician, smuggler, tank, rifleman, medic, ranger, mayor and citizen, the channel "group"
+(group chat), and line 5, the flags: "insult" when the player insulted the bot (the Lua counts them for provoked
+fights). The model judges the insult and the bridge checks it against the words, as it does the action. Optional
+request fields: "cityInfo" (a player city's news, from botCityInfo) and "cityName", "role" (a citizen's trade),
+"grouped" (the bot is in the player's group), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
+smuggler's prices; 4000 and 6000 if absent).
+
 Standard library only. Settings come from the environment:
   TALK_DIR (/run/talk), LITELLM_URL (http://litellm.litellm.svc:4000/v1), LITELLM_KEY, TALK_MODEL (vm/qwen3.8:27b),
   TALK_FACTS (/opt/swgemu/talk/facts.json), TALK_DEADLINE (seconds Lua waits for a reply, 12)
@@ -27,6 +36,7 @@ Standard library only. Settings come from the environment:
   python3 talk_bridge.py                       # run
   python3 talk_bridge.py --ask mos_eisley "where's the bank?"   # one question from the command line, for testing
   python3 talk_bridge.py --ask mos_eisley "buff plz" --bot --job doctor --channel tell   # the same, to a bot player
+  python3 talk_bridge.py --ask varenhal "what rank is the city?" --bot --job mayor --city-info "rank 3, ..."
 """
 import argparse
 import collections
@@ -48,6 +58,10 @@ LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
 MODEL = os.environ.get("TALK_MODEL", "vm/qwen3.8:27b")
 FACTS_FILE = os.environ.get("TALK_FACTS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "facts.json"))
 DEADLINE = float(os.environ.get("TALK_DEADLINE", "12"))
+# Bot players may talk at any length (the creator: "uncapped"), so their Lua waits longer (BotJobs.deadline)
+BOT_DEADLINE = float(os.environ.get("TALK_BOT_DEADLINE", "40"))
+# Tokens a bot reply may use: a long paragraph, with room for the JSON around it
+BOT_MAX_TOKENS = 900
 
 # Exchanges remembered per NPC and player, and for how long
 MEMORY_TURNS = 8
@@ -56,8 +70,8 @@ MEMORY_SECONDS = 4 * 3600
 KEEP_ALIVE = "15m"
 WARM_EVERY = 240
 MAX_CHARS = 200
-# Bot players talk at a player's length; the Lua sends a long reply as several chat lines
-BOT_MAX_CHARS = 600
+# No length cap on bot replies beyond this safety net; the Lua sends a long reply as several chat lines
+BOT_MAX_CHARS = 3000
 # How often a bot player's reply may ask for a tip
 TIP_CHANCE = 0.2
 
@@ -139,41 +153,134 @@ def swearing(r):
     rule = SWEAR_BACK if SWEARS.search(text) or CURSES.search(text) or RUDE.search(text) else NO_SWEARING
     return rule.format(player=player)
 
-# Bot players (Phase 3): where each job stands, and the actions it may take
-BOT_PLACES = {"doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina"}
-BOT_ACTIONS = {"doctor": ("buff", "wounds"), "dancer": ("bufftarget",)}
+# Bot players: where each job stands, and the actions it may take. Phase 3: doctor, dancer. Phase 4: musician,
+# smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger). Phase 6: a player city's mayor and citizens.
+CREW = ("join", "follow", "stay", "home")
+CREW_JOBS = ("tank", "rifleman", "medic", "ranger")
+CITY_JOBS = ("mayor", "citizen")
+BOT_PLACES = {
+    "doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina",
+    "musician": "on the cantina floor, playing beside the dancer",
+    "smuggler": "at a quiet table at the back of the cantina",
+    "tank": "in the cantina", "rifleman": "in the cantina", "medic": "in the cantina", "ranger": "in the cantina",
+    "mayor": "by the city hall", "citizen": "out and about in town",
+}
+# The order matters when the model left out a request that names two: the job's own work comes first
+BOT_ACTIONS = {
+    "doctor": ("buff", "wounds"), "dancer": ("bufftarget",), "musician": ("bufftarget",), "smuggler": (),
+    "tank": CREW, "rifleman": CREW, "medic": ("buff", "wounds") + CREW, "ranger": ("camp", "track") + CREW,
+    "mayor": (), "citizen": (),
+}
 # What the model may call an action -> the job's action
+_DOCTOR = {"buff": "buff", "buffs": "buff", "enhance": "buff", "enhancements": "buff", "bufftarget": "buff",
+           "wounds": "wounds", "wound": "wounds", "heal": "wounds", "healwound": "wounds", "heal wounds": "wounds"}
+_ENTERTAINER = {"bufftarget": "bufftarget", "buff": "bufftarget", "buffs": "bufftarget", "buff target": "bufftarget",
+                "mind buff": "bufftarget", "mindbuff": "bufftarget"}
+_CREW = {"join": "join", "group": "join", "invite": "join", "join group": "join", "follow": "follow",
+         "follow me": "follow", "come": "follow", "stay": "stay", "wait": "stay", "hold": "stay", "back off": "stay",
+         "home": "home", "go home": "home", "leave": "home", "dismiss": "home"}
+_RANGER = {"camp": "camp", "place camp": "camp", "rest": "camp", "track": "track", "tracking": "track",
+           "scout": "track", "search": "track"}
 ACTION_ALIASES = {
-    "doctor": {"buff": "buff", "buffs": "buff", "enhance": "buff", "enhancements": "buff", "bufftarget": "buff",
-               "wounds": "wounds", "wound": "wounds", "heal": "wounds", "healwound": "wounds", "heal wounds": "wounds"},
-    "dancer": {"bufftarget": "bufftarget", "buff": "bufftarget", "buffs": "bufftarget", "buff target": "bufftarget",
-               "mind buff": "bufftarget", "mindbuff": "bufftarget"},
+    "doctor": _DOCTOR, "dancer": _ENTERTAINER,
+    "musician": dict(_ENTERTAINER, **{"music buff": "bufftarget", "focus": "bufftarget", "willpower": "bufftarget"}),
+    "tank": _CREW, "rifleman": _CREW,
+    "medic": dict(_CREW, **{k: v for k, v in _DOCTOR.items() if k != "bufftarget"}),
+    "ranger": dict(_CREW, **_RANGER),
 }
 
 # Player words for each action. A model's action stands only if the player's words (or the exchange just before)
 # mention it; a plain request in these words gets the action even when the model left it out.
 WORDS = {
     "buff": re.compile(r"\b(bu+f+\w*|buf|enh\w*|enchance\w*|the works|full set)\b", re.I),
-    "wounds": re.compile(r"\b(wound\w*|heal(s|z|ing)?|patch(ed)? (me )?up|fix (me )?up)\b", re.I),
+    "wounds": re.compile(r"\b(wound\w*|heal(s|z|ing)?|patch(ed)? (me |us )?up|fix (me |us )?up)\b", re.I),
     "bufftarget": re.compile(r"\b(bu+f+\w*|buf|buff target)\b", re.I),
+    # "wanna hunt?", "lfg?", "join me", "can I invite you?", "need a tank"
+    "join": re.compile(
+        r"\b(group(ed|ing)? ?(up|with)|group\?|grp|invite\w*|inv|join\w*(?!\s+(the |a |an )?(empire|imperials?|"
+        r"rebel\w*|alliance|faction|militia|guild|city|cult))|team ?up|party up|lfg|lf\d?m|tag along|"
+        r"come (along|with|hunt\w*|out (hunt\w*|with))|roll with|run with|hunt\w* (with|together)|want in|"
+        r"(wanna|want to|gonna|going to|let'?s|lets|come|coming|go|going|head(ing)? out) (go |to go |out )?hunt\w*|"
+        r"(need|want|looking for|lf) (a |an |some |one more |another |the |more )?(tank|healer|medic|doc|dps|damage|"
+        r"gun|rifle\w*|ranger|scout|tracker|crew|group|backup|hand))\b", re.I),
+    # "follow me", "on me", "let's go", "this way"; and "back off", "fall back", "hold fire": stop fighting and come
+    # back to them (the crew's Lua holds its fire a moment after it)
+    "follow": re.compile(
+        r"\b(follow(ing)?( me| us| along| close| behind| my lead| him| her| them)?(?!\s+(the|that|this|a|an|your|his|"
+        r"their|those|these|my)\b)|on me|this way|keep (up|following|close|with me|moving)|fall in|"
+        r"stick (with me|close|together)|stay (with me|close|together)|come (here|over here|back|along|with me|"
+        r"on over)|let'?s (go|move|roll|head out|get moving|move out)|lets (go|move|roll)|move out|catch up|form up|"
+        r"rally( on me)?|back off|fall back|disengage|regroup|hold (your )?fire|stop (fighting|attacking|shooting)|"
+        r"cease fire)\b", re.I),
+    # "stay here", "wait up", "hold position", "stop following me"
+    "stay": re.compile(
+        r"\b(stay\w*(?! out| away| with| close| together)( here| put| back| there)?|wait (here|there|up|for me)|"
+        r"hold (up|here|position|back|it)|halt|stop (here|there|following\w*)|quit following|stand (by|still)|"
+        r"sit tight|hang (back|here|tight)|don'?t (move|follow( me)?)|dont (move|follow( me)?))\b", re.I),
+    # "go home", "you can go", "we're done", "back to town"
+    "home": re.compile(
+        r"\b(go(ing)? (back )?home|head (back )?home|back to (town|the cantina|the city|base|mos eisley|coronet|theed|"
+        r"your (spot|table))|you can (go|leave|go home|head (home|back|out)|take off)|you'?re (free|dismissed|done)|"
+        r"youre (free|dismissed|done)|dismiss(ed)?|leave (the )?group|disband\w*|we'?re done|were done|"
+        r"that'?s all(?=\W*$| for (today|tonight|now))|"
+        r"that'?ll do|call it a (day|night)|done for (the day|today|tonight|now)|off you go|go away|return to (town|"
+        r"base|the cantina))\b", re.I),
+    # "camp?", "let's rest", "drop a camp"
+    "camp": re.compile(
+        r"\b(camp(site)?\b(?!'?s (up|ready|set|placed|done|here|gone)| is (up|ready|set|placed|done|here|gone))|"
+        r"rest\?|(let'?s|lets|time to|need( a| to)?|gotta|take a|could use a|we|us) (rest|break|breather)|"
+        r"rest (up|here|a (bit|while|minute|sec))|breather|campfire|(drop|throw( down)?|pitch|set up|make|"
+        r"put (up|down)|build|plant) (a |the |us a |your )?camp\w*)\b", re.I),
+    # "what's around?", "find me krayts", "any tuskens nearby?", "track something"
+    "track": re.compile(
+        r"\b(track\w*|scout (ahead|around|the area|it out)|what'?s (around|out (there|here)|nearby|close by)|"
+        r"whats (around|out (there|here)|nearby)|anything (around|nearby|close|out (there|here)|to (hunt|kill|shoot))|"
+        r"any(thing| more)? \w+ (around|nearby|close by|out (there|here))|find (me |us )(some |a |an |any |more )?\w+|"
+        r"find (some|any|more) \w+|find \w+s\b|hunt (down|for) \w+|(see|spot|sense) anything|what do you see|"
+        r"search (the area|around)|where are the \w+)", re.I),
+}
+# Job words that differ from the action's: a musician's buff is focus and willpower
+JOB_WORDS = {
+    ("musician", "bufftarget"): re.compile(r"\b(bu+f+\w*|buf|buff target|focus|willpower)\b", re.I),
 }
 # ...not counting the other job's work: phrases cut out before looking ("mind buff" to the doctor, "doctor buff" to
-# the dancer, "heal my battle fatigue")
+# the dancer, "heal my battle fatigue", "dance buff" to the musician)
+_MEDICAL_BUFF = (r"(doc(tor)?'?s?|medic(al)?'?s?|health|action|strength|constitution|quickness|stamina)\s+"
+                 r"bu+f+\w*")
 OTHER = {
-    "buff": re.compile(r"\b((mind|dance|dancer'?s?|entertainer'?s?|performance|music)\s+bu+f+[sz]?|bu+f+\w*\s+(my |your )?"
-                       r"mind)\b", re.I),
+    "buff": re.compile(r"\b((mind|dance|dancer'?s?|entertainer'?s?|performance|music|musician'?s?|focus|willpower)\s+"
+                       r"bu+f+[sz]?|bu+f+\w*\s+(my |your )?mind)\b", re.I),
     "wounds": re.compile(r"\b(heal\w*\s+(my |your |the |some |up )?(mind wounds?|battle fatigue|bf|shock( wounds?)?|mind)|"
                          r"mind wounds?)\b", re.I),
-    "bufftarget": re.compile(r"\b(doc(tor)?'?s?|medic(al)?|health|action|strength|constitution|quickness|stamina)\s+"
-                             r"bu+f+\w*\b", re.I),
+    "bufftarget": re.compile(r"\b" + _MEDICAL_BUFF + r"\b", re.I),
+    ("musician", "bufftarget"): re.compile(r"\b(" + _MEDICAL_BUFF + r"|(dance|dancer'?s?|dancing)\s+bu+f+\w*)\b",
+                                           re.I),
 }
-# Battle fatigue named with no wound word: a "heal" is the dancer's work
+# Battle fatigue named with no wound word: a "heal" is the entertainers' work
 FATIGUE = re.compile(r"\b(battle fatigue|bf|shock|mind)\b", re.I)
 # The shape of a request (with a word above): "can I get", "buff plz", "u up for", "hook me up", ...
 REQUEST = re.compile(
     r"\b(plz|pls|please|plez|plox|can|could|may|would|will|wud|cud|need\w*|want|wanna|gimme|give|get|hook|hit me|lf|"
     r"looking for|any chance|up for|how about|what about|me up|buff me|heal me|enhance me|i'?d like|id like|"
-    r"requesting|do you|you buffing|u buffing|ready|another|mind if|set me|make me|throw|toss|slap|hit me up)\b", re.I)
+    r"requesting|do you|you buffing|u buffing|ready|another|mind if|set me|make me|throw|toss|slap|hit me up|"
+    r"buff us|heal us|buff everyone|buff the group)\b", re.I)
+# Commands, said straight out ("follow me", "Varo, stay here", "ok everyone, go home"): the crew's actions count as
+# asked when a clause starts with them, after a word or two of lead-in
+COMMANDS = {"join", "follow", "stay", "home", "camp", "track"}
+# ...and the buffers' work, in its imperative shapes only ("heal my wounds", but not "buffs are great")
+COMMAND_WORDS = {
+    "buff": re.compile(r"\b((bu+f+|enhance) (me|us|everyone|the group|him|her|them|all|my|up)|(bu+f+|enhance) "
+                       r"(pl[sz]|please))\b", re.I),
+    "wounds": re.compile(r"\b(heal (me|my|us|up|him|her|them|these|those|this|the)|patch (me |us )?up|"
+                         r"fix (me |us )?up)\b", re.I),
+    "bufftarget": re.compile(r"\b(bu+f+ (me|us|pl[sz]|please)|set me|make me)\b", re.I),
+}
+LEADIN = re.compile(r"^\W*((hey|yo|oi|ok|okay|alright|right|guys|all|everyone|everybody|team|crew|y'?all|now|so|"
+                    r"please|pls|plz|just|you two|both of you|all of you|and)\b\W*)*", re.I)
+CLAUSE = re.compile(r"[.!?;,:]+|\b(?:and|then|but)\b", re.I)
+# "I'll follow you", "I'm staying here": the player's own plans, not a command
+SELF = r"\b(i|i'?ll|i will|i'?m|im|i am|we'?ll|we will)\s+(gonna\s+|going to\s+|will\s+|just\s+|can\s+|should\s+)?"
+SELFISH = {"follow", "stay", "home"}
 # "buff?", "doc, buffs?", "enhances pls", "heal wounds?": the request word and little else
 BARE = re.compile(r"^\W*(\w+\W+){0,2}" + r"(bu+f+\w*|buf|enh\w*|wounds?|heals?)" + r"(\W+\w+){0,1}\W*$", re.I)
 # "don't need a buff", "no more buffs", "already buffed" (but not "nah, just buff me")
@@ -187,9 +294,119 @@ PRAISE = re.compile(r"\b(nice|great|good|awesome|sweet|cool|love|best|amazing|si
 # "nah, later" to "want a buff?"
 REFUSAL = re.compile(r"^\W*(no|nah|nope|not now|later|maybe later|i'?m good|im good|i'?m fine|pass|no thanks)\b", re.I)
 THANKS = re.compile(r"\b(thanks|thank you|thank u|thx|ty|tyvm|cheers|appreciate\w*)\b", re.I)
-INFO = re.compile(r"^\W*(how (long|much|many|often|strong|big|good|does|do|is|are)|what (does|do|is|are|'s)|whats|"
-                  r"why|when|who|which|where)\b", re.I)
+INFO = re.compile(r"^\W*(how (long|much|many|often|strong|big|good|does|do|is|are)|how'?s|what (does|do|is|are|'s)|"
+                  r"what'?s|whats|why|when|who|which|where)\b", re.I)
 
+# Insults (reply line 5): the model judges, the bridge checks. Put-downs aimed at the bot count whatever the model
+# says; the model's own "insult" stands when the words are rude or aimed at the bot, and not when they're praise.
+_NASTY = (r"(stupid|dumb|lazy|ugly|fat|useless|worthless|pathetic|fucking|fuckin|kriffing|filthy|stinking|stinky|"
+          r"sorry|miserable|drunk|drunken|incompetent|brainless|slimy|greasy|scruffy(-| )looking|scruffy|half-witted|"
+          r"lousy|cheap|crooked|bloody|damn|damned|goddamn|shitty|braindead|little|corrupt|two-bit|worthless)")
+_NAMES = (r"(idiot|moron|loser|bastard|bitch|ass ?hole|arse ?hole|scum\w*|jerk|creep|freak|clown|failure|"
+          r"piece of (shit|garbage|trash|junk|crap|poodoo)|nerf ?herders?|sleemo|bantha fodder|schutta|womp rat|"
+          r"slug|worm|quack|hack|fraud|coward|waste of space|retard\w*|dumbass|jackass|shithead|dickhead|prick|"
+          r"twat|cunt|wanker|thief|crook|weakling|little shit)")
+INSULTING = re.compile(
+    r"(^|[.!?,;:]\s*|\b(and|so|well|oh|just|hey|yo|man|dude|then|ok|okay|nah|no|yeah|lol|now)\s+)"
+    r"(fuck|f\*+k|screw|frak|kriff) (you|u|off|yourself)(?!['\w])"
+    r"|\b(piss off|shut (up|it|the \w+ up|your \w+( \w+)?)|stfu|kys|kill yourself|go (to hell|die|fuck yourself)|"
+    r"get (bent|fucked)|eat (shit|my)|bite me|nobody (likes|wants|cares about|asked) (you|u)|"
+    r"no ?one (likes|asked) (you|u))\b"
+    r"|\b(you|u|ya|you'?re|youre|you are|ur|u r)\s+(a |an |such a |such an |one |the |some )?(" + _NASTY +
+    r"[\s,]+)*" + _NAMES + r"\b"
+    r"|\b(you|u|your \w+|ur \w+)\s+(suck[sz]?|stink[sz]?|blows?)\b(?!\s+(my|me|it|on|this|that|him|her|us)\b)"
+    r"|\b(your|ur) \w+ (is|are) (shit|crap|trash|garbage|terrible|awful|pathetic|lame|weak|junk|poodoo|useless|"
+    r"worthless|a joke)\b"
+    r"|\b(you'?re|youre|you are|ur|u r)\s+(so |really |pretty |such a |fucking |kriffing |a )*(stupid|useless|"
+    r"worthless|pathetic|ugly|fat|dumb|lame|terrible|awful|lazy|disgusting|annoying|incompetent|braindead|"
+    r"brainless|a joke|a disgrace)\b", re.I)
+ADDRESSED = re.compile(r"\b(you|your|yours|yourself|u|ur|ya|you'?re|youre|y'?all)\b", re.I)
+
+# What the hunting crew knows about the country around its town (Phase 5): the galaxy's own creatures and places
+HUNTING = {
+    "mos_eisley": (
+        "Right outside town there are womp rats, rockmites, kreetles and worrts, easy work for anyone new. Out on the "
+        "flats graze dewbacks, eopies and banthas, good for hides, meat and bone, with dune lizards and desert squills "
+        "further out. Jawas wander the dunes in bands and shoot back. Tusken Raiders camp all over the wastes, and "
+        "their stronghold, Fort Tusken, north of Mos Espa, is a job for a full group. Krayt dragons live in the deep "
+        "canyons and out at the krayt graveyard, a long run from anywhere: only a full group of masters with revive "
+        "packs ready should try one. The shuttles help: Anchorhead and Bestine for the flats and canyons, Mos Espa and "
+        "Mos Entha for the deep desert, Jabba's Palace for the hills beyond the Dune Sea."),
+    "coronet": (
+        "Close to town there are durnis, gubburs, murras and gurrcats, easy pickings. Further out roam krahbus, sand "
+        "panthers, slice hounds, dalyrakes and plumed rasps, and gurreck packs in the hills. For group work there are "
+        "the Selonian cultists and the Drall Patriots in their caves, rogue CorSec troopers at their base, and Lord "
+        "Nyax's cultists if you want a real fight. The shuttles to Tyrena, Kor Vella, Bela Vistal and Doaba Guerfel "
+        "open up the rest of the countryside."),
+    "theed": (
+        "Close to town there are ikopis, kaadus, nunas and peko-pekos, easy work. Further out graze falumpasets and "
+        "fambaas, veermoks hide in the woods and narglatches hunt the hills. Gungan warriors hold camps in the swamps "
+        "and guard their sacred place; the Mauler stronghold and the Naboo pirates' hideouts are group work. The "
+        "shuttles to Kaadara, Keren, Moenia, the Lake Retreat and Dee'ja Peak open up the countryside."),
+}
+HUNTING["varenhal"] = HUNTING["theed"]
+
+# A player city (Phase 6) has no fact sheet: the Lua sends its news ("cityInfo"); this is the rest
+PLAYER_CITY = {"name": "Varenhal", "planet": "Naboo", "text": (
+    "{name} is a young player city on Naboo, out in open country about two kilometres east of Theed, founded by its "
+    "mayor and its citizens. What it has built so far is in the city's news. A player city never gets a starport; "
+    "each rank lets the mayor place more: at rank 2 (village) a bank, a garage, a cantina and gardens; at rank 3 "
+    "(township) a cloning centre, a hospital and a specialization, and a place on the planetary map; at rank 4 "
+    "(city) a shuttleport and a theater; at rank 5 (metropolis) statues, fountains and the like. Anything the city "
+    "hasn't got yet (a shuttle, a starport, profession trainers, more shops) is in Theed, a short run west, and "
+    "Theed's shuttles and starport go everywhere.")}
+PLAYER_CITIES = {"varenhal"}
+
+# The crew: what each one is, and how they talk
+CREW_ROLES = {
+    "tank": ("a master Teras Kasi artist and master brawler, with master medic to patch yourself up. You fight "
+             "unarmed in light armor: you pull the big things, taunt them off the others and hold them while the rest "
+             "shoot"),
+    "rifleman": ("a master rifleman, with master marksman and master carbineer behind it. You carry a T21 rifle and a "
+                 "carbine in composite armor, stay at range and drop things with headshots, strafes and burst shots"),
+    "medic": ("a master combat medic and master doctor. In padded armor with a pistol, you keep the group alive with "
+              "stims and ranged stims, cure poisons, diseases and states, and revive anyone who goes down. Your doctor "
+              "buffs (the six enhancements: health, action, strength, constitution, quickness and stamina) and your "
+              "wound healing only work in a hospital or in a ranger's camp, so out in the wild you buff everyone once "
+              "the ranger's camp is up"),
+    "ranger": ("a master ranger, with the scout skills under it and some marksman and carbineer. You fight with a "
+               "carbine in light armor, and out of combat you're the group's woodsman: you read tracks, know the "
+               "creatures and their lairs, track what's around, and throw down a master camp where the group can rest, "
+               "heal and get the medic's buffs"),
+}
+CREW_VOICES = {
+    "tank": "loud, cocky and fearless: you love a big fight and brag about what you've taken down",
+    "rifleman": "cool and dry: a professional who counts kills and hates wasted shots",
+    "medic": "grumpy but caring: you swear at people who stand in the fire, then patch them up",
+    "ranger": "quiet and patient: you talk about tracks, weather and creatures more than people",
+}
+# A citizen's trade (the Lua's "role"), in a few words
+CITIZEN_ROLES = {
+    "armorsmith": "an armorsmith: you craft composite and bone armor and grumble about resource quality",
+    "weaponsmith": "a weaponsmith: you craft rifles, carbines and pistols and talk about the resources that go in them",
+    "chef": "a chef: you cook and brew the food and drink hunters swear by",
+    "tailor": "a tailor: you make clothes, and you notice what everyone's wearing",
+    "architect": "an architect: you build the houses, furniture and civic structures cities are made of",
+    "artisan": "an artisan: you survey for resources, run harvesters and craft the odds and ends everyone needs",
+    "droid engineer": "a droid engineer: you build and fix droids and like them better than most people",
+    "bio-engineer": "a bio-engineer: you sample creatures and grow tissues and pets",
+    "merchant": "a merchant: you run vendors, buy cheap, sell dear and know what everything's worth",
+    "trader": "a trader: you buy cheap, sell dear and know what everything's worth",
+    "hunter": "a hunter: you go out after creatures for hides, meat and bone, and know the country around Theed",
+    "creature handler": "a creature handler: you tame creatures and keep a pet or two",
+    "scout": "a scout: you hunt, harvest and know the country around Theed",
+    "image designer": "an image designer: you change people's looks, and you hear everybody's gossip",
+}
+# Where a player city's bots are, by the place the Lua sends
+CITY_PLACES = {
+    "cantina": "in {city}'s cantina", "medical": "in {city}'s hospital", "hospital": "in {city}'s hospital",
+    "cityhall": "by {city}'s city hall", "city hall": "by {city}'s city hall", "home": "at your house in {city}",
+    "house": "at your house in {city}", "plaza": "out in {city}'s streets", "street": "out in {city}'s streets",
+    "site": "out on the city site, where {city}'s buildings go up", "bank": "by {city}'s bank",
+    "garden": "in one of {city}'s gardens",
+}
+# The prices a smuggler names, when the request doesn't carry the settings (roster: slicePriceArmor, slicePriceWeapon)
+SLICE_PRICES = (4000, 6000)
 
 def log(*parts):
     print(time.strftime("%H:%M:%S"), *parts, flush=True)
@@ -243,22 +460,55 @@ class Bridge:
             'Answer with JSON only: {"say": "<what you say>", "mood": "<one of: ' + ", ".join(MOODS) + '>"}'
         )
 
+    def city_facts(self, r):
+        """The bot's town: its fact sheet, or for a player city (Phase 6) the general part (its news comes in the
+        request, as cityInfo)."""
+        key = r.get("city")
+        if key in self.facts:
+            return self.facts[key]
+        if key in PLAYER_CITIES or r.get("cityInfo"):
+            name = r.get("cityName") or (PLAYER_CITY["name"] if key in PLAYER_CITIES else
+                                         str(key or "town").replace("_", " ").title())
+            return {"name": name, "planet": PLAYER_CITY["planet"], "text": PLAYER_CITY["text"].format(name=name),
+                    "player": True}
+        return {}
+
+    @staticmethod
+    def instrument(r):
+        """A musician's instrument, in words ("object/tangible/instrument/kloo_horn.iff" -> "kloo horn")."""
+        raw = os.path.basename(str(r.get("instrument") or "")).replace(".iff", "")
+        raw = {"flute_droopy": "chidinkalu horn", "nalargon": "nalargon", "omni_box": "omni box"}.get(raw, raw)
+        return "your " + raw.replace("_", " ") if raw else "your instrument"
+
     def bot_prompt(self, r):
         """A bot player: a veteran of its job who has parked at its spot for years, and knows the work in the
         galaxy's own words."""
-        city = self.facts.get(r.get("city"), {})
+        city = self.city_facts(r)
         job = r.get("job")
         name = r.get("name", "someone")
         species = SPECIES.get(r.get("species"), r.get("species", "human"))
         person = "woman" if r.get("sex") == "female" else "man"
-        town = f"{city.get('name', 'town')} on {city.get('planet', 'Tatooine')}"
+        city_name = city.get("name", "town")
+        town = f"{city_name} on {city.get('planet', 'Tatooine')}"
         player = r.get("playerName", "Someone")
+        channel = r.get("channel")
+        where = BOT_PLACES.get(job, "in town")
+        if city.get("player"):
+            default = where if job in CITY_JOBS else "in {city}"
+            where = CITY_PLACES.get(str(r.get("place") or "").lower(), default).format(city=city_name)
+        crew = job in CREW_JOBS
+        shorthand = ('"buff plz", "enhances?" (enhancements), "heal wounds?", "u up for a buff", "bf" (battle '
+                     'fatigue), "omw" (on my way)')
         if job == "doctor":
+            power = "about +1400 each for three hours, because you work in a hospital"
+            if city.get("player") and str(r.get("place") or "").lower() not in ("medical", "hospital"):
+                power = ("for three hours, at full strength (about +1400 each) only once you work in the city's "
+                         "hospital")
             who = (
                 f"You are {name}, a {species} {person} and a master doctor. For years you've kept your spot "
-                f"{BOT_PLACES[job]} in {town}, near the doctor trainer, buffing anyone who asks; everyone in town knows "
+                f"{where} in {town}, near the doctor trainer, buffing anyone who asks; everyone in town knows "
                 "you. Your buffs are the six medical enhancements: health, action, strength, constitution, quickness "
-                "and stamina, about +1400 each for three hours, because you work in a hospital. You also heal wounds on "
+                f"and stamina, {power}. You also heal wounds on "
                 "health, action, strength, constitution, quickness and stamina with wound packs. Battle fatigue, mind "
                 "wounds and mind buffs aren't your work: those come from watching a dancer in the cantina. You have to "
                 "be within a few metres of someone to work on them."
@@ -270,10 +520,11 @@ class Bridge:
                 "questions about buffs, thanks, saying no, or asking for what you don't do (battle fatigue, mind "
                 "wounds, mind buffs, dancing). If they ask for buffs and wounds at once, use \"buff\"."
             )
-            choices = "buff, wounds, none"
-        else:
+            voice = ("You talk like a friendly veteran who has done this a thousand times: warm, easy-going, a bit of "
+                     "dry humour, and you call buffs buffs. Talk about bodies and how people feel, not numbers.")
+        elif job == "dancer":
             who = (
-                f"You are {name}, a {species} {person} and a master dancer. You've danced {BOT_PLACES[job]} in "
+                f"You are {name}, a {species} {person} and a master dancer. You've danced {where} in "
                 f"{town} night and day for years, changing dances and throwing in flourishes; you're part of the place. "
                 "Your work, which you only bring up when someone asks about healing, battle fatigue or a buff: you heal "
                 "battle fatigue and mind wounds, since anyone who watches you dance for a few minutes is healed, so "
@@ -289,42 +540,208 @@ class Bridge:
                 "watch to clear battle fatigue (they just watch), questions about buffs, thanks, saying no, or asking "
                 "for what you don't do (wounds, enhancements)."
             )
-            choices = "bufftarget, none"
-        if r.get("channel") == "tell":
-            heard = (f"{player} sent you a private tell from somewhere else in town. You can only work on them once "
-                     f"they come to you {BOT_PLACES[job]}, so if they want your help, tell them to come over and that "
-                     "you'll do it when they get there. Answer as a tell, a little more personal.")
-        else:
-            heard = f"{player} is standing near you and talking to you out loud."
-        if job == "dancer":
             voice = ("You talk like a cantina dancer who has done it all: sultry, filthy, direct, and you call buffs "
                      "buffs. Talk about bodies and how people feel, not numbers.")
+        elif job == "musician":
+            who = (
+                f"You are {name}, a {species} {person} and a master musician. You play {self.instrument(r)} {where} "
+                f"in {town}, side by side with the dancer, your partner on the floor; you've played there night after "
+                "night for years. You know your songs (starwars1 to starwars4, rock, folk, ballad, funk, waltz, jazz "
+                "and virtuoso; you move between virtuoso, jazz and waltz, with a flourish now and then) and your "
+                "instruments (bandfill, fizz, slitherhorn, traz, fanfar, kloo horn, chidinkalu horn, mandoviol, and "
+                "the big placed ones, the nalargon and the omni box). Your work, which you only bring up when someone "
+                "asks about healing, battle fatigue or a buff: anyone who listens to you play for a few minutes has "
+                "their battle fatigue and mind wounds healed, and listening to you while watching the dancer heals "
+                "twice as fast. Your buff is focus and willpower: when someone asks, you make them your buff target "
+                "and tell them to listen a while, at least a minute; the longer they listen, the longer the buff, up "
+                "to two hours, and it lands when they stop listening. People call any entertainer's buff a mind buff; "
+                "the dancer's is mind, so for all three they ask her too. You don't heal health or action wounds or "
+                "give medical enhancements: that's the doctor in the medical centre. You don't play in a band. The "
+                "rest of the time you just talk like yourself."
+            )
+            actions = (
+                '"bufftarget" when they ask you for a buff, in any words, even rudely or as a question ("buff plz", '
+                '"mind buff?", "u up for a buff", "can I get focus and willpower"); "none" for anything else: chat, '
+                "wanting to listen to clear battle fatigue (they just listen), asking for a song, questions about "
+                "buffs, thanks, saying no, or asking for what you don't do (wounds, enhancements)."
+            )
+            voice = ("You talk like a cantina musician who has played every dive in the galaxy: laid-back, a bit vain "
+                     "about your playing, full of stories about bands, songs and crowds, and you call buffs buffs. Talk "
+                     "about how the music makes people feel, not numbers.")
+        elif job == "smuggler":
+            armor = int(r.get("priceArmor") or r.get("slicePriceArmor") or SLICE_PRICES[0])
+            weapon = int(r.get("priceWeapon") or r.get("slicePriceWeapon") or SLICE_PRICES[1])
+            who = (
+                f"You are {name}, a {species} {person} and a master smuggler. You work {where} in {town}, like a "
+                "slicer waiting for business; anyone who wants an edge knows where to find you. You slice armor and "
+                f"weapons for a fee: {armor:,} credits for a piece of armor, {weapon:,} for a weapon, tips welcome on "
+                "top, and no credits, no slice. How it works, which you explain when asked: they drag the item onto "
+                "you to open a trade, put the item and the credits in the trade window, and both of you accept; you "
+                "check it, slice it on the spot and it goes straight back into their inventory, so you never hold "
+                "their gear. One item at a time, armor or weapons only, nothing that's been sliced before. You use a "
+                "laser knife, a molecular clamp and an upgrade kit, and with the clamp you never blow a slice. What "
+                "it gives is down to the slice: armor gets 11 to 35% more effectiveness or 20 to 45% less "
+                "encumbrance, a weapon 20 to 35% more damage or 20 to 35% faster attacks. Slicing a weapon destroys "
+                "any powerup on it, so you warn anyone who brings one. Five-percent jobs are for amateurs. You don't "
+                "slice containers, terminals or keypads, you don't sell anything, and buffs and healing aren't your "
+                "work (that's the doctor and the entertainers). Off the job you hear things: the cantina's gossip, "
+                "shady deals, who's after whom."
+            )
+            actions = ""
+            shorthand = '"slice?", "how much?", "omw" (on my way), "ty" (thanks)'
+            voice = ("You talk like a smooth operator who's a bit shady: easy charm, sly jokes, you never quite say "
+                     "where things came from, and you always steer back to business.")
+        elif crew:
+            who = (
+                f"You are {name}, a {species} {person}: {CREW_ROLES[job]}. You're one of a hunting crew of four "
+                f"regulars who hang out {where} in {town} looking for a group: a Teras Kasi tank, a rifleman, a combat "
+                "medic and a ranger. Anyone who wants to hunt can take you along: they /invite you, or ask. In a "
+                "group you follow their lead: they lead and they're master looter, never you; you go where they go, "
+                "attack what they attack and defend the group. You never loot or take a share: the corpses, the "
+                "credits and the loot are theirs."
+            )
+            crew_actions = (
+                '"join" when they ask you to group up or come hunting with them, in any words ("wanna hunt?", '
+                '"lfg?", "join me", "can I invite you?", "need a tank"); "follow" when they tell you to follow them or '
+                'come along, or to back off and fall back to them ("follow me", "on me", "let\'s go", "back off"); '
+                '"stay" when they tell you to stay or wait where you are ("stay here", "wait up", "hold position"); '
+                '"home" when they send you home or let you go ("go home", "you can go", "we\'re done for tonight")'
+            )
+            if job == "medic":
+                actions = (
+                    '"buff" when they ask you for buffs or enhancements, in any words ("buffs?", "buff us up", "can we '
+                    'get the works"); "wounds" when they ask you to heal them or their wounds ("heal wounds?", "patch '
+                    f'me up"); {crew_actions}; "none" for anything else: chat, questions about hunting, buffs or you, '
+                    "thanks, saying no, or asking for what you don't do (battle fatigue, mind wounds and mind buffs "
+                    'come from entertainers). If they ask for buffs and wounds at once, use "buff".'
+                )
+            elif job == "ranger":
+                actions = (
+                    '"camp" when they ask for a camp or a rest ("camp?", "let\'s rest", "drop a camp"); "track" when '
+                    'they ask what\'s around or want you to find creatures ("what\'s around?", "find me krayts", "any '
+                    f'tuskens nearby?"); {crew_actions}; "none" for anything else: chat, questions about hunting, '
+                    "creatures or you, thanks, saying no. When you track, say you're having a look and don't make up "
+                    "what's out there: you tell them what you find once you've looked."
+                )
+            else:
+                actions = f'{crew_actions}; "none" for anything else: chat, questions about hunting or you, thanks, ' \
+                          "saying no."
+            shorthand = ('"lfg" (looking for group), "inv" (invite), "omw" (on my way), "inc" (incoming), "buffs?", '
+                         '"rez" (revive), "bf" (battle fatigue), "ty" (thanks)')
+            voice = f"You talk like a hunter who's been out on a thousand hunts, {CREW_VOICES[job]}."
+        elif job == "mayor":
+            who = (
+                f"You are {name}, a {species} {person}, a master politician and the mayor of {city_name}, the "
+                f"player city you founded on {city.get('planet', 'Naboo')}, about two kilometres east of Theed. You "
+                f"stand {where}, and you know your city inside out: its rank, its citizens, the treasury, the taxes, "
+                "the next weekly update, the election, what's been built and what comes next. City business, which "
+                "you love to talk about: the city grows a rank at a weekly update when it has the citizens for it "
+                "(outpost, village, township, city, metropolis: 2, 4, 6, 8 and 10 citizens), and each rank lets you "
+                "place more civic buildings; the upkeep comes out of the treasury every week, and the taxes "
+                "(property, income, sales, travel, garage) never quite cover it. Anyone can join: zoning is open, so "
+                "they can place a house inside the city and declare residence there to become a citizen. Every "
+                "third weekly update there's an election: anyone who trains Novice Politician and registers for the "
+                "race at the city hall can run against you, and the citizens vote at the city hall. You take a "
+                "challenger in good spirit, but you campaign."
+            )
+            actions = ""
+            shorthand = '"omw" (on my way), "ty" (thanks), "np" (no problem)'
+            voice = ("You talk like a small-town politician: proud of your city, always campaigning, grumbling about "
+                     "the treasury and the upkeep, and fond of a speech.")
+        else:  # citizen
+            role = str(r.get("role") or "").strip().lower()
+            trade = CITIZEN_ROLES.get(role) or (("an " if role[:1] in "aeiou" else "a ") + role if role else
+                                                "a crafter who makes a living selling what you make")
+            who = (
+                f"You are {name}, a {species} {person} and a citizen of {city_name}, a young player city on "
+                f"{city.get('planet', 'Naboo')} about two kilometres east of Theed. By trade you're {trade}. You own a "
+                "house in the city and declared your residence there, and you're proud of it; your days go between "
+                f"your house, the cantina, the bank and the streets, and right now you're {where}. You know the "
+                "city's gossip: the mayor, the rank, what's been built and what's next, the election, the neighbours."
+            )
+            actions = ""
+            shorthand = '"omw" (on my way), "ty" (thanks), "np" (no problem)'
+            voice = "You talk like a friendly neighbour who loves a bit of gossip and is proud of your young city."
+
+        if channel == "tell":
+            heard = f"{player} sent you a private tell from somewhere else. "
+            if job in ("doctor", "dancer", "musician", "smuggler"):
+                heard += (f"You can only work on them once they come to you {where}, so if they want your help, tell "
+                          "them to come over and that you'll do it when they get there. ")
+            elif crew:
+                heard += "If they want you along, they can invite you from wherever they are. "
+            heard += "Answer as a tell, a little more personal."
+        elif channel == "group":
+            heard = (f"{player} wrote this in your group's chat: everyone in the group reads it, and you answer there, "
+                     f"in group chat. You're in {player}'s group, following their lead.")
         else:
-            voice = ("You talk like a friendly veteran who has done this a thousand times: warm, easy-going, a bit of "
-                     "dry humour, and you call buffs buffs. Talk about bodies and how people feel, not numbers.")
+            heard = f"{player} is standing near you and talking to you out loud."
+        if channel != "group" and r.get("grouped") is not None and crew:
+            heard += (f" You're in {player}'s group right now." if r.get("grouped") else
+                      f" You're not in {player}'s group yet.")
+        length = ("Talk as much as you like: a quick line when that's all it needs, or whole paragraphs when you're "
+                  "into the conversation, telling stories, or they ask for detail.")
+        if channel == "group":
+            length += " It's group chat: keep it quick while there's fighting, and chat more when things are quiet."
+        if job in ("doctor", "dancer", "musician") or job == "medic":
+            push = " Don't push buffs on someone who is just chatting."
+        elif job == "smuggler":
+            push = " Don't push a slice on someone who is just chatting."
+        elif crew:
+            push = " Don't push yourself on someone who isn't looking for a group."
+        else:
+            push = ""
         # The model can't be trusted to ask for tips "now and then", so the bridge picks the times
-        if random.random() < TIP_CHANCE:
-            tips = "If you help them this time, add that tips are appreciated (you help everyone, tip or no tip)."
+        if job in ("doctor", "dancer", "musician", "smuggler"):
+            if random.random() < TIP_CHANCE:
+                tips = " If you help them this time, add that tips are appreciated (you help everyone, tip or no tip)."
+            else:
+                tips = " Don't mention tips this time unless they ask about paying; you help everyone, tip or no tip."
         else:
-            tips = "Don't mention tips this time unless they ask about paying; you help everyone, tip or no tip."
+            tips = ""
+        if job == "smuggler":
+            promise = ("Don't promise to give or sell anything, group up, travel with them or meet later; the only "
+                       "trade you do is a slice, through the trade window.")
+        elif crew:
+            promise = "Don't promise to trade, give items or meet later; grouping up and following them is up to them."
+        else:
+            promise = "Don't promise to trade, give items, group up, travel with them or meet later."
+        news = ""
+        if r.get("cityInfo"):
+            news = (f"{city_name}'s news today (numbers, names and dates that aren't here you don't know, so speak "
+                    f"generally about them):\n{str(r.get('cityInfo')).strip()}\n\n")
+        hunting = ""
+        if crew or (job == "citizen" and str(r.get("role") or "").lower() in ("hunter", "scout", "creature handler")):
+            hunting = (f"The hunting around {city_name}, as you know it (pick what fits and say it your own way, "
+                       f"don't recite it): {HUNTING.get(r.get('city'), '(you know it from experience)')}\n\n")
+        if actions:
+            act = (f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
+                   "you're about to do, not that it's done.\n\n")
+            choices = ", ".join(BOT_ACTIONS[job]) + ", none"
+            shape = f'"action": "<one of: {choices}>", '
+        else:
+            act, shape = "", ""
         return (
             f"{who} It is {self.time_of_day(int(r.get('hour', 20)))}. This is the Star Wars galaxy during the Galactic "
             "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
             f"most folk just try to make a living. {heard}\n\n"
-            "People talk to you in shorthand: \"buff plz\", \"enhances?\" (enhancements), \"heal wounds?\", \"u up "
-            "for a buff\", \"bf\" (battle fatigue), \"omw\" (on my way). " + voice + " Talk as much as a "
-            "player typing in chat would: usually two to four sentences, more when you're into the conversation, under "
-            "500 characters in all. Don't push buffs on someone who is just "
-            f"chatting. {tips} Stay in character as a person in this galaxy at all times. Never say you are an AI, a "
-            "program, a droid, a character, a player or in a game; you don't know those words. "
-            "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and then you ask something back. If someone insults or "
-            "swears at you, snap back, annoyed and sharp; don't start a fight, and still help if they ask. With "
-            f"anyone polite, you're {'flirty' if job == 'dancer' else 'polite'}. {swearing(r)} Don't promise to trade, give items, group up, travel with them "
-            "or meet later. Use only the places below when giving directions; if you don't know, say so.\n\n"
-            f"What you know about {city.get('name', 'this town')}:\n{city.get('text', '(nothing in particular)')}\n\n"
-            f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
-            "you're about to do, not that it's done.\n\n"
-            f'Answer with JSON only: {{"action": "<one of: {choices}>", "say": "<what you say>", "mood": "<one of: '
+            f"People talk to you in shorthand: {shorthand}. {voice} {length}{push}{tips} Stay in character as a person "
+            "in this galaxy at all times. Never say you are an AI, a program, a droid, a character, a player or in a "
+            "game; you don't know those words. "
+            "If someone mentions something that doesn't exist in this galaxy, play along instead of brushing it off: "
+            "take it as an odd offworld gadget, slang or rumour and riff on it with an opinion, a guess or a joke. You "
+            "have a real personality: opinions, gossip, little stories from your day, likes and gripes, and now and "
+            "then you ask something back. If someone insults or swears at you, snap back, annoyed and sharp; don't "
+            "start a fight, and still help if they ask. With "
+            f"anyone polite, you're {'flirty' if job == 'dancer' else 'polite'}. {swearing(r)} {promise} Use only the "
+            "places below when giving directions; if you don't know, say so.\n\n"
+            f"What you know about {city_name}:\n{city.get('text', '(nothing in particular)')}\n\n"
+            f"{news}{hunting}{act}"
+            f'"insult" is true only when {player} insults you or puts you down in what they just said: name-calling, '
+            "mocking you or your work, telling you to shut up or piss off. It is false for everything else: swearing "
+            'that isn\'t aimed at you ("damn krayts"), rough friendly banter ("you magnificent bastard"), flirting and '
+            "dirty talk, complaints, jokes and odd questions.\n\n"
+            f'Answer with JSON only: {{{shape}"insult": <true or false>, "say": "<what you say>", "mood": "<one of: '
             + ", ".join(MOODS) + '>"}'
         )
 
@@ -353,17 +770,23 @@ class Bridge:
     def clean(content, asked="", bot=False):
         """The model's JSON (or bare text) -> (mood, text), or None if it's unusable. Out-of-world words are only
         allowed when the player used them first (a puzzled "NPC? Never heard the term" is fine). For a bot player
-        -> (mood, text, the action the model proposed, as written)."""
-        mood, text, action = "", content.strip(), ""
+        -> (mood, text, the action the model proposed as written, whether the model thought it an insult)."""
+        mood, text, action, insult = "", content.strip(), "", False
         match = re.search(r"\{.*\}", text, re.S)
         if match:
             try:
                 obj = json.loads(match.group(0))
             except ValueError:
-                return None
+                # The model sometimes leaves a word unquoted ("mood": happy): quote it and try again
+                fixed = re.sub(r'("(?:mood|action)"\s*:\s*)([A-Za-z][\w -]*?)(\s*[,}])', r'\1"\2"\3', match.group(0))
+                try:
+                    obj = json.loads(fixed)
+                except ValueError:
+                    return None
             if not isinstance(obj, dict) or not isinstance(obj.get("say"), str):
                 return None
             text, mood, action = obj["say"], str(obj.get("mood") or ""), str(obj.get("action") or "")
+            insult = obj.get("insult") is True or str(obj.get("insult")).strip().lower() in ("true", "yes", "1")
         elif text.startswith("{"):
             # JSON cut off at max_tokens: don't speak half an object
             return None
@@ -381,7 +804,7 @@ class Bridge:
         if len(text) > limit:
             cut = max(text.rfind(c, 0, limit) for c in ".!?")
             text = text[:cut + 1] if cut > 40 else text[:limit - 3].rstrip() + "..."
-        return (mood, text, action) if bot else (mood, text)
+        return (mood, text, action, insult) if bot else (mood, text)
 
     @staticmethod
     def two_sentences(text):
@@ -401,29 +824,72 @@ class Bridge:
         "ok, I'm here" after "come closer for your buff")."""
         allowed = BOT_ACTIONS.get(job, ())
         proposed = ACTION_ALIASES.get(job, {}).get(proposed.strip().lower(), "")
-        # A request word, or a short question that isn't about something ("full set of buffs?")
-        asking = bool(REQUEST.search(text)) or (text.rstrip().endswith("?") and len(text.split()) <= 6 and
-                                                 not INFO.search(text) and not PRAISE.search(text))
-        aside = (THANKS.search(text) or INFO.search(text) or INSULT.search(text) or REFUSAL.search(text)) and not asking
 
-        def mentioned(action, words):
-            rest = OTHER[action].sub(" ", words)
-            if action == "wounds" and FATIGUE.search(words) and not re.search(r"\bwound", rest, re.I):
+        def words(action):
+            return JOB_WORDS.get((job, action)) or WORDS[action]
+
+        def commanded(action):
+            """A clause that starts with the command ("follow me", "ok guys, stay here", "Varo, go home", "nice,
+            heal my wounds")."""
+            pattern = COMMAND_WORDS.get(action) or (words(action) if action in COMMANDS else None)
+            return pattern is not None and any(pattern.match(LEADIN.sub("", c.strip(), count=1))
+                                               for c in CLAUSE.split(text) if c and c.strip())
+
+        def asking(action):
+            """A request word, a command, or a short question that isn't about something ("full set of buffs?");
+            any question asks a ranger to track ("what's around?", "any krayts nearby?")."""
+            if REQUEST.search(text) or commanded(action):
+                return True
+            if not text.rstrip().endswith("?"):
                 return False
-            return bool(WORDS[action].search(rest))
+            return action == "track" or (len(text.split()) <= 6 and not INFO.search(text) and
+                                         not PRAISE.search(text))
+
+        def aside(action):
+            """Thanks, a question about it, a put-down, a no or praise, and not a request."""
+            return bool(THANKS.search(text) or (INFO.search(text) and action != "track") or INSULT.search(text) or
+                        REFUSAL.search(text) or PRAISE.search(text)) and not asking(action)
+
+        def mentioned(action, said):
+            other = OTHER.get((job, action)) or OTHER.get(action)
+            rest = other.sub(" ", said) if other else said
+            if action == "wounds" and FATIGUE.search(said) and not re.search(r"\bwound", rest, re.I):
+                return False
+            return bool(words(action).search(rest))
 
         def negated(action):
-            return re.search(NEGATED + WORDS[action].pattern, text, re.I)
+            """"don't need a buff", "stop following me"; and for the crew, the player's own plans ("I'll stay")."""
+            pattern = words(action).pattern
+            if re.search(NEGATED + pattern, text, re.I):
+                return True
+            return action in SELFISH and bool(re.search(SELF + pattern, text, re.I))
 
-        if proposed in allowed and not aside and not negated(proposed):
+        def ok(action):
+            return not aside(action) and not negated(action)
+
+        if proposed in allowed and ok(proposed):
             if mentioned(proposed, text) or (mentioned(proposed, before) and len(text.split()) <= 6 and
-                                             not WORDS[proposed].search(text)):
+                                             not words(proposed).search(text)):
                 return proposed
         for action in allowed:
-            if mentioned(action, text) and not negated(action) and not aside and \
-                    (asking or (BARE.search(text) and not PRAISE.search(text))):
+            if mentioned(action, text) and ok(action) and \
+                    (asking(action) or (BARE.search(text) and not PRAISE.search(text))):
                 return action
         return ""
+
+    @staticmethod
+    def insulted(text, model, first=""):
+        """Reply line 5's "insult": a put-down aimed at the bot, whatever the model said; else the model's word, if
+        the player was rude or talking to the bot, and not praising or thanking it."""
+        if INSULTING.search(text):
+            return True
+        if not model:
+            return False
+        rude = SWEARS.search(text) or CURSES.search(text) or RUDE.search(text) or INSULT.search(text)
+        if not rude and (PRAISE.search(text) or THANKS.search(text)):
+            return False
+        return bool(rude or ADDRESSED.search(text) or
+                    (first and re.search(r"\b%s\b" % re.escape(first), text, re.I)))
 
     def answer(self, r, timeout):
         bot = bool(r.get("bot")) and r.get("job") in BOT_ACTIONS
@@ -439,18 +905,23 @@ class Bridge:
             return result
         # A bot player gets one more try at an unusable reply (cut off, out of world) while there's time for it
         deadline = time.time() + timeout
-        result = self.clean(self.complete(messages, 300, timeout), text, bot=True)
+        result = self.clean(self.complete(messages, BOT_MAX_TOKENS, timeout), text, bot=True)
         if result is None and deadline - time.time() > 5:
-            result = self.clean(self.complete(messages, 300, deadline - time.time()), text, bot=True)
+            result = self.clean(self.complete(messages, BOT_MAX_TOKENS, deadline - time.time()), text, bot=True)
         if result is None:
             return None
         before = " ".join(json.loads(t["content"]).get("say", "") if t["role"] == "assistant" else t["content"]
                           for t in list(turns)[-2:])
-        mood, say, proposed = result
-        action = self.decide(r.get("job"), text, proposed, before)
+        mood, say, proposed, model_insult = result
+        job = r.get("job")
+        action = self.decide(job, text, proposed, before)
+        first = str(r.get("first") or str(r.get("name") or "").split(" ")[0])
+        flags = ",".join(["insult"] if self.insulted(text, model_insult, first) else [])
         turns.append({"role": "user", "content": text})
-        turns.append({"role": "assistant", "content": json.dumps({"action": action or "none", "say": say, "mood": mood})})
-        return mood, say, action
+        remembered = {"action": action or "none"} if BOT_ACTIONS.get(job) else {}
+        remembered.update({"insult": "insult" in flags, "say": say, "mood": mood})
+        turns.append({"role": "assistant", "content": json.dumps(remembered)})
+        return mood, say, action, flags
 
     # Requests and replies
 
@@ -459,8 +930,10 @@ class Bridge:
         if result is None:
             write_atomic(path, "fallback\n\n\n\n" if bot else "fallback\n\n\n")
         elif bot:
-            # (a bot request with a job we don't know got a crowd persona, and no action)
-            write_atomic(path, "ok\n%s\n%s\n%s\n" % (result[0], result[1], result[2] if len(result) > 2 else ""))
+            # Five lines: status, mood, text, action, flags (a bot request with a job we don't know got a crowd
+            # persona, and no action or flags)
+            write_atomic(path, "ok\n%s\n%s\n%s\n%s\n" % (result[0], result[1], result[2] if len(result) > 2 else "",
+                                                       result[3] if len(result) > 3 else ""))
         else:
             write_atomic(path, "ok\n%s\n%s\n" % result)
 
@@ -487,10 +960,10 @@ class Bridge:
                     self.complete([{"role": "user", "content": "Say hi."}], 1, 120)
                     log("warm", "%.1fs" % (time.time() - started))
                     continue
-                # A bot player's reply has a fourth line, the action
+                # A bot player's reply has a fourth and a fifth line, the action and the flags
                 bot = bool(r.get("bot"))
                 # Lua stops waiting at the deadline (from when it wrote the request)
-                left = DEADLINE - 1 - (time.time() - float(r.get("at", queued)))
+                left = (BOT_DEADLINE if bot else DEADLINE) - 1 - (time.time() - float(r.get("at", queued)))
                 if left < 1:
                     self.reply(r["id"], None, bot)
                     log("late", r.get("name"), "-> fallback")
@@ -502,9 +975,11 @@ class Bridge:
                     log("error", r.get("name"), type(e).__name__, str(e)[:120])
                     result = None
                 self.reply(r["id"], result, bot)
-                log("tell" if r.get("channel") == "tell" else "say", "%.1fs" % (time.time() - started), r.get("city"),
-                    r.get("name"), "<-", repr(r.get("text", "")[:60]), "->", repr(result[1]) if result else "fallback",
-                    *(["[%s]" % (result[2] or "none")] if bot and result and len(result) > 2 else []))
+                log(r.get("channel") if r.get("channel") in ("tell", "group") else "say",
+                    "%.1fs" % (time.time() - started), r.get("city"), r.get("name"), "<-",
+                    repr(r.get("text", "")[:60]), "->", repr(result[1]) if result else "fallback",
+                    *(["[%s]" % (result[2] or "none")] if bot and result and len(result) > 2 else []),
+                    *(["{%s}" % result[3]] if bot and result and len(result) > 3 and result[3] else []))
             except Exception as e:  # keep the bridge alive whatever one request does
                 log("failed", type(e).__name__, str(e)[:200])
 
@@ -576,14 +1051,21 @@ def main():
     parser.add_argument("--species", default="human")
     parser.add_argument("--bot", action="store_true", help="ask a bot player (with --job and --channel)")
     parser.add_argument("--job", choices=sorted(BOT_ACTIONS), default="doctor")
-    parser.add_argument("--channel", choices=["spatial", "tell"], default="spatial")
+    parser.add_argument("--channel", choices=["spatial", "tell", "group"], default="spatial")
+    parser.add_argument("--city-info", default="", help="a player city's news (cityInfo), for its bots")
+    parser.add_argument("--role", default="", help="a citizen's trade")
     args = parser.parse_args()
     bridge = Bridge(load_facts())
     if args.ask:
         r = {"npc": 1, "player": 2, "name": "Tarn Vosk", "species": args.species, "sex": "male", "kit": args.kit,
              "city": args.ask[0], "place": "plaza", "hour": 20, "playerName": "Cameren", "text": args.ask[1]}
         if args.bot:
-            r.update(bot=1, job=args.job, channel=args.channel, place="medical" if args.job == "doctor" else "cantina")
+            places = {"doctor": "medical", "mayor": "cityhall", "citizen": "plaza"}
+            r.update(bot=1, job=args.job, channel=args.channel, place=places.get(args.job, "cantina"))
+            if args.city_info:
+                r["cityInfo"] = args.city_info
+            if args.role:
+                r["role"] = args.role
         started = time.time()
         print(bridge.answer(r, 30), "%.1fs" % (time.time() - started))
         return

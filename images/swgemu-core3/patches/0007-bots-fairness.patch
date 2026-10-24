@@ -1,0 +1,146 @@
+diff --git a/MMOCoreORB/src/server/zone/managers/group/GroupLootTask.h b/MMOCoreORB/src/server/zone/managers/group/GroupLootTask.h
+index e120b2f..cf18b42 100644
+--- a/MMOCoreORB/src/server/zone/managers/group/GroupLootTask.h
++++ b/MMOCoreORB/src/server/zone/managers/group/GroupLootTask.h
+@@ -13,6 +13,7 @@
+ #include "server/zone/managers/group/GroupManager.h"
+ #include "server/zone/objects/player/sessions/LootLotterySession.h"
+ #include "server/zone/objects/transaction/TransactionLog.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ class GroupLootTask : public Task {
+ 	ManagedReference<GroupObject*> group;
+@@ -146,6 +147,10 @@ public:
+ 			if (object == nullptr || !object->isPlayerCreature())
+ 				continue;
+ 
++			// Bot players take no share (our patch)
++			if (BotGroup::skipReward(object, "the credit split"))
++				continue;
++
+ 			if (!object->isInRange(corpse, 128.f))
+ 				continue;
+ 
+@@ -229,6 +234,10 @@ public:
+ 			if (member == nullptr || !member->isPlayerCreature())
+ 				continue;
+ 
++			// Bot players never take part in a lottery (our patch)
++			if (BotGroup::isBotPlayer(member))
++				continue;
++
+ 			if (member != player && member->isInRange(corpse, 128.f))
+ 				return true;
+ 		}
+diff --git a/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp b/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
+index 95c4b3c..c573a01 100644
+--- a/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
++++ b/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
+@@ -17,6 +17,7 @@
+ #include "server/zone/managers/object/ObjectManager.h"
+ #include "server/zone/managers/player/PlayerManager.h"
+ #include "server/chat/ChatManager.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ #include "server/chat/StringIdChatParameter.h"
+ #include "server/zone/managers/objectcontroller/ObjectController.h"
+@@ -784,6 +785,10 @@ void GroupManager::createLottery(GroupObject* group, AiAgent* corpse) {
+ 			if (member == nullptr || !member->isPlayerCreature())
+ 				continue;
+ 
++			// Bot players never take part in a lottery (our patch)
++			if (BotGroup::skipReward(member, "the loot lottery"))
++				continue;
++
+ 			if (!member->isInRange(corpse, 128.f)) {
+ 				StringIdChatParameter tooFar("group","too_far_away_for_lottery__");
+ 				member->sendSystemMessage(tooFar); //"You are too far away from the creature to participate in the lottery."
+@@ -820,6 +825,10 @@ void GroupManager::doRandomLoot(GroupObject* group, AiAgent* corpse) {
+ 			if (member == nullptr || !member->isPlayerCreature())
+ 				continue;
+ 
++			// Bot players never win random loot (our patch)
++			if (BotGroup::skipReward(member, "random loot"))
++				continue;
++
+ 			if (!member->isInRange(corpse, 128.f))
+ 				continue;
+ 
+diff --git a/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp b/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
+index bbc07b8..dc61426 100644
+--- a/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
+@@ -121,6 +121,7 @@
+ #include "server/zone/packets/object/transform/Transform.h"
+ 
+ #include "server/zone/managers/statistics/StatisticsManager.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ // #define DEBUG_SPEED_HACK
+ 
+@@ -2027,6 +2028,9 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 	int playerHitCount = playerList.size();
+ 
++	// Bot players' damage isn't an XP share of its own: the humans split the XP as if they had fought alone (our patch)
++	totalDamage = BotGroup::getRewardDamage(threatMap, totalDamage);
++
+ 	for (int i = 0; i < threatMap->size(); ++i) {
+ 		ThreatMapEntry* entry = &threatMap->elementAt(i).getValue();
+ 		TangibleObject* attacker = threatMap->elementAt(i).getKey();
+@@ -2114,6 +2118,10 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 			awardExperience(owner, "creaturehandler", xpAmount);
+ 		} else if (attacker->isPlayerCreature()) {
++			// Bot players earn no XP from kills (our patch)
++			if (BotGroup::skipReward(attacker, "the XP share"))
++				continue;
++
+ 			if (!(attacker->getZone() == zone && destructedObject->isInRangeZoneless(attacker, 80))) {
+ 				continue;
+ 			}
+diff --git a/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp b/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
+index 38f3bfd..1fbba2d 100644
+--- a/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
+@@ -23,6 +23,7 @@
+ #include "server/zone/objects/waypoint/WaypointObject.h"
+ #include "server/zone/objects/intangible/PetControlDevice.h"
+ #include "server/zone/managers/creature/PetManager.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ //#define DEBUG_GROUPS
+ //#define DEBUG_GROUP_LEVEL
+@@ -630,7 +631,8 @@ int GroupObjectImplementation::getNumberOfPlayerMembers() {
+ 	for (int i = 0; i < getGroupSize(); i++) {
+ 		Reference<CreatureObject*> member = getGroupMember(i);
+ 
+-		if (member->isPlayerCreature()) {
++		// Bot players don't divide mission rewards (our patch)
++		if (member->isPlayerCreature() && !BotGroup::isBotPlayer(member)) {
+ 			playerCount++;
+ 		}
+ 	}
+diff --git a/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp b/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
+index 94438da..9f00cf8 100644
+--- a/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
+@@ -21,6 +21,7 @@
+ #include "server/zone/objects/mission/events/FailMissionAfterCertainTimeTask.h"
+ #include "events/CompleteMissionObjectiveTask.h"
+ #include "server/zone/objects/transaction/TransactionLog.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ void MissionObjectiveImplementation::destroyObjectFromDatabase() {
+ 	for (int i = 0; i < observers.size(); ++i) {
+@@ -255,6 +256,10 @@ void MissionObjectiveImplementation::awardReward() {
+ 				continue;
+ 			}
+ 
++			// Bot players take no share of the reward (our patch)
++			if (BotGroup::skipReward(groupMember, "a mission reward"))
++				continue;
++
+ 			trx.addRelatedObject(groupMember);
+ 
+ 			if (groupMember->isPlayerCreature()) {

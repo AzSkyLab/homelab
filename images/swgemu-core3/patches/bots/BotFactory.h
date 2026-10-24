@@ -56,6 +56,7 @@ private:
 	static void awardSkills(server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
 	static void ensureHair(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
 	static void ensureOutfit(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
+	static void ensureCarry(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
 	static bool placeAtStation(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
 
 	// Starting HAM: the profession's creation mods plus the species' racial mods (datatables/creation/*.iff)
