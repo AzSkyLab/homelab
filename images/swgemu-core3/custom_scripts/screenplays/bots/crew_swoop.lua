@@ -182,8 +182,9 @@ function BotCrewSwoop:release(pBot, oid)
 	deleteData(ckey(oid, "swoopAt"))
 	deleteData(ckey(oid, "swoopTried"))
 
+	-- (forced: leaving after a fight, nobody would store a swoop left standing)
 	if call("botMounted", pBot) or call("botVehicleOut", pBot) then
-		call("botDismount", pBot)
+		call("botDismount", pBot, true)
 	end
 end
 

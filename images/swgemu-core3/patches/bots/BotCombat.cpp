@@ -8,6 +8,7 @@
 #include "BotManager.h"
 #include "BotLua.h"
 #include "BotChat.h"
+#include "BotLoot.h"
 #include "server/ServerCore.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/Zone.h"
@@ -1183,7 +1184,8 @@ uint64 BotCombat::equip(CreatureObject* bot, const String& templateName) {
 	for (int i = 0; i < inventory->getContainerObjectsSize() && item == nullptr; ++i) {
 		SceneObject* object = inventory->getContainerObject(i);
 
-		if (object != nullptr && object->getServerObjectCRC() == crc)
+		// (a looted weapon of this template is goods, not the bot's own)
+		if (object != nullptr && object->getServerObjectCRC() == crc && !BotLoot::isGood(bot, object->getObjectID()))
 			item = object;
 	}
 

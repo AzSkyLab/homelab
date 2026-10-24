@@ -36,8 +36,9 @@ public:
 	static bool mount(server::zone::objects::creature::CreatureObject* bot);
 
 	// Get off (if riding) and store the swoop. Storing waits for the end of a fight, as it does for a player: the
-	// swoop stays standing, and botVehicleOut stays true, until a later call stores it. True if queued
-	static bool dismount(server::zone::objects::creature::CreatureObject* bot);
+	// swoop stays standing, and botVehicleOut stays true, until a later call stores it; force stores it even then.
+	// True if queued
+	static bool dismount(server::zone::objects::creature::CreatureObject* bot, bool force = false);
 
 	// Riding a mount or vehicle. Reads without locking
 	static bool isMounted(server::zone::objects::creature::CreatureObject* bot);

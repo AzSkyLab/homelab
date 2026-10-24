@@ -228,7 +228,7 @@ void doMount(CreatureObject* bot) {
 }
 
 // pre: bot locked
-void doDismount(CreatureObject* bot) {
+void doDismount(CreatureObject* bot, bool force) {
 	String name = bot->getFirstName();
 
 	if (bot->isRidingMount()) {
@@ -243,7 +243,8 @@ void doDismount(CreatureObject* bot) {
 		vehicleLog().info(true) << "BotVehicle: " << name << " got off its swoop";
 	}
 
-	// Stored the player's way (not while in a fight; the swoop stays out until a later call)
+	// Stored the player's way (not while in a fight; the swoop stays out until a later call), or at once when forced
+	// (leaving the group: nobody would store it later)
 	VehicleControlDevice* device = findSwoopDevice(bot);
 
 	if (device == nullptr)
@@ -256,7 +257,7 @@ void doDismount(CreatureObject* bot) {
 
 	Reference<VehicleControlDevice*> keep = device;
 
-	keep->storeObject(bot, false);
+	keep->storeObject(bot, force);
 
 	if (!vehicle->isInQuadTree())
 		vehicleLog().info(true) << "BotVehicle: " << name << " stored its swoop";
@@ -299,13 +300,13 @@ bool BotVehicle::mount(CreatureObject* bot) {
 	});
 }
 
-bool BotVehicle::dismount(CreatureObject* bot) {
+bool BotVehicle::dismount(CreatureObject* bot, bool force) {
 	if (bot == nullptr)
 		return false;
 
-	return onBot(bot, "BotDismount", [](CreatureObject* b) {
+	return onBot(bot, "BotDismount", [force](CreatureObject* b) {
 		try {
-			doDismount(b);
+			doDismount(b, force);
 		} catch (Exception& e) {
 			vehicleLog().error() << "BotVehicle: exception dismounting " << b->getFirstName() << ": " << e.getMessage();
 		}

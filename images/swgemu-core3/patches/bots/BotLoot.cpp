@@ -537,3 +537,13 @@ bool BotLoot::markGood(CreatureObject* bot, uint64 itemOid) {
 
 	return true;
 }
+
+bool BotLoot::isGood(CreatureObject* bot, uint64 itemOid) {
+	if (bot == nullptr || itemOid == 0)
+		return false;
+
+	SortedVector<uint64> goods;
+	readGoods(bot, goods);
+
+	return goods.contains(itemOid);
+}

@@ -437,6 +437,11 @@ float walkSpeedOf(CreatureObject* creature) {
 // One movement update, as the server applies a client's transform: position, direction, speed, locomotion, the
 // movement counter, the zone (with the packets), the validated position
 void place(BotMoveJob* job, CreatureObject* bot, Zone* zone, BotMovePoint& to, const Vector3& fromWorld, float speed) {
+	// A rider never steps into a cell: it waits at the door until the crew's Lua has it get off (a client's
+	// DataTransformWithParent dismounts first; the mover would leave it in the rider slot indoors)
+	if (to.cell != nullptr && bot->isRidingMount())
+		return;
+
 	float x = to.local.getX();
 	float y = to.local.getY();
 	float z = to.local.getZ();
@@ -550,6 +555,10 @@ void stopMoving(BotMoveJob* job, CreatureObject* bot, const Vector3* faceWorld) 
 }
 
 void teleportTo(BotMoveJob* job, CreatureObject* bot, const BotMovePoint& point) {
+	// Nor appears in one (as place)
+	if (point.cell != nullptr && bot->isRidingMount())
+		return;
+
 	if (job->moving) {
 		bot->setCurrentSpeed(0);
 		bot->updateLocomotion();

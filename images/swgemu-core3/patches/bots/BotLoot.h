@@ -85,6 +85,10 @@ public:
 	// Drops an offer that hasn't been taken (and closes its trade window). Locks the bot
 	static void cancelOffer(server::zone::objects::creature::CreatureObject* bot);
 
+	// Is this item goods (looted or harvested, never the bot's gear)? The gear code (stockPack, findPack, equip) leaves
+	// goods alone, so a looted pack or weapon is never destroyed, used up or equipped. Pre: bot locked (or read-only)
+	static bool isGood(server::zone::objects::creature::CreatureObject* bot, uint64 itemOid);
+
 	// Development: records an item already in the bot's inventory as goods. Locks the bot
 	static bool markGood(server::zone::objects::creature::CreatureObject* bot, uint64 itemOid);
 };

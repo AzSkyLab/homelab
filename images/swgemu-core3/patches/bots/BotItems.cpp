@@ -3,6 +3,7 @@
  */
 
 #include "BotItems.h"
+#include "BotLoot.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "templates/params/creature/CreatureAttribute.h"
@@ -203,6 +204,10 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 		if (combatPack ? (object == nullptr || !object->isPharmaceuticalObject() || object->getServerObjectCRC() != crc) : !isSameKind(object, enhance, attribute))
 			continue;
 
+		// Looted medicine is goods for the humans: never the bot's stock, never destroyed as an extra
+		if (BotLoot::isGood(bot, object->getObjectID()))
+			continue;
+
 		if (pack == nullptr && object->getServerObjectCRC() == crc)
 			pack = cast<PharmaceuticalObject*>(object.get());
 		else
@@ -303,7 +308,8 @@ uint64 BotItems::findPack(CreatureObject* bot, const String& templateName) {
 	for (int i = 0; i < inventory->getContainerObjectsSize(); ++i) {
 		SceneObject* object = inventory->getContainerObject(i);
 
-		if (object != nullptr && object->isPharmaceuticalObject() && object->getServerObjectCRC() == crc)
+		if (object != nullptr && object->isPharmaceuticalObject() && object->getServerObjectCRC() == crc &&
+				!BotLoot::isGood(bot, object->getObjectID()))
 			return object->getObjectID();
 	}
 

@@ -184,9 +184,14 @@ end
 
 -- One loot or harvest action for this bot, if it is the one to do the next. True when the bot is busy with it (the
 -- caller then doesn't send it back to follow the leader).
+BotCrew.lootHarvestWait = 20
+
 function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 	-- (a build without the Phase 7 bindings still runs the rest)
-	if botLootCorpse == nil or g == nil or pLeader == nil or readStringData(lkey(oid, "order")) == "stay" then
+	-- (told to stay, or out looking for a camp spot: it doesn't walk off to a corpse)
+	local order = readStringData(lkey(oid, "order"))
+
+	if botLootCorpse == nil or g == nil or pLeader == nil or order == "stay" or order == "campSearch" then
 		return false
 	end
 
@@ -213,10 +218,15 @@ function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 		end
 	end
 
-	-- The looter: the first corpse that has been harvested (or has nobody to harvest it)
+	-- The looter: the first corpse that has been harvested, or has nobody free to harvest it (the ranger told to stay,
+	-- on a camp search or a mission errand), or has waited lootHarvestWait for the ranger
+	local harvesterOrder = harvester ~= nil and readStringData(lkey(harvester.oid, "order")) or ""
+	local harvesterAway = harvester == nil or harvesterOrder == "stay" or harvesterOrder == "campSearch" or
+		(self.missionBusy ~= nil and self:missionBusy(harvester.oid, now))
+
 	if isLooter then
 		for _, c in ipairs(corpses) do
-			if c.loot and (not c.harvest or harvester == nil) then
+			if c.loot and (not c.harvest or harvesterAway or now - (c.seen or now) >= self.lootHarvestWait) then
 				return self:lootStep(pBot, oid, c, now)
 			end
 		end

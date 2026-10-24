@@ -11,6 +11,7 @@
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "server/zone/objects/player/PlayerObject.h"
 #include "server/zone/objects/player/sessions/TradeSession.h"
+#include "server/zone/objects/scene/variables/ContainerPermissions.h"
 #include "server/zone/objects/scene/SessionFacadeType.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 #include "server/zone/managers/player/PlayerManager.h"
@@ -485,6 +486,24 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 			offered.put(item->getObjectID());
 	}
 
+	// What Core3 would refuse (and abort the whole trade for) stays out of it, so the rest still goes over
+	ZoneServer* bundleServer = bot->getZoneServer();
+
+	for (int i = entry->bundle.size() - 1; i >= 0; --i) {
+		ManagedReference<SceneObject*> item = bundleServer != nullptr ? bundleServer->getObject(entry->bundle.get(i)) : nullptr;
+
+		if (item == nullptr || !item->isASubChildOf(bot) || !item->checkContainerPermission(bot, ContainerPermissions::MOVECONTAINER) ||
+				item->isNoTrade() || item->containsNoTradeObjectRecursive()) {
+			tradeLog().info(true) << bot->getFirstName() << " leaves item " << entry->bundle.get(i) << " out of the handover: it can't be traded";
+			entry->bundle.remove(i);
+		}
+	}
+
+	if (entry->bundle.isEmpty()) {
+		endBundle(bot, entry, "bundleCancelled", "nothing in it can be traded");
+		return true;
+	}
+
 	for (int i = 0; i < entry->bundle.size(); ++i) {
 		if (offered.contains(entry->bundle.get(i)))
 			continue;
@@ -502,8 +521,8 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 	if (!session->getAcceptedTrade())
 		playerManager->handleAcceptTransactionMessage(bot);
 
-	// Only a hand-over (a tip is fine): if the owner offers items, it isn't verified
-	if (!ownerSession->hasVerifiedTrade() || ownerSession->getTradeSize() > 0)
+	// Only a hand-over: if the owner offers items or credits, it isn't verified (bots never take credits)
+	if (!ownerSession->hasVerifiedTrade() || ownerSession->getTradeSize() > 0 || ownerSession->getMoneyToTrade() > 0)
 		return true;
 
 	if (!playerManager->checkTradeItems(bot, owner)) {

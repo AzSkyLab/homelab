@@ -54,7 +54,9 @@ int BotVehicleLua::botMount(lua_State* L) {
 int BotVehicleLua::botDismount(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 
-	lua_pushboolean(L, bot != nullptr && BotVehicle::dismount(bot));
+	bool force = lua_gettop(L) >= 2 && lua_toboolean(L, 2);
+
+	lua_pushboolean(L, bot != nullptr && BotVehicle::dismount(bot, force));
 
 	return 1;
 }

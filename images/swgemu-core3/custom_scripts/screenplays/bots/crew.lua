@@ -158,10 +158,10 @@ BotCrew = ScreenPlay:new {
 	campOfferAfterFight = 20,
 	campOfferWindow = 90,    -- a "yes" this soon after the offer places the camp
 	-- Refused for a lair, camp or building nearby: the ranger walks out and tries again, at these distances (m) from
-	-- where it was asked, eight bearings each, up to campSearchTries spots; a camp placed out there waits this long
-	-- (s) for the leader to come within campRange
+	-- where it was asked, four bearings each (turned 45 degrees ring to ring), up to campSearchTries spots; a camp
+	-- placed out there waits this long (s) for the leader to come within campRange
 	campSearchRings = {40, 70, 100},
-	campSearchTries = 10,
+	campSearchTries = 12,
 	campSearchWalk = 60,     -- s to reach a spot before trying the next
 	campSearchGrace = 180,
 	woundedAt = 100,         -- wounds (all pools) or battle fatigue on someone that make the ranger offer a camp
@@ -468,6 +468,7 @@ function BotCrew:start(pBot, oid)
 	self:restock(pBot, oid)
 	self:equip(pBot, oid)
 	self:lootStart(pBot, oid)
+	self:missionLogin(pBot, oid)
 
 	-- Home is the station it logs in at (after BotJobs:restart it may be elsewhere: the last one is kept)
 	local entry = BotJobs:entry(readStringData(key(oid, "first")))
@@ -1999,6 +2000,27 @@ end
 -- What a member needs from the medic: "buff" while one of the six pools has no enhancement on it (its maximum isn't
 -- above its base), "wounds" when only wounds are left, else nil. (Lock-free getters, and botGetWounds as the doctor
 -- uses it.)
+-- Both needs, in order: {"buff", "wounds"}, either or neither
+function BotCrew:needsAll(pPatient)
+	local out = {}
+
+	for pool = 0, 5 do
+		if CreatureObject(pPatient):getMaxHAM(pool) <= CreatureObject(pPatient):getBaseHAM(pool) then
+			table.insert(out, "buff")
+			break
+		end
+	end
+
+	for pool = 0, 5 do
+		if botGetWounds(pPatient, pool) > 0 then
+			table.insert(out, "wounds")
+			break
+		end
+	end
+
+	return out
+end
+
 function BotCrew:needs(pPatient)
 	local creature = CreatureObject(pPatient)
 
@@ -2060,9 +2082,18 @@ function BotCrew:medicCamp(pBot, oid, g, pLeader, camp, now)
 	table.insert(order, g.byOid[oid])
 
 	for _, m in ipairs(order) do
-		local need = (m ~= nil and m.player and not CreatureObject(m.p):isDead()) and self:needs(m.p) or nil
+		-- The first of its needs (buffs, then wounds) not tried lately: a buff that didn't take doesn't hold its wounds up
+		local need = nil
 
-		if need ~= nil and now - (tried[m.oid .. need] or 0) >= self.campRetry then
+		if m ~= nil and m.player and not CreatureObject(m.p):isDead() then
+			for _, kind in ipairs(self:needsAll(m.p)) do
+				if need == nil and now - (tried[m.oid .. kind] or 0) >= self.campRetry then
+					need = kind
+				end
+			end
+		end
+
+		if need ~= nil then
 			local dist = m.oid == oid and 0 or BotJobs:distance(pBot, m.p)
 			local name = self:firstName(m.p)
 
@@ -2230,11 +2261,12 @@ function BotCrew:startCampSearch(pBot, oid, pPlayer, channel, why)
 	self:campSearchNext(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, search, 1)
 end
 
--- Spot `try`: the rings outward, eight bearings each, starting from a random one
+-- Spot `try`: the rings outward, four bearings each (each ring turned 45 degrees), starting from a random one
 function BotCrew:campSearchSpot(oid, try)
 	local rings = self.campSearchRings
-	local ring = rings[math.min(#rings, math.floor((try - 1) / 8) + 1)]
-	local bearing = (readData(ckey(oid, "campSearchBearing")) + (try - 1) * 3) % 8 * 45
+	local index = math.floor((try - 1) / 4)
+	local ring = rings[math.min(#rings, index + 1)]
+	local bearing = ((readData(ckey(oid, "campSearchBearing")) + ((try - 1) % 4) * 2 + index) % 8) * 45
 	local rad = math.rad(bearing)
 
 	return readData(ckey(oid, "campSearchX")) + math.sin(rad) * ring, readData(ckey(oid, "campSearchY")) + math.cos(rad) * ring

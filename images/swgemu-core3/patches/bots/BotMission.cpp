@@ -683,6 +683,35 @@ void runSync(Reference<SyncJob*> job) {
 		}
 	}
 
+	// Other bots' marks: one no longer in the leader's group (a restart broke the group up, or it left while the server
+	// was down) leaves nothing behind; one still in the group keeps its own and syncs them itself
+	{
+		ManagedReference<GroupObject*> group = leader->getGroup();
+		Vector<uint64> strays;
+
+		for (int i = 0; i < ghost->getWaypointListSize(); ++i) {
+			WaypointObject* waypoint = ghost->getWaypoint(i);
+			uint64 mission = 0, owner = 0;
+
+			if (waypoint == nullptr || !parseMark(waypoint->getDetailedDescription(), mission, owner) || owner == job->bot)
+				continue;
+
+			if (group == nullptr || !group->hasMember(owner))
+				strays.add(waypoint->getObjectID());
+		}
+
+		for (int i = 0; i < strays.size(); ++i) {
+			dropWaypoint(leader, strays.get(i));
+
+			Locker tlocker(&trackMutex);
+
+			for (int j = tracked.size() - 1; j >= 0; --j) {
+				if (tracked.get(j)->waypoint == strays.get(i))
+					tracked.remove(j);
+			}
+		}
+	}
+
 	{
 		Locker tlocker(&trackMutex);
 		scanned.put(scanKey.toString());

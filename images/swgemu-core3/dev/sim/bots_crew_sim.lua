@@ -2228,6 +2228,8 @@ return function(ctx)
 		end)
 		realPrint(string.format("crewswoop %d mounts, %d dismounts, %d group lines", #log.mounts, #log.dismounts, #log.group))
 		BotCrewSwoop.sayChance = sayChance
+		teardown()
+	end
 
 	-- Scenario: looting, harvesting and the handover (Phase 7: crew_loot.lua against the mocked BotLoot bindings)
 

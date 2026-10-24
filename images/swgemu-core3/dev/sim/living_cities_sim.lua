@@ -778,7 +778,11 @@ end
 
 -- Phases 4-6: each part's own scenarios, in bots_<part>_sim.lua next to this file, loaded the same way
 for _, part in ipairs({"city", "jobsA", "crew"}) do
-	local chunk = loadfile(simDir .. "/bots_" .. part .. "_sim.lua")
+	local chunk, err = loadfile(simDir .. "/bots_" .. part .. "_sim.lua")
+	-- A part that doesn't load is a failure, never skipped quietly (that hid a broken merge once)
+	if chunk == nil and not tostring(err):find("No such file", 1, true) then
+		error("bots_" .. part .. "_sim.lua: " .. tostring(err))
+	end
 	if chunk ~= nil then
 		chunk()({sim = sim, Obj = Obj, newObject = newObject, objects = objects, fail = fail, realPrint = realPrint,
 			setHour = setHour, checkAll = checkAll, scenarios = scenarios, order = order,

@@ -536,7 +536,28 @@ function BotCrew:missionLeft(pBot, oid)
 	end
 
 	deleteData(ckey(oid, "mSyncAt"))
+
+	-- Out of the group, its missions go: a bot's lair could otherwise pay nobody, or be done by the bot alone
+	local count = bot("botMissionAbort", pBot) or 0
+
+	if count > 0 then
+		print("BotJobs: " .. self:name(oid) .. " drops " .. count .. " mission(s) on leaving the group")
+	end
+
 	bot("botMissionSync", pBot)
+end
+
+-- Logging in out of a group (a restart broke it up) with missions from before: they go, as on leaving the group
+function BotCrew:missionLogin(pBot, oid)
+	if botMissionAbort == nil or CreatureObject(pBot):isGrouped() then
+		return
+	end
+
+	local count = bot("botMissionAbort", pBot) or 0
+
+	if count > 0 then
+		print("BotJobs: " .. self:name(oid) .. " drops " .. count .. " mission(s) from before (not in a group)")
+	end
 end
 
 -- Console
