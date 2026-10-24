@@ -18,6 +18,8 @@
 --   runLuaFunction BotCrew:devLead:<first>[:off]               treat a bot as a human leader (crew bots group with it)
 --   runLuaFunction BotCrew:devInvite:<leader>:<crew>           the leader bot invites a crew bot
 --   runLuaFunction BotCrew:devGroupSay:<leader>:<text>         the leader says <text> in group chat ("_" is a space)
+--   runLuaFunction BotCrew:devSay:<leader>:<text>              the leader says <text> out loud (spatial chat)
+--   runLuaFunction BotCrew:devHunt:<first>                    a crew bot's hunt log and tally (what the brain gets)
 --   runLuaFunction BotCrew:devAttack:<leader>:<oid>            the leader attacks an object (devPeace:<leader>: peace)
 --   runLuaFunction BotCrew:devSpawn:<near>:<template>[:<m>]    spawn a creature <m> metres (default 25) north of a bot
 --   runLuaFunction BotCrew:devWalk:<first>:<x>:<y>             a bot walks to a world point (outdoors)
@@ -157,12 +159,15 @@ BotCrew = ScreenPlay:new {
 	campOfferEvery = 900,    -- seconds between the ranger's offers
 	campOfferAfterFight = 20,
 	campOfferWindow = 90,    -- a "yes" this soon after the offer places the camp
-	-- Refused for a lair, camp or building nearby: the ranger walks out and tries again, at these distances (m) from
-	-- where it was asked, four bearings each (turned 45 degrees ring to ring), up to campSearchTries spots; a camp
-	-- placed out there waits this long (s) for the leader to come within campRange
-	campSearchRings = {40, 70, 100},
-	campSearchTries = 12,
-	campSearchWalk = 60,     -- s to reach a spot before trying the next
+	spatialRange = 20,       -- a grouped crew bot takes a group human's spoken words (not named) as group talk within this
+	spatialHear = 25,        -- ...and the crew member who does the work asked for (a camp, a track), within this
+	-- Refused for a lair, camp or building nearby: the ranger walks straight away from it, campSearchStep metres at a
+	-- time, and tries at each, up to campSearchSteps times; a camp placed out there waits this long (s) for the leader
+	-- to come within campRange
+	campSearchStep = 25,
+	campSearchSteps = 6,
+	campSearchWalk = 30,     -- s to reach a spot before trying it anyway
+	campSearchPollMs = 1500, -- between looks at the walk
 	campSearchGrace = 180,
 	woundedAt = 100,         -- wounds (all pools) or battle fatigue on someone that make the ranger offer a camp
 
@@ -196,9 +201,20 @@ BotCrew = ScreenPlay:new {
 			"where are the", "look for", "any sign", "what's out there", "whats out there", "scout ahead"},
 		buff = {"buff", "enhanc"},
 		wounds = {"wound"},
+		-- Orders only ("harvest them", "loot the bodies"), not talk about loot; a bare "loot" or "harvest" starting the
+		-- line counts too (intentFor)
+		harvest = {"harvest them", "harvest it", "harvest all", "harvest the", "harvest everything", "harvest those",
+			"harvest these", "harvest that", "harvest up", "harvest please", "please harvest", "can you harvest",
+			"go harvest", "skin them", "skin it", "skin the", "skin all", "skin everything", "skin those", "skin that",
+			"skin these", "skin em", "harvest em", "go skin", "butcher them", "carve them"},
+		loot = {"loot them", "loot it", "loot all", "loot the", "loot everything", "loot those", "loot these", "loot that",
+			"loot em", "loot up", "loot please", "please loot", "can you loot", "go loot", "search the bod",
+			"search the corpse", "search them", "search the carcass", "loot bodies", "loot corpses"},
 	},
 	-- Work that is one crew member's: in group chat, that member answers it
-	owners = {camp = "ranger", track = "ranger", buff = "medic", wounds = "medic"},
+	owners = {camp = "ranger", track = "ranger", buff = "medic", wounds = "medic", harvest = "ranger"},
+	-- Work any crew member may answer (the first in earshot does)
+	anyone = {loot = true, harvest = true},
 	affirmative = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please", "do it", "go ahead", "sounds good",
 		"good idea", "why not", "camp", "aye", "ya", "y", "absolutely", "definitely"},
 	-- Not creature names, when the ranger looks for one in what was said
@@ -296,6 +312,17 @@ local function hasState(pCreature, state)
 	local v = CreatureObject(pCreature):hasState(state)
 
 	return v == true or v == 1
+end
+
+-- "123,456" -> {123, 456} (writeStringData keeps only digits and commas safely)
+local function oidList(text)
+	local out = {}
+
+	for digits in string.gmatch(text or "", "%d+") do
+		table.insert(out, tonumber(digits))
+	end
+
+	return out
 end
 
 local function worldDistance(pObject, x, y)
@@ -822,6 +849,7 @@ function BotCrew:step(pBot, oid, now)
 	end
 
 	self:noteDefender(pBot, oid, now)
+	self:missionWatch(pBot, oid, now)
 
 	local g = self:group(pBot)
 	local pLeader = nil
@@ -866,6 +894,12 @@ function BotCrew:step(pBot, oid, now)
 
 	if pTarget ~= nil then
 		self:fight(pBot, oid, pTarget, pLeader, g, now)
+
+		if pLeader ~= nil then
+			-- When the fight ends the crew looks around for corpses (crew_loot.lua)
+			put(gkey(SceneObject(pLeader):getObjectID(), "fightAt"), now)
+		end
+
 		return self.fightMs
 	end
 
@@ -1125,34 +1159,45 @@ end
 
 -- Fighting
 
--- What this bot is fighting, for its crew mates
+-- What this bot is fighting, and what attacks it, for its crew mates. A creature that is attacked has no defender of
+-- its own until it hits back (Core3's startCombat gives only the attacker one), so the main defender alone misses
+-- what bites a medic who is busy healing: botAttackers reads the threat map for that.
 function BotCrew:noteDefender(pBot, oid, now)
-	local creature = CreatureObject(pBot)
 	local defender = 0
+	local attackers = ""
 
-	if creature:isInCombat() then
-		local pDefender = creature:getMainDefender()
+	if CreatureObject(pBot):isInCombat() then
+		local pDefender = CreatureObject(pBot):getMainDefender()
 
 		if pDefender ~= nil then
 			defender = SceneObject(pDefender):getObjectID()
 		end
+
+		attackers = table.concat(bot("botAttackers", pBot) or {}, ",")
 	end
 
 	put(ckey(oid, "defender"), defender)
 	put(ckey(oid, "defenderAt"), now)
+	writeStringData(ckey(oid, "attackers"), attackers)
 end
 
--- The first crew member in the group reads what the players in it are fighting, in an event on each of them
+-- The crew reads what the players in the group are fighting and what attacks them, in an event on each of them. Any
+-- crew member may do it (the first one could be down or busy); a human is read once a second at most.
 function BotCrew:scanHumans(g, oid)
-	if g.crew[1] == nil or g.crew[1].oid ~= oid then
-		return
-	end
+	local now = os.time()
 
 	for _, m in ipairs(g.humans) do
-		if CreatureObject(m.p):isInCombat() then
-			createEvent(1, "BotCrew", "scanHuman", m.p, "")
-		elseif readData("crew:human:" .. m.oid .. ":defender") ~= 0 then
-			put("crew:human:" .. m.oid .. ":defender", 0)
+		local base = "crew:human:" .. m.oid
+
+		if now - readData(base .. ":scanAt") >= 1 then
+			put(base .. ":scanAt", now)
+
+			if CreatureObject(m.p):isInCombat() then
+				createEvent(1, "BotCrew", "scanHuman", m.p, "")
+			elseif readData(base .. ":defender") ~= 0 or readStringData(base .. ":attackers") ~= "" then
+				put(base .. ":defender", 0)
+				writeStringData(base .. ":attackers", "")
+			end
 		end
 	end
 end
@@ -1165,16 +1210,23 @@ function BotCrew:scanHuman(pHuman, args)
 
 	local humanOid = SceneObject(pHuman):getObjectID()
 	local defender = 0
+	local attackers = ""
+	local pvp = 0
 
 	if CreatureObject(pHuman):isInCombat() then
 		local pDefender = CreatureObject(pHuman):getMainDefender()
 
 		if pDefender ~= nil then
 			defender = SceneObject(pDefender):getObjectID()
+			pvp = SceneObject(pDefender):isPlayerCreature() and 1 or 0
 		end
+
+		attackers = table.concat(bot("botAttackers", pHuman) or {}, ",")
 	end
 
 	put("crew:human:" .. humanOid .. ":defender", defender)
+	put("crew:human:" .. humanOid .. ":pvp", pvp)
+	writeStringData("crew:human:" .. humanOid .. ":attackers", attackers)
 	put("crew:human:" .. humanOid .. ":at", os.time())
 	self:lootNoteHuman(humanOid, defender)
 end
@@ -1237,9 +1289,11 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 
 	local own = readData(ckey(oid, "defender"))
 	local pOwn = own ~= 0 and self:validTarget(pBot, getSceneObject(own), g, true) or nil
+	-- Whatever attacks this bot, in its threat map, even when it isn't fighting back (a medic busy healing)
+	local pOwnAttacker = self:nearestAttacker(pBot, g, readStringData(ckey(oid, "attackers")), 0)
 
 	if g == nil then
-		return pOwn
+		return pOwn or pOwnAttacker
 	end
 
 	if pLeader ~= nil and CreatureObject(pLeader):isInCombat() then
@@ -1260,9 +1314,15 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 		return pOwn
 	end
 
+	if pOwnAttacker ~= nil then
+		return pOwnAttacker
+	end
+
+	-- A crew mate's or a player's attacker, seen in the last few seconds: the group defends its own, without waiting
+	-- for the leader to strike first
 	for _, m in ipairs(g.crew) do
 		if m.oid ~= oid and now - readData(ckey(m.oid, "defenderAt")) <= self.attackerFresh then
-			local pTarget = self:validTarget(pBot, getSceneObject(readData(ckey(m.oid, "defender"))), g, false)
+			local pTarget = self:nearestAttacker(pBot, g, readStringData(ckey(m.oid, "attackers")), readData(ckey(m.oid, "defender")))
 
 			if pTarget ~= nil then
 				return pTarget
@@ -1272,7 +1332,8 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 
 	for _, m in ipairs(g.humans) do
 		if now - readData("crew:human:" .. m.oid .. ":at") <= self.attackerFresh then
-			local pTarget = self:validTarget(pBot, getSceneObject(readData("crew:human:" .. m.oid .. ":defender")), g, false)
+			local pTarget = self:nearestAttacker(pBot, g, readStringData("crew:human:" .. m.oid .. ":attackers"),
+				readData("crew:human:" .. m.oid .. ":defender"))
 
 			if pTarget ~= nil then
 				return pTarget
@@ -1281,6 +1342,30 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 	end
 
 	return pOwn
+end
+
+-- The nearest creature this bot may attack among an attackers list ("oid,oid") and one more oid (a main defender)
+function BotCrew:nearestAttacker(pBot, g, text, extra)
+	local best, bestDist = nil, nil
+	local list = oidList(text)
+
+	if extra ~= nil and extra ~= 0 then
+		table.insert(list, 1, extra)
+	end
+
+	for _, attackerOid in ipairs(list) do
+		local pTarget = self:validTarget(pBot, getSceneObject(attackerOid), g, false)
+
+		if pTarget ~= nil then
+			local dist = BotJobs:distance(pBot, pTarget) or 999
+
+			if best == nil or dist < bestDist then
+				best, bestDist = pTarget, dist
+			end
+		end
+	end
+
+	return best
 end
 
 -- Specials only while health, action and mind are all above specialsHam of their maximum; else auto-attack
@@ -1561,7 +1646,8 @@ function BotCrew:medicTurn(pBot, oid, g, now)
 		BotDoctor:clear(oid)
 	end
 
-	-- Never heal someone a crew mate is fighting (a provoked fight or a duel with a group member)
+	-- Never heal either side of a duel or a provoked fight that involves the group: the crew mate who is fighting and
+	-- its opponent, and a human of the group who is fighting another member (read by scanHumans)
 	local opponents = {}
 
 	if BotFight ~= nil and BotFight.fighting ~= nil then
@@ -1570,7 +1656,19 @@ function BotCrew:medicTurn(pBot, oid, g, now)
 
 			if opponent ~= nil and opponent ~= 0 then
 				opponents[opponent] = true
+				opponents[m.oid] = true
 			end
+		end
+	end
+
+	for _, m in ipairs(g.humans) do
+		local defender = readData("crew:human:" .. m.oid .. ":defender")
+
+		if defender ~= 0 and now - readData("crew:human:" .. m.oid .. ":at") <= self.attackerFresh and
+			(g.byOid[defender] ~= nil or readData("crew:human:" .. m.oid .. ":pvp") == 1) then
+			-- A member fighting another member, or any player (a duel)
+			opponents[m.oid] = true
+			opponents[defender] = true
 		end
 	end
 
@@ -2180,7 +2278,7 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 
 	self:stopMoving(pBot)
 
-	local campOid, why = bot("botPlaceCamp", pBot, self:campKitOf(oid))
+	local campOid, why, blocker = bot("botPlaceCamp", pBot, self:campKitOf(oid))
 
 	campOid = campOid or 0
 
@@ -2189,7 +2287,7 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 		local why = tostring(why or "")
 
 		if why == "lair too close" or why == "camp too close" or why == "building too close" then
-			self:startCampSearch(pBot, oid, pPlayer, channel, why)
+			self:startCampSearch(pBot, oid, pPlayer, channel, why, blocker)
 			return
 		end
 
@@ -2214,6 +2312,8 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 	put(gkey(SceneObject(pLeader):getObjectID(), "camp"), campOid)
 	put(ckey(oid, "offerAt"), now)
 	print("BotJobs: " .. self:name(oid) .. " placed a camp (" .. campOid .. ")")
+	self:huntTallyAdd(pBot, "camps", 1)
+	self:huntEvent(pBot, self:firstName(pBot) .. " set up a camp")
 
 	if brainLine == nil then
 		self:say(pBot, oid, playerOid, channel, "campUp", name)
@@ -2240,20 +2340,19 @@ local function direction(bearing)
 	return COMPASS[math.floor(((degrees % 360) + 22.5) / 45) % 8 + 1]
 end
 
--- Camp search: the spot was refused for a lair (or a camp or building) nearby. The ranger walks out to spots further
--- away, in rings around where it was asked, and tries each until one takes; then it calls the group over. A fight, a
--- new order or running out of spots ends the search.
+-- Camp search: the spot was refused for a lair (or a camp or building) nearby. The ranger walks straight away from
+-- the thing in the way, campSearchStep metres at a time, and tries the camp at each stop, until one takes; then it
+-- calls the group over. A fight, a new order or running out of steps ends the search.
 
-function BotCrew:startCampSearch(pBot, oid, pPlayer, channel, why)
-	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+function BotCrew:startCampSearch(pBot, oid, pPlayer, channel, why, blockerOid)
 	local search = readData(ckey(oid, "campSearch")) + 1
 
 	put(ckey(oid, "campSearch"), search)
-	put(ckey(oid, "campSearchX"), math.floor(x))
-	put(ckey(oid, "campSearchY"), math.floor(y))
-	put(ckey(oid, "campSearchBearing"), getRandomNumber(0, 7))
+	deleteData(ckey(oid, "campSearchDX"))
+	deleteData(ckey(oid, "campSearchDY"))
 	putString(ckey(oid, "campSearchOrder"), readStringData(ckey(oid, "order")))
 	putString(ckey(oid, "order"), "campSearch")
+	self:campSearchAim(pBot, oid, blockerOid, pPlayer)
 
 	print("BotJobs: " .. self:name(oid) .. " looks for a clear spot to camp (" .. why .. ")")
 	self:say(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, why == "lair too close" and "campSearchLair" or "campSearch",
@@ -2261,34 +2360,65 @@ function BotCrew:startCampSearch(pBot, oid, pPlayer, channel, why)
 	self:campSearchNext(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, search, 1)
 end
 
--- Spot `try`: the rings outward, four bearings each (each ring turned 45 degrees), starting from a random one
-function BotCrew:campSearchSpot(oid, try)
-	local rings = self.campSearchRings
-	local index = math.floor((try - 1) / 4)
-	local ring = rings[math.min(#rings, index + 1)]
-	local bearing = ((readData(ckey(oid, "campSearchBearing")) + ((try - 1) % 4) * 2 + index) % 8) * 45
-	local rad = math.rad(bearing)
+-- Which way to walk: directly away from what blocked the camp (its position is known from botPlaceCamp's third
+-- result); if that is unknown, away from the group's leader; else a random way. Kept as a unit vector in thousandths.
+function BotCrew:campSearchAim(pBot, oid, blockerOid, pPlayer)
+	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+	local fromX, fromY = nil, nil
+	local pBlocker = (blockerOid or 0) ~= 0 and getSceneObject(blockerOid) or nil
 
-	return readData(ckey(oid, "campSearchX")) + math.sin(rad) * ring, readData(ckey(oid, "campSearchY")) + math.cos(rad) * ring
+	if pBlocker ~= nil then
+		fromX, fromY = SceneObject(pBlocker):getWorldPositionX(), SceneObject(pBlocker):getWorldPositionY()
+	elseif readData(ckey(oid, "campSearchDX")) ~= 0 or readData(ckey(oid, "campSearchDY")) ~= 0 then
+		-- Unknown blocker and a direction already: keep going the same way
+		return
+	elseif pPlayer ~= nil then
+		fromX, fromY = SceneObject(pPlayer):getWorldPositionX(), SceneObject(pPlayer):getWorldPositionY()
+	end
+
+	local dx, dy = 0, 0
+
+	if fromX ~= nil then
+		dx, dy = x - fromX, y - fromY
+	end
+
+	local length = math.sqrt(dx * dx + dy * dy)
+
+	if length < 1 then
+		local rad = math.rad(getRandomNumber(0, 359))
+
+		dx, dy, length = math.sin(rad), math.cos(rad), 1
+	end
+
+	put(ckey(oid, "campSearchDX"), dx / length * 1000)
+	put(ckey(oid, "campSearchDY"), dy / length * 1000)
+end
+
+-- Spot `try`: campSearchStep metres on from where the bot stands now, along the aim
+function BotCrew:campSearchSpot(pBot, oid)
+	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+
+	return x + readData(ckey(oid, "campSearchDX")) / 1000 * self.campSearchStep,
+		y + readData(ckey(oid, "campSearchDY")) / 1000 * self.campSearchStep
 end
 
 function BotCrew:campSearchNext(pBot, oid, playerOid, channel, search, try)
-	if try > self.campSearchTries then
+	if try > self.campSearchSteps then
 		self:endCampSearch(pBot, oid)
 		self:say(pBot, oid, playerOid, channel, "campSearchFail", self:firstName(getSceneObject(playerOid)))
 		print("BotJobs: " .. self:name(oid) .. " found no spot to camp")
 		return
 	end
 
-	local x, y = self:campSearchSpot(oid, try)
+	local x, y = self:campSearchSpot(pBot, oid)
 	local z = getTerrainHeight ~= nil and getTerrainHeight(pBot, x, y) or SceneObject(pBot):getWorldPositionZ()
 
-	bot("botMoveTo", pBot, x, z, y, 0)
-	createEvent(3000, "BotCrew", "campSearchCheck", pBot,
+	bot("botMoveTo", pBot, x, z, y, 0, "run")
+	createEvent(self.campSearchPollMs, "BotCrew", "campSearchCheck", pBot,
 		packArgs(readData(key(oid, "gen")), search, try, playerOid, channel, os.time()))
 end
 
--- Every few seconds on the way: there (or stuck, or too long) → try the camp
+-- Every moment on the way: there (or stuck, or too long) → try the camp
 function BotCrew:campSearchCheck(pBot, args)
 	local a = unpackArgs(args)
 
@@ -2313,16 +2443,22 @@ function BotCrew:campSearchCheck(pBot, args)
 	local move = bot("botMoveState", pBot) or {}
 
 	if move.state == "goto" and not move.stuck and os.time() - started < self.campSearchWalk then
-		createEvent(3000, "BotCrew", "campSearchCheck", pBot, args)
+		createEvent(self.campSearchPollMs, "BotCrew", "campSearchCheck", pBot, args)
 		return
 	end
 
 	self:stopMoving(pBot)
 
-	local campOid, why = bot("botPlaceCamp", pBot, self:campKitOf(oid))
+	local campOid, why, blocker = bot("botPlaceCamp", pBot, self:campKitOf(oid))
 
 	if (campOid or 0) == 0 then
 		print("BotJobs: " .. self:name(oid) .. " camp spot " .. try .. ": " .. tostring(why))
+
+		-- Away from whatever is in the way now (it may be another thing than the first)
+		if (blocker or 0) ~= 0 then
+			self:campSearchAim(pBot, oid, blocker, nil)
+		end
+
 		self:campSearchNext(pBot, oid, playerOid, channel, search, try + 1)
 		return
 	end
@@ -2342,6 +2478,9 @@ function BotCrew:campSearchCheck(pBot, args)
 	local way = direction(math.deg(math.atan(dx, dy)))
 
 	print("BotJobs: " .. self:name(oid) .. " placed a camp (" .. campOid .. ") " .. metres .. " m " .. way .. " of the leader, spot " .. try)
+	self:huntTallyAdd(pBot, "camps", 1)
+	self:huntEvent(pBot, self:firstName(pBot) .. " set up a camp " .. metres .. " m " .. way .. " of " .. self:firstName(pLeader) ..
+		" (a lair or building was in the way)")
 	self:say(pBot, oid, playerOid, channel, "campUpThere", self:firstName(pLeader), {metres = tostring(metres), way = way})
 	-- It waits by its fire for the group
 	putString(ckey(oid, "order"), "stay")
@@ -2351,6 +2490,9 @@ end
 
 function BotCrew:endCampSearch(pBot, oid)
 	local before = readStringData(ckey(oid, "campSearchOrder"))
+
+	deleteData(ckey(oid, "campSearchDX"))
+	deleteData(ckey(oid, "campSearchDY"))
 
 	put(ckey(oid, "campSearch"), readData(ckey(oid, "campSearch")) + 1)
 
@@ -2487,16 +2629,19 @@ end
 -- The text intent() last saw, and whether groupAddressed() took it for the whole group: BotJobs:heard calls
 -- groupAddressed, intent and onSpoken one after another on one thread, so onSpoken stores them for act()
 local lastHeard, lastForGroup = nil, false
+-- ...and spatialGroup tells groupAddressed that the line was spoken out loud, not in group chat
+local spatialHeard = false
 
 -- The intent in the words for a role (nil: any role)
 function BotCrew:intentFor(text, role)
 	local t = wordsOf(text)
 
-	for _, intent in ipairs({"home", "follow", "stay", "join", "camp", "track", "buff", "wounds"}) do
-		if hasAny(t, self.words[intent]) then
+	for _, intent in ipairs({"home", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
+		-- A line that starts with the word is an order too ("loot", "harvest?", "loot, please")
+		if hasAny(t, self.words[intent]) or ((intent == "harvest" or intent == "loot") and t:find("^ " .. intent .. " ")) then
 			local owner = self.owners[intent]
 
-			if owner == nil or role == nil or owner == role then
+			if owner == nil or role == nil or owner == role or self.anyone[intent] == true then
 				return intent
 			end
 		end
@@ -2507,6 +2652,7 @@ end
 
 function BotCrew:intent(text)
 	lastHeard = text
+	spatialHeard = false
 
 	return self:intentFor(text, self.crewRole)
 end
@@ -2514,7 +2660,7 @@ end
 local ORDERS = {join = true, follow = true, stay = true, home = true}
 
 function BotCrew:isAction(intent)
-	return intent ~= nil and (ORDERS[intent] == true or self.owners[intent] ~= nil)
+	return intent ~= nil and (ORDERS[intent] == true or self.owners[intent] ~= nil or self.anyone[intent] == true)
 end
 
 -- The brain's action (reply line 4), for this role
@@ -2535,6 +2681,10 @@ function BotCrew:allowed(action)
 		return action
 	end
 
+	if self.anyone[action] then
+		return action
+	end
+
 	return nil
 end
 
@@ -2549,6 +2699,11 @@ function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 		self:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 	elseif action == "track" and self:role(oid) == "ranger" then
 		self:doTrack(pBot, oid, pPlayer, channel, brainLine)
+	elseif action == "harvest" then
+		-- (the ranger works it in its loot turn; whoever answered scans and says how many)
+		self:lootRequest(pBot, oid, pPlayer, "harvest", channel, brainLine)
+	elseif action == "loot" then
+		self:lootRequest(pBot, oid, pPlayer, "loot", channel, brainLine)
 	elseif (action == "buff" or action == "wounds") and self:role(oid) == "medic" then
 		self:medicBuff(pBot, oid, pPlayer, action, channel, brainLine)
 	end
@@ -2569,6 +2724,7 @@ function BotCrew:requestFields(pBot, oid)
 	if leaderOid ~= nil then
 		fields.hunt = leaderOid .. "-" .. huntAt
 		fields.huntLog = self:huntLogText(leaderOid)
+		fields.huntTally = self:huntTally(leaderOid, self:group(pBot))
 	end
 
 	return fields
@@ -2579,7 +2735,7 @@ end
 -- bot is in a group with this leader; it starts afresh after huntQuiet seconds with nothing said.
 
 BotCrew.huntQuiet = 1800
-BotCrew.huntLogSize = 16
+BotCrew.huntLogSize = 24
 BotCrew.huntLineChars = 240
 
 -- The leader's oid and the hunt's start, or nil when the bot isn't grouped
@@ -2598,6 +2754,11 @@ function BotCrew:huntOf(pBot)
 		huntAt = now
 		put(gkey(leaderOid, "huntAt"), huntAt)
 		deleteStringData(gkey(leaderOid, "huntLog"))
+		deleteStringData(gkey(leaderOid, "killsPending"))
+
+		for _, field in ipairs(self.huntTallyFields) do
+			deleteData(gkey(leaderOid, field))
+		end
 	end
 
 	put(gkey(leaderOid, "huntSeen"), now)
@@ -2643,6 +2804,119 @@ function BotCrew:huntNote(pBot, who, text)
 	end
 
 	putString(gkey(leaderOid, "huntLog"), table.concat(entries, "\n"))
+end
+
+-- The hunt's running numbers (the leader's group): kills, lairs destroyed, corpses looted, carcasses harvested, crew
+-- deaths, camps. Reset with the log when a new hunt starts.
+BotCrew.huntTallyFields = {"kills", "lairs", "looted", "harvested", "deaths", "camps"}
+
+function BotCrew:huntTallyAdd(pBot, field, n)
+	local leaderOid = self:huntOf(pBot)
+
+	if leaderOid ~= nil then
+		put(gkey(leaderOid, field), readData(gkey(leaderOid, field)) + (n or 1))
+	end
+end
+
+-- An event of the hunt, as a log entry from "(hunt)" (not anyone's talk)
+function BotCrew:huntEvent(pBot, text)
+	self:huntNote(pBot, "(hunt)", text)
+end
+
+-- A corpse of the group's seen for the first time: a kill. The log gets them in one line per fight (huntKillsFlush)
+function BotCrew:huntKill(pBot, name)
+	local leaderOid = pBot ~= nil and self:huntOf(pBot) or nil
+
+	if leaderOid == nil then
+		return
+	end
+
+	put(gkey(leaderOid, "kills"), readData(gkey(leaderOid, "kills")) + 1)
+
+	local pending = readStringData(gkey(leaderOid, "killsPending"))
+	local bare = (tostring(name or "creature"):gsub("^[Aa]n? ", ""):gsub("^[Tt]he ", ""):gsub("[%%|]", ""))
+
+	writeStringData(gkey(leaderOid, "killsPending"), pending == "" and bare or (pending .. "|" .. bare))
+end
+
+function BotCrew:huntKillsFlush(pBot, leaderOid)
+	local pending = readStringData(gkey(leaderOid, "killsPending"))
+
+	if pending == "" then
+		return
+	end
+
+	deleteStringData(gkey(leaderOid, "killsPending"))
+
+	local counts, order, total = {}, {}, 0
+
+	for name in pending:gmatch("[^|]+") do
+		if counts[name] == nil then
+			counts[name] = 0
+			table.insert(order, name)
+		end
+
+		counts[name] = counts[name] + 1
+		total = total + 1
+	end
+
+	local parts = {}
+
+	for i = 1, math.min(#order, 4) do
+		table.insert(parts, order[i] .. (counts[order[i]] > 1 and (" x" .. counts[order[i]]) or ""))
+	end
+
+	if #order > 4 then
+		table.insert(parts, "others")
+	end
+
+	self:huntEvent(pBot, "Killed " .. total .. ": " .. table.concat(parts, ", "))
+end
+
+-- "3 lairs done, 2 missions left, 41 kills, 12 corpses looted": for the brain, next to the log
+function BotCrew:huntTally(leaderOid, g)
+	local function count(field)
+		return readData(gkey(leaderOid, field))
+	end
+
+	local held = 0
+
+	for _, m in ipairs(g ~= nil and g.crew or {}) do
+		held = held + readData(ckey(m.oid, "mHeldN"))
+	end
+
+	local parts = {}
+
+	local function add(n, one, many)
+		table.insert(parts, n .. " " .. (n == 1 and one or many))
+	end
+
+	if count("lairs") > 0 or held > 0 then
+		add(count("lairs"), "lair done", "lairs done")
+		add(held, "mission left", "missions left")
+	end
+
+	if count("kills") > 0 then
+		add(count("kills"), "kill", "kills")
+	end
+
+	if count("looted") > 0 then
+		add(count("looted"), "corpse looted", "corpses looted")
+	end
+
+	if count("harvested") > 0 then
+		add(count("harvested"), "carcass harvested", "carcasses harvested")
+	end
+
+	if count("deaths") > 0 then
+		add(count("deaths"), "crew death", "crew deaths")
+	end
+
+	if count("camps") > 0 then
+		add(count("camps"), "camp", "camps")
+	end
+
+	return table.concat(parts, ", ")
 end
 
 -- For the brain: "[3 min ago] Eefo: make us a camp" per line, oldest first
@@ -2814,11 +3088,92 @@ function BotCrew:affirmed(text)
 	return false
 end
 
+-- Out-loud talk (spatial chat) that names nobody and isn't aimed at anyone else: a grouped crew bot takes it as group
+-- talk when a human of its own group says it within spatialRange metres. groupAddressed then picks the one crew
+-- member who answers for the crew, among those within range of the speaker (those are the ones who heard it).
+function BotCrew:spatialGroup(pBot, pSpeaker, text)
+	spatialHeard = false
+
+	local g = self:group(pBot)
+
+	if g == nil then
+		return false
+	end
+
+	local speakerOid = SceneObject(pSpeaker):getObjectID()
+	local member = g.byOid[speakerOid]
+
+	if member == nil or not member.human then
+		return false
+	end
+
+	-- Talking to someone else: a member of the group (the targeted crew bot answers alone, as addressed; or the other
+	-- human), a player or bot outside it, a crowd NPC. A creature they fought (the target stays after the kill) doesn't
+	-- count.
+	local target = CreatureObject(pSpeaker):getTargetID()
+
+	if target ~= 0 then
+		if g.byOid[target] ~= nil then
+			return false
+		end
+
+		local pTarget = getSceneObject(target)
+
+		if pTarget ~= nil and (SceneObject(pTarget):isPlayerCreature() or readStringData("lc:npc:" .. target .. ":city") ~= "") then
+			return false
+		end
+	end
+
+	local dist = BotJobs:distance(pBot, pSpeaker)
+
+	if dist == nil then
+		return false
+	end
+
+	-- Within earshot of the speaker, or the one who does this work (a ranger asked to camp, from further off)
+	local owner = self.owners[self:intentFor(text, nil) or ""]
+
+	if dist > self.spatialRange and not (owner ~= nil and owner == self:role(SceneObject(pBot):getObjectID()) and dist <= self.spatialHear) then
+		return false
+	end
+
+	-- Naming someone else who is near (the town doctor, a crowd NPC, another bot or player): not for the crew
+	if self:namesOther(pSpeaker, g, text) then
+		return false
+	end
+
+	spatialHeard = true
+
+	return true
+end
+
+-- Does the text name (by first name) a person near the speaker who isn't in the group?
+function BotCrew:namesOther(pSpeaker, g, text)
+	local words = " " .. (tostring(text or ""):lower():gsub("[^%a]", " ")) .. " "
+	local speakerOid = SceneObject(pSpeaker):getObjectID()
+
+	for _, p in ipairs(bot("botPeopleNear", pSpeaker, self.spatialHear) or {}) do
+		if p.oid ~= speakerOid and g.byOid[p.oid] == nil then
+			local first = (tostring(p.name or ""):match("^(%S+)") or ""):lower():gsub("[^%a]", "")
+
+			if #first >= 3 and words:find(" " .. first .. " ", 1, true) ~= nil then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 -- Group chat that names nobody (BotJobs:heard asks): a camp the ranger offered, accepted, is placed at once; work
 -- that's one member's goes to that member; anything else, the first crew member in the group answers for everyone
 -- (and its orders go to the others too)
 function BotCrew:groupAddressed(pBot, pSpeaker, text)
 	lastForGroup = false
+
+	local spatial = spatialHeard
+
+	spatialHeard = false
 
 	local oid = SceneObject(pBot):getObjectID()
 	local g = self:group(pBot)
@@ -2842,24 +3197,41 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 	local role = self:role(oid)
 	local intent = self:intentFor(text, nil)
 
-	if role == "ranger" and os.time() - readData(ckey(oid, "offerAt")) <= self.campOfferWindow and
+	-- (the camp offer's "yes" in group chat; said out loud it has to be aimed at the ranger, which it isn't here)
+	if role == "ranger" and not spatial and os.time() - readData(ckey(oid, "offerAt")) <= self.campOfferWindow and
 		readData(ckey(oid, "offerAt")) ~= 0 and intent ~= "home" and self:affirmed(text) then
 		put(ckey(oid, "offerAt"), os.time() - self.campOfferWindow - 1)
 		self:tryCamp(pBot, oid, pSpeaker, "group", nil)
 		return false
 	end
 
+	-- Said out loud: the crew within earshot of the speaker (the same for every bot that heard)
+	local pool = g.crew
+
+	if spatial then
+		pool = {}
+
+		for _, m in ipairs(g.crew) do
+			local d = m.oid == oid and BotJobs:distance(pBot, pSpeaker) or BotJobs:distance(m.p, pSpeaker)
+
+			-- (the owner of the work heard it from a little further off)
+			if d ~= nil and (d <= self.spatialRange or (m.job == self.owners[intent or ""] and d <= self.spatialHear)) then
+				table.insert(pool, m)
+			end
+		end
+	end
+
 	local owner = self.owners[intent or ""]
 
 	if owner ~= nil then
-		for _, m in ipairs(g.crew) do
+		for _, m in ipairs(pool) do
 			if m.job == owner then
 				return m.oid == oid
 			end
 		end
 	end
 
-	if g.crew[1] ~= nil and g.crew[1].oid == oid then
+	if pool[1] ~= nil and pool[1].oid == oid then
 		lastForGroup = true
 		return true
 	end
@@ -3023,6 +3395,12 @@ function BotCrew:onEvent(pBot, oid, name, pOther, detail)
 	elseif name == "cloned" then
 		self:afterClone(pBot, oid, now)
 	elseif name == "died" or name == "incapacitated" or name == "duel" or name == "fightStarted" then
+		if name == "died" and CreatureObject(pBot):isGrouped() then
+			self:huntTallyAdd(pBot, "deaths", 1)
+			self:huntEvent(pBot, self:firstName(pBot) .. " died" ..
+				(pOther ~= nil and (" to " .. SceneObject(pOther):getDisplayedName()) or ""))
+		end
+
 		self:startLoop(pBot, oid, 200)
 	elseif name == "arrived" then
 		if mode == "walkingHome" then
@@ -3143,6 +3521,55 @@ function BotCrew:devGroupHear(pBot, args)
 	local leaderOid, text = args:match("^(%d+):(.*)$")
 
 	BotJobs:heard(pBot, getSceneObject(tonumber(leaderOid)), text, "group", false)
+end
+
+-- The leader says something out loud (spatial chat) to the crew bots in its group, as the chat hook would deliver it
+function BotCrew:devSay(leader, text)
+	local pLeader = devBot(leader)
+
+	if pLeader == nil or text == nil or text == "" then
+		print("BotCrew: usage devSay:<leader bot>:<text>")
+		return
+	end
+
+	local g = self:group(pLeader)
+
+	if g == nil then
+		print("BotCrew: " .. tostring(leader) .. " isn't in a group")
+		return
+	end
+
+	text = text:gsub("_", " "):gsub(":", " ")
+	print("BotCrew: " .. CreatureObject(pLeader):getFirstName() .. " (says): " .. text)
+
+	for _, m in ipairs(g.crew) do
+		createEvent(10, "BotCrew", "devSayHear", m.p, packArgs(SceneObject(pLeader):getObjectID(), text))
+	end
+end
+
+function BotCrew:devSayHear(pBot, args)
+	local leaderOid, text = args:match("^(%d+):(.*)$")
+
+	BotJobs:heard(pBot, getSceneObject(tonumber(leaderOid)), text, "spatial", false)
+end
+
+-- The hunt log and the tally a crew bot sends the brain
+function BotCrew:devHunt(first)
+	local pBot = devBot(first)
+
+	if pBot == nil then
+		print("BotCrew: no online bot called " .. tostring(first))
+		return
+	end
+
+	local leaderOid = self:huntOf(pBot)
+
+	if leaderOid == nil then
+		print("BotCrew: " .. tostring(first) .. " isn't on a hunt")
+		return
+	end
+
+	print("BotCrew: the hunt log:\n" .. self:huntLogText(leaderOid) .. "\nTally: " .. self:huntTally(leaderOid, self:group(pBot)))
 end
 
 function BotCrew:devSpawn(near, template, metres)

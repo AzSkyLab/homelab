@@ -14,6 +14,7 @@
 #include "server/zone/objects/cell/CellObject.h"
 #include "server/zone/objects/mission/MissionObject.h"
 #include "server/zone/objects/mission/MissionTypes.h"
+#include "server/zone/objects/mission/MissionObjective.h"
 #include "server/zone/objects/tangible/terminal/mission/MissionTerminal.h"
 #include "server/zone/objects/waypoint/WaypointObject.h"
 #include "server/zone/managers/mission/MissionManager.h"
@@ -140,6 +141,12 @@ void fillInfo(BotMissionInfo* info, MissionObject* mission, float fromX, float f
 	info->planet = mission->getStartPlanet();
 	info->target = targetText(mission->getTargetName());
 	info->level = mission->getDifficultyDisplay();
+
+	// Core3 fails a destroy mission it can't find a lair spot for, and removes it as it does a done one: the lair having
+	// spawned (the objective has an observer on it) tells the two apart
+	ManagedReference<MissionObjective*> objective = mission->getMissionObjective();
+
+	info->lairUp = objective != nullptr && objective->hasObservers();
 
 	float dx = info->x - fromX;
 	float dy = info->y - fromY;

@@ -7,11 +7,17 @@
  *   botPlaceCamp(pBot[, kitTemplate])  the camp's oid, or 0 and why ("skill", "in combat", "inside", "in a city",
  *                                      "no camping here", "in water", "in another camp", "building too close", "camp
  *                                      too close", "lair too close", "not placed ..."); an existing camp's oid and
- *                                      "already camping". The default kit is the master camp (camp_luxury)
+ *                                      "already camping". The default kit is the master camp (camp_luxury). The third
+ *                                      result is the oid of the camp, building or lair that is too close (else 0)
+ *   botAttackers(pCreature)            array of the oids of the live creatures attacking a bot or a player, nearest
+ *                                      first (their threat map; a creature that is attacked has no defender of its
+ *                                      own until it hits back). Call it from an event on that creature
  *   botRemoveCamp(pBot)                disbands the bot's camp
  *   botGetCamp(pBot)                   the bot's camp's oid, or 0
  *   botTrack(pBot[, type])             array of {name, distance, bearing, degrees, oid, kind, level}, nearest first;
  *                                      type 0 (default) animals, 1 NPCs, 2 players. nil and why if it can't
+ *   botPeopleNear(pObject, range)      array of {name, oid, kind ("player" or "npc")}: the players (bots too) and people NPCs
+ *                                      (the crowd, vendors; no animals) around it, for who a spoken line might be for
  * Group chat from humans reaches BotJobs:onHeard(pBot, pSpeaker, text, "group") (BotGroup, patches/0003).
  *
  * Development (console):
@@ -49,6 +55,8 @@ private:
 	static int botRemoveCamp(lua_State* L);
 	static int botGetCamp(lua_State* L);
 	static int botTrack(lua_State* L);
+	static int botAttackers(lua_State* L);
+	static int botPeopleNear(lua_State* L);
 };
 
 } // namespace bot

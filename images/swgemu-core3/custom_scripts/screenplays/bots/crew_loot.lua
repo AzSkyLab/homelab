@@ -9,6 +9,15 @@
 --      credits through Core3's group split to the humans). Looting waits for the harvest, as it did for players.
 -- Corpses of players and other groups' are refused by the binding. A corpse is given up on after lootGiveUp seconds.
 --
+-- The area scan: the kill lists miss corpses (a creature a mission lair spawned, one the leader killed while the crew
+-- was away), so after a fight, and whenever the group asks ("harvest", "skin them", "loot", "loot the bodies"), one
+-- crew bot scans for the group's corpses within lootScanRange of the leader (botCorpsesNear: Core3's own permission,
+-- the corpse's loot belongs to the group) and adds them to the list. An asked-for scan also wakes up the corpses the
+-- crew had given up on, if there is still something on them.
+--
+-- What they got is said in group chat (lootFlush): the ranger names what it harvested, the looter what it took, one
+-- line for everything done since the last one, so a pile of corpses is one line, not a dozen.
+--
 -- Goods: what a bot holds that isn't its gear (botGoods: what it looted, and every resource container). Handing over
 -- (botOfferGoods: a trade window opens on the player's client, the bot has put everything in and accepted; the player
 -- accepts) happens:
@@ -25,7 +34,11 @@ BotCrew.lootFromLeader = 70     -- a corpse further than this from the leader is
 BotCrew.harvestReach = 5        -- the ranger walks up to this far from a corpse (Core3 allows 7 m)
 BotCrew.lootReach = 6           -- a looter walks up to this far (Core3 allows 16 m)
 BotCrew.lootTries = 30          -- actions on one corpse before it is dropped
-BotCrew.lootSayEvery = 20       -- seconds between a bot's loot and harvest lines
+BotCrew.lootSayDelay = 8        -- seconds a bot gathers what it got before saying it (it says it at once when it has no more to do)
+BotCrew.lootScanRange = 60      -- metres around the leader for the corpses a scan looks for
+BotCrew.lootScanEvery = 4       -- seconds between scans after a fight
+BotCrew.lootScanAfter = 40      -- seconds after a fight the crew keeps scanning
+BotCrew.lootAskWindow = 90      -- seconds an asked-for round of looting and harvesting lasts
 BotCrew.victimsKept = 16        -- kills remembered per fighter
 BotCrew.offerRange = 12         -- a bot offers within this of the player (Core3 refuses a trade at 15 m)
 BotCrew.offerStepMs = 2500
@@ -46,6 +59,20 @@ end
 
 local function packArgs(...)
 	return table.concat({...}, ":")
+end
+
+local function gkey(leaderOid, field)
+	return "crew:group:" .. leaderOid .. ":" .. field
+end
+
+-- "a greater desert womp rat" -> "greater desert womp rat"
+local function bareName(name)
+	return (tostring(name or "creature"):gsub("^[Aa]n? ", ""):gsub("^[Tt]he ", ""))
+end
+
+-- Not for the string store: "%" (string.format) and the separators we use
+local function clean(text)
+	return (tostring(text or ""):gsub("[%%|;\n]", ""))
 end
 
 local function corpseKey(oid, field)
@@ -103,7 +130,7 @@ end
 
 -- The group's dead creatures still to work on, oldest first: {oid, p, harvest, loot} where harvest and loot say
 -- what is still to do. Gives up on the ones found dead too long ago.
-function BotCrew:lootCorpses(g, pLeader, now)
+function BotCrew:lootCorpses(g, pLeader, now, pBot)
 	local seen, out = {}, {}
 	local lists = {}
 
@@ -114,6 +141,9 @@ function BotCrew:lootCorpses(g, pLeader, now)
 	for _, m in ipairs(g.humans) do
 		table.insert(lists, readStringData("crew:human:" .. m.oid .. ":victims"))
 	end
+
+	-- What the area scans found (the leader's group)
+	table.insert(lists, readStringData(gkey(pLeader ~= nil and SceneObject(pLeader):getObjectID() or 0, "areaCorpses")))
 
 	for _, text in ipairs(lists) do
 		for _, corpseOid in ipairs(listOf(text)) do
@@ -127,6 +157,12 @@ function BotCrew:lootCorpses(g, pLeader, now)
 				elseif CreatureObject(p):isDead() then
 					if readData(corpseKey(corpseOid, "seen")) == 0 then
 						putInt(corpseKey(corpseOid, "seen"), now)
+					end
+
+					-- The kills are counted by one crew bot (pBot), or the bots' threads would count them twice
+					if pBot ~= nil and readData(corpseKey(corpseOid, "counted")) == 0 then
+						putInt(corpseKey(corpseOid, "counted"), 1)
+						self:huntKill(pBot, SceneObject(p):getDisplayedName())
 					end
 
 					local age = now - readData(corpseKey(corpseOid, "seen"))
@@ -171,15 +207,275 @@ function BotCrew:lootRoles(g)
 	return harvester, looter or harvester or any
 end
 
-local function say(self, pBot, oid, kind, fill)
-	local now = os.time()
+-- The area scan
 
-	if now - readData(lkey(oid, "lootSayAt")) < self.lootSayEvery then
+-- Looks for the group's corpses around the leader and adds them to the list. force (a request) wakes up the ones the
+-- crew gave up on that still have something on them; kind says what was asked ("harvest", "loot" or "both"). Returns
+-- how many corpses have something to harvest and something to loot.
+function BotCrew:lootScan(pBot, pLeader, now, force, kind)
+	if botCorpsesNear == nil or pLeader == nil then
+		return 0, 0
+	end
+
+	local leaderOid = SceneObject(pLeader):getObjectID()
+
+	putInt(gkey(leaderOid, "lootScanAt"), now)
+
+	local found = botCorpsesNear(pBot, self.lootScanRange, pLeader) or {}
+	local harvestN, lootN = 0, 0
+
+	for _, c in ipairs(found) do
+		local done = readData(corpseKey(c.oid, "done")) == 1
+		local wantLoot = c.items > 0 or c.credits > 0
+		local wantHarvest = c.harvest and readData(corpseKey(c.oid, "harvOk")) ~= 1
+
+		if force and done then
+			-- Back in the list: only the part that was asked for
+			if wantLoot and (kind == "loot" or kind == "both") then
+				putInt(corpseKey(c.oid, "loot"), 0)
+				done = false
+			end
+
+			if wantHarvest and (kind == "harvest" or kind == "both") then
+				putInt(corpseKey(c.oid, "harv"), 0)
+				done = false
+			end
+
+			if not done then
+				putInt(corpseKey(c.oid, "done"), 0)
+				putInt(corpseKey(c.oid, "tries"), 0)
+				putInt(corpseKey(c.oid, "seen"), now)
+			end
+		end
+
+		if not done and (wantLoot or wantHarvest) then
+			addToList(gkey(leaderOid, "areaCorpses"), c.oid, 40)
+
+			if wantHarvest then
+				harvestN = harvestN + 1
+			end
+
+			if wantLoot then
+				lootN = lootN + 1
+			end
+		end
+	end
+
+	return harvestN, lootN
+end
+
+-- A scan is due: asked for a moment ago, or a fight has just ended
+function BotCrew:lootScanDue(pLeader, now)
+	local leaderOid = SceneObject(pLeader):getObjectID()
+
+	if now - readData(gkey(leaderOid, "lootScanAt")) < self.lootScanEvery then
+		return false
+	end
+
+	return now - readData(gkey(leaderOid, "lootAskAt")) <= self.lootAskWindow or
+		now - readData(gkey(leaderOid, "fightAt")) <= self.lootScanAfter
+end
+
+-- "harvest" / "loot" from a group member (BotCrew:act): this bot scans at once and says how many it found; the crew
+-- then works through them as it always does (the scans after it keep finding what comes up in the next minute)
+function BotCrew:lootRequest(pBot, oid, pPlayer, kind, channel, brainLine)
+	local playerOid = SceneObject(pPlayer):getObjectID()
+	local name = self:firstName(pPlayer)
+	local g = self:group(pBot)
+
+	if g == nil or g.byOid[playerOid] == nil then
+		if brainLine == nil then
+			self:say(pBot, oid, playerOid, channel, "notWith", name)
+		end
+
 		return
 	end
 
-	putInt(lkey(oid, "lootSayAt"), now)
-	self:groupSay(pBot, oid, kind, nil, fill)
+	local now = os.time()
+	local pLeader = self:leaderOf(pBot, oid, g, now) or pPlayer
+	local leaderOid = SceneObject(pLeader):getObjectID()
+
+	-- A fight on: it happens when it's over
+	putInt(gkey(leaderOid, "lootAskAt"), now)
+
+	if botCorpsesNear == nil then
+		return
+	end
+
+	local harvestN, lootN = self:lootScan(pBot, pLeader, now, true, kind)
+	local n = kind == "harvest" and harvestN or (kind == "loot" and lootN or math.max(harvestN, lootN))
+
+	print("BotJobs: " .. self:name(oid) .. " is asked to " .. kind .. " by " .. name .. ": " .. harvestN .. " to harvest, " .. lootN .. " to loot")
+
+	if brainLine == nil then
+		local line = n == 0 and (kind == "harvest" and "harvestAskNone" or "lootAskNone") or (kind == "harvest" and "harvestAsk" or "lootAsk")
+
+		self:say(pBot, oid, playerOid, channel, line, name, {n = tostring(n)})
+	end
+end
+
+-- What they got
+
+local function addTo(k, text)
+	local list = readStringData(k)
+
+	writeStringData(k, list == "" and text or (list .. "|" .. text))
+end
+
+-- A harvest, for the line (lootFlush)
+function BotCrew:lootNoteHarvest(oid, creature, amount, resource)
+	if readData(lkey(oid, "hvN")) == 0 and readData(lkey(oid, "ltN")) == 0 then
+		putInt(lkey(oid, "sayFirstAt"), os.time())
+	end
+
+	putInt(lkey(oid, "hvN"), readData(lkey(oid, "hvN")) + 1)
+	writeStringData(lkey(oid, "hvName"), clean(bareName(creature)))
+	addTo(lkey(oid, "hvList"), clean(resource) .. ";" .. math.floor(amount))
+end
+
+-- A loot, for the line
+function BotCrew:lootNoteLoot(oid, creature, names, moved, credits)
+	if readData(lkey(oid, "hvN")) == 0 and readData(lkey(oid, "ltN")) == 0 then
+		putInt(lkey(oid, "sayFirstAt"), os.time())
+	end
+
+	putInt(lkey(oid, "ltN"), readData(lkey(oid, "ltN")) + 1)
+	putInt(lkey(oid, "ltItems"), readData(lkey(oid, "ltItems")) + moved)
+	putInt(lkey(oid, "ltCredits"), readData(lkey(oid, "ltCredits")) + credits)
+	writeStringData(lkey(oid, "ltName"), clean(bareName(creature)))
+
+	for _, name in ipairs(names or {}) do
+		if #readStringData(lkey(oid, "ltNames")) < 400 then
+			addTo(lkey(oid, "ltNames"), clean(name))
+		end
+	end
+end
+
+-- "A, B and 3 more" from a "|" list, at most `shown` names (a repeat counted: "2 Power Cores" would need plurals, so
+-- "Power Core x2")
+local function itemList(text, total, shown)
+	local counts, order = {}, {}
+
+	for name in string.gmatch(text, "[^|]+") do
+		if counts[name] == nil then
+			counts[name] = 0
+			table.insert(order, name)
+		end
+
+		counts[name] = counts[name] + 1
+	end
+
+	local parts = {}
+
+	for i = 1, math.min(#order, shown) do
+		local name = order[i]
+
+		table.insert(parts, counts[name] > 1 and (name .. " x" .. counts[name]) or name)
+	end
+
+	local listed = 0
+
+	for i = 1, math.min(#order, shown) do
+		listed = listed + counts[order[i]]
+	end
+
+	local more = total - listed
+
+	if more > 0 then
+		table.insert(parts, more .. " more")
+	end
+
+	if #parts <= 1 then
+		return parts[1] or "nothing"
+	end
+
+	local last = table.remove(parts)
+
+	return table.concat(parts, ", ") .. " and " .. last
+end
+
+-- "373 Tatooinian Herbivore Meat" or "40 Mammalian Hide, 12 Bone": the totals by resource
+local function resourceList(text)
+	local totals, order = {}, {}
+
+	for entry in string.gmatch(text, "[^|]+") do
+		local resource, amount = entry:match("^(.-);(%d+)$")
+
+		if resource ~= nil then
+			if totals[resource] == nil then
+				totals[resource] = 0
+				table.insert(order, resource)
+			end
+
+			totals[resource] = totals[resource] + tonumber(amount)
+		end
+	end
+
+	local parts = {}
+
+	for i = 1, math.min(#order, 3) do
+		table.insert(parts, totals[order[i]] .. " " .. order[i])
+	end
+
+	if #order > 3 then
+		table.insert(parts, (#order - 3) .. " more kinds")
+	end
+
+	return table.concat(parts, ", ")
+end
+
+-- Says what the bot harvested and looted since its last line, in group chat. When the bot has no more to do, or has
+-- been gathering for lootSayDelay seconds.
+function BotCrew:lootFlush(pBot, oid, now, idle)
+	local hvN, ltN = readData(lkey(oid, "hvN")), readData(lkey(oid, "ltN"))
+
+	if hvN == 0 and ltN == 0 then
+		return
+	end
+
+	if not idle and now - readData(lkey(oid, "sayFirstAt")) < self.lootSayDelay then
+		return
+	end
+
+	if not CreatureObject(pBot):isGrouped() then
+		hvN, ltN = 0, 0
+	end
+
+	if hvN > 0 then
+		local what = resourceList(readStringData(lkey(oid, "hvList")))
+		local creature = readStringData(lkey(oid, "hvName"))
+
+		if what ~= "" then
+			if hvN == 1 then
+				self:groupSay(pBot, oid, "harvestedOne", nil, {creature = creature, what = what})
+			else
+				self:groupSay(pBot, oid, "harvestedMany", nil, {n = tostring(hvN), what = what})
+			end
+		end
+	end
+
+	if ltN > 0 then
+		local items = readData(lkey(oid, "ltItems"))
+		local credits = readData(lkey(oid, "ltCredits"))
+		local creature = readStringData(lkey(oid, "ltName"))
+		local fill = {n = tostring(ltN), creature = creature,
+			credits = credits > 0 and (" (" .. credits .. " credits split)") or ""}
+
+		if items > 0 then
+			fill.items = itemList(readStringData(lkey(oid, "ltNames")), items, 3)
+			self:groupSay(pBot, oid, ltN == 1 and "lootedOne" or "lootedMany", nil, fill)
+		else
+			self:groupSay(pBot, oid, ltN == 1 and "lootedNothing" or "lootedNothingMany", nil, fill)
+		end
+	end
+
+	for _, field in ipairs({"hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
+		deleteData(lkey(oid, field))
+	end
+
+	for _, field in ipairs({"hvName", "hvList", "ltName", "ltNames"}) do
+		deleteStringData(lkey(oid, field))
+	end
 end
 
 -- One loot or harvest action for this bot, if it is the one to do the next. True when the bot is busy with it (the
@@ -199,9 +495,31 @@ function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 		return false
 	end
 
-	local corpses = self:lootCorpses(g, pLeader, now)
+	-- After a fight, or when asked, look around for the group's corpses
+	if self:lootScanDue(pLeader, now) then
+		self:lootScan(pBot, pLeader, now, false, "both")
+	end
+
+	-- One crew bot (the first that is up) counts the kills and writes them into the hunt log
+	local counter = nil
+
+	for _, m in ipairs(g.crew) do
+		local mOrder = readStringData(lkey(m.oid, "order"))
+
+		if not CreatureObject(m.p):isDead() and not CreatureObject(m.p):isIncapacitated() and mOrder ~= "stay" and mOrder ~= "campSearch" then
+			counter = m.oid
+			break
+		end
+	end
+
+	local corpses = self:lootCorpses(g, pLeader, now, counter == oid and pBot or nil)
+
+	if counter == oid then
+		self:huntKillsFlush(pBot, g.leader.oid)
+	end
 
 	if #corpses == 0 then
+		self:lootFlush(pBot, oid, now, true)
 		return false
 	end
 
@@ -213,6 +531,7 @@ function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 	if isHarvester then
 		for _, c in ipairs(corpses) do
 			if c.harvest then
+				self:lootFlush(pBot, oid, now, false)
 				return self:harvestStep(pBot, oid, c, now)
 			end
 		end
@@ -227,10 +546,14 @@ function BotCrew:lootTurn(pBot, oid, g, pLeader, now)
 	if isLooter then
 		for _, c in ipairs(corpses) do
 			if c.loot and (not c.harvest or harvesterAway or now - (c.seen or now) >= self.lootHarvestWait) then
+				self:lootFlush(pBot, oid, now, false)
 				return self:lootStep(pBot, oid, c, now)
 			end
 		end
 	end
+
+	-- Nothing for this bot to do just now
+	self:lootFlush(pBot, oid, now, true)
 
 	return false
 end
@@ -278,8 +601,10 @@ function BotCrew:harvestStep(pBot, oid, c, now)
 
 	if r ~= nil and r.ok then
 		putInt(corpseKey(c.oid, "harv"), 1)
+		putInt(corpseKey(c.oid, "harvOk"), 1)
 		self:goodsOf(pBot, oid)
-		say(self, pBot, oid, "harvested", {amount = tostring(r.amount), kind = r.kind, what = r.resource})
+		self:lootNoteHarvest(oid, SceneObject(c.p):getDisplayedName(), r.amount, r.resource)
+		self:huntTallyAdd(pBot, "harvested", 1)
 	elseif r ~= nil and r.error == "too far" then
 		-- Not yet: another step
 	else
@@ -319,9 +644,11 @@ function BotCrew:lootStep(pBot, oid, c, now)
 			putInt(corpseKey(c.oid, "done"), 1)
 		end
 
-		if r.moved > 0 then
+		-- (a corpse with nothing on it isn't announced or counted as looted)
+		if r.moved > 0 or r.credits > 0 then
 			self:goodsOf(pBot, oid)
-			say(self, pBot, oid, "looted", {n = tostring(r.moved)})
+			self:lootNoteLoot(oid, SceneObject(c.p):getDisplayedName(), r.names, r.moved, r.credits)
+			self:huntTallyAdd(pBot, "looted", 1)
 		end
 
 		if r.full then
@@ -756,10 +1083,12 @@ end
 
 function BotCrew:lootClear(oid)
 	for _, field in ipairs({"offerFor", "offerUntil", "offerOpen", "offerTries", "offerBatches", "offerOpener", "offerRemaining",
-		"offerSaid", "lootAt", "lootSayAt", "victims", "goodsN"}) do
+		"offerSaid", "lootAt", "lootSayAt", "victims", "goodsN", "hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
 		deleteData(lkey(oid, field))
 	end
 
-	deleteStringData(lkey(oid, "victims"))
+	for _, field in ipairs({"victims", "hvName", "hvList", "ltName", "ltNames"}) do
+		deleteStringData(lkey(oid, field))
+	end
 	putInt(lkey(oid, "offerSeq"), readData(lkey(oid, "offerSeq")) + 1)
 end

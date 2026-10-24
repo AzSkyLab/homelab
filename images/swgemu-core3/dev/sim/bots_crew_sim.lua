@@ -68,7 +68,7 @@ return function(ctx)
 	local log = {}
 	local function resetLog()
 		log = {loots = {}, harvests = {}, offers = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
-			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {},
+			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
 			tracks = {}, events = {}, mounts = {}, dismounts = {}}
 	end
 	resetLog()
@@ -207,9 +207,17 @@ return function(ctx)
 	local function startCombat(a, t)
 		a.inCombat, t.inCombat = true, true
 		a.combatTarget = t.oid
+		-- As Core3's startCombat: the attacker gets the defender; the victim only the combat state (a creature answers by
+		-- its AI, a player or bot only when it hits back) and, for botAttackers, a threat map entry
 		a.defenders, t.defenders = a.defenders or {}, t.defenders or {}
 		addUnique(a.defenders, t.oid)
-		addUnique(t.defenders, a.oid)
+		if t.isMob then
+			addUnique(t.defenders, a.oid)
+		end
+		if a.isMob then
+			t.threats = t.threats or {}
+			addUnique(t.threats, a.oid)
+		end
 		if t.isMob then
 			local current = ctx.objects[t.aggro or 0]
 			if current == nil or current.dead or current.incap then
@@ -703,6 +711,10 @@ return function(ctx)
 	function api.botMountAttacker(p) return (p ~= nil and p.riding and p.vehicleAttacker) or 0 end
 	function api.botVehicleOut(b) return b ~= nil and b.swoopOut == true end
 	function api.botHasSwoop(b) return b ~= nil and b.hasSwoop == true end
+	function api.botDuelState(b, other)
+		if b ~= nil and other ~= nil and b.duelWith == other.oid and other.duelWith == b.oid then return "dueling" end
+		return "none"
+	end
 	-- tradegroup
 	function api.botGetGroupInviter(b) return b ~= nil and b.inviter or 0 end
 	function api.botPlaceCamp(b, kit)
@@ -713,12 +725,41 @@ return function(ctx)
 		-- A lair the test put down: no camp within its radius
 		local lair = ctx.campLair
 		if lair ~= nil and math.sqrt((b.x - lair.x) ^ 2 + (b.y - lair.y) ^ 2) <= lair.r then
-			return 0, "lair too close"
+			if lair.obj == nil and not lair.unknown then
+				lair.obj = ctx.newObject({isLair = true, planet = b.planet, x = lair.x, y = lair.y, z = 5, cell = 0, inWorld = true, name = "a lair"})
+			end
+			table.insert(log.campRefusals, {bot = b.oid, t = nowMs(), x = b.x, y = b.y})
+			return 0, "lair too close", lair.obj and lair.obj.oid or 0
 		end
 		local camp = ctx.newObject({isCamp = true, planet = b.planet, x = b.x, y = b.y, z = 5, cell = 0, inWorld = true,
 			radius = 20, name = "a camp"})
 		table.insert(log.camps, {bot = b.oid, t = nowMs(), oid = camp.oid, kit = kit})
 		return camp.oid
+	end
+	-- The live creatures attacking a bot or a player (their threat map), nearest first
+	function api.botAttackers(p)
+		local out = {}
+		if p == nil then return out end
+		for _, oid in ipairs(p.threats or {}) do
+			local o = ctx.objects[oid]
+			if o ~= nil and o.isMob and not o.dead and not o.incap and o.inWorld and o.inCombat and o.aggro == p.oid then
+				table.insert(out, o)
+			end
+		end
+		table.sort(out, function(a, b) return dist(a, p) < dist(b, p) end)
+		for i, o in ipairs(out) do out[i] = o.oid end
+		return out
+	end
+	-- The players (bots too) and people NPCs around an object, by name
+	function api.botPeopleNear(center, range)
+		local out = {}
+		if center == nil then return out end
+		for _, o in pairs(ctx.objects) do
+			if o ~= center and o.inWorld and (o.isPlayer or o.isNpcFlag) and dist(center, o) <= range then
+				table.insert(out, {name = o.name or o.first, oid = o.oid, kind = o.isPlayer and "player" or "npc"})
+			end
+		end
+		return out
 	end
 	function api.botTrack(b)
 		table.insert(log.tracks, {bot = b.oid, t = nowMs()})
@@ -756,15 +797,34 @@ return function(ctx)
 			for _, o in ipairs(human) do o.cash = (o.cash or 0) + r.credits // #human end
 			c.credits = 0
 		end
+		r.names = {}
 		while #(c.loot or {}) > 0 do
 			if #goodsOf(b) >= (b.packRoom or 40) then r.full = true break end
 			local item = newItem(table.remove(c.loot, 1))
 			table.insert(goodsOf(b), item)
+			table.insert(r.names, item.name)
 			r.moved = r.moved + 1
 		end
 		r.left = #(c.loot or {})
 		r.ok = true
 		return r
+	end
+	-- The group's corpses within range of the center, nearest first (BotLoot::corpsesNear)
+	function api.botCorpsesNear(b, range, center)
+		local out = {}
+		center = center or b
+		if b == nil or b.groupId == nil then return out end
+		for _, o in pairs(ctx.objects) do
+			if o.isMob and o.dead and o.inWorld and o.ownerGroup == b.groupId and dist(center, o) <= range then
+				local harvest = o.harvest ~= nil and not (o.harvested or {})[b.oid]
+				if #(o.loot or {}) > 0 or (o.credits or 0) > 0 or harvest then
+					table.insert(out, {oid = o.oid, distance = math.floor(dist(center, o)), items = #(o.loot or {}),
+						credits = o.credits or 0, harvest = harvest, name = o.display or o.name})
+				end
+			end
+		end
+		table.sort(out, function(a, c) return a.distance < c.distance end)
+		return out
 	end
 	function api.botHarvest(b, oid)
 		local r = {ok = false, kind = "", amount = 0, resource = "", error = ""}
@@ -895,8 +955,8 @@ return function(ctx)
 							o.nextHit = t + 2000
 							damage(victim, o.hits or 25)
 							victim.inCombat = true
-							victim.defenders = victim.defenders or {}
-							addUnique(victim.defenders, o.oid)
+							victim.threats = victim.threats or {}
+							addUnique(victim.threats, o.oid)
 						end
 					end
 				end
@@ -1660,6 +1720,7 @@ return function(ctx)
 		zed.duelWith, tank.duelWith = tank.oid, zed.oid
 		t = nowMs()
 		startCombat(zed, tank)
+		addUnique(tank.defenders, zed.oid)	-- (a duel's challenge makes the bot hit back, as a player would)
 		sim.run(12)
 		if not engaged(tank, zed.oid, t) or entries(log.targets, tank, t)[1] == nil or entries(log.targets, tank, t)[1].target ~= zed.oid then
 			fail("crew: the tank didn't fight back in a duel")
@@ -1916,6 +1977,414 @@ return function(ctx)
 		for _, n in pairs(mw.listCalls) do calls = calls + n end
 		realPrint(string.format("crewmissions %d missions accepted (the last round), %d list reads, %d aborts, %d group lines",
 			#mw.accepts, calls, #mw.aborts, #log.group))
+		teardown()
+	end
+
+	-- Scenario: the playtest fixes (duels, spatial talk on a hunt, self-defence, the straight camp search, area loot and
+	-- harvest on request, what they got, the hunt's events)
+
+	function scenarios.crewfix()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+		each(function(role, b) b.gear = {"outfit", "weapon", "stims", "camp kit"} end)
+
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		if members(cameren) ~= 5 then
+			fail("crewfix: " .. members(cameren) .. " in the group")
+		end
+		sim.run(10)
+		local gid = cameren.groupId
+		local huntKey = "crew:group:" .. cameren.oid .. ":huntLog"
+		local function huntLog() return readStringData(huntKey) end
+		local function count(text, needle)
+			local n = 0
+			for _ in text:gmatch((needle:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"))) do n = n + 1 end
+			return n
+		end
+		local function hear(text, channel)
+			each(function(role, b) sim.call("BotJobs", "onHeard", b, cameren, text, channel) end)
+		end
+
+		-- 1. A duel in the group: the medic heals neither side (then, with the duel over, both)
+		local t = nowMs()
+		ranger.noRegen, cameren.noRegen = true, true
+		ranger:pool(HEALTH).cur = math.floor(ranger:getMaxHAM(HEALTH) * 0.3)
+		cameren:pool(HEALTH).cur = math.floor(cameren:getMaxHAM(HEALTH) * 0.3)
+		ranger.duelWith, cameren.duelWith = cameren.oid, ranger.oid
+		BotFight:begin(ranger, ranger.oid, cameren, 2)
+		sim.run(15)
+		if #okCommands(medic, "healdamage", t) > 0 then
+			local who = {}
+			for _, c in ipairs(okCommands(medic, "healdamage", t)) do who[#who + 1] = tostring(ctx.objects[c.target] and ctx.objects[c.target].first) end
+			fail("crewfix: the medic healed while the ranger duelled Cameren (" .. table.concat(who, ",") .. ")")
+		end
+		ranger.duelWith, cameren.duelWith = nil, nil
+		BotFight:finish(ranger, ranger.oid, "ended", true)
+		dropFromCombat(ranger)
+		dropFromCombat(cameren)
+		t = nowMs()
+		sim.run(15)
+		if #okCommands(medic, "healdamage", t) < 2 then
+			fail("crewfix: the medic didn't heal once the duel was over")
+		end
+		ranger.noRegen, cameren.noRegen = false, false
+		sim.run(10)
+		-- ...and a member's duel with a player outside the group (the member's defender is a player)
+		local dux = makeHuman("Dux", cameren.x + 30, cameren.y)
+		cameren.noRegen = true
+		cameren:pool(HEALTH).cur = math.floor(cameren:getMaxHAM(HEALTH) * 0.3)
+		startCombat(cameren, dux)
+		t = nowMs()
+		sim.run(10)
+		local healed = 0
+		for _, c in ipairs(okCommands(medic, "healdamage", t)) do
+			if c.target == cameren.oid then healed = healed + 1 end
+		end
+		if healed > 0 then
+			fail("crewfix: the medic healed Cameren in a duel with a player outside the group")
+		end
+		dropFromCombat(cameren)
+		dropFromCombat(dux)
+		cameren.noRegen = false
+		sim.run(15)
+
+		-- 2. Self-defence: a creature goes for Cameren, who doesn't fight back; and one for the medic, who is busy
+		-- healing: the rest of the crew fight them without the leader striking first
+		local kreetle = makeMob("a kreetle", cameren.x + 15, cameren.y, 3000)
+		t = nowMs()
+		startCombat(kreetle, cameren)
+		kreetle.aggro = cameren.oid
+		sim.run(8)
+		local defenders = 0
+		each(function(role, b)
+			if engaged(b, kreetle.oid, t) then defenders = defenders + 1 end
+		end)
+		if defenders < 3 then
+			fail("crewfix: only " .. defenders .. " of the crew defended Cameren, who didn't fight back")
+		end
+		sim.run(30)
+		local rat = makeMob("a womp rat", medic.x + 12, medic.y, 3000)
+		medic.noRegen = true
+		medic:pool(HEALTH).cur = math.floor(medic:getMaxHAM(HEALTH) * 0.3)
+		t = nowMs()
+		startCombat(rat, medic)
+		rat.aggro = medic.oid
+		sim.run(8)
+		for _, b in ipairs({tank, rifleman, ranger}) do
+			if not engaged(b, rat.oid, t) then
+				fail("crewfix: the " .. b.role .. " didn't defend the medic")
+			end
+		end
+		medic.noRegen = false
+		sim.run(40)
+
+		-- 3. Spatial talk on a hunt: not named, not targeted, within 20 m: exactly one crew bot answers, as in group chat,
+		-- the hunt log gets the line once; the order reaches the others; far away or aimed at someone else it is ignored
+		cameren.target = nil
+		each(function(role, b) b.x, b.y = cameren.x + 4, cameren.y + 2 end)
+		sim.run(5)
+		t = nowMs()
+		hear("hold up a second", "spatial")
+		sim.run(4)
+		local said = entries(log.group, nil, t)
+		if #said ~= 1 or said[1].bot ~= tank.oid or not isLine(said[1].text, "tank", "stay") then
+			fail("crewfix: spatial 'hold up' got " .. #said .. " lines" .. (said[1] and (" (" .. said[1].text .. ")") or ""))
+		end
+		each(function(role, b)
+			if readStringData("bot:" .. b.oid .. ":crew:order") ~= "stay" then
+				fail("crewfix: the " .. role .. " didn't take the spoken 'stay'")
+			end
+		end)
+		if count(huntLog(), "hold up a second") ~= 1 then
+			fail("crewfix: the hunt log has the spoken line " .. count(huntLog(), "hold up a second") .. " times")
+		end
+		t = nowMs()
+		hear("follow me", "spatial")
+		sim.run(6)
+		each(function(role, b)
+			if readStringData("bot:" .. b.oid .. ":crew:order") ~= "follow" then
+				fail("crewfix: the " .. role .. " didn't take the spoken 'follow'")
+			end
+		end)
+		-- Too far from the crew
+		cameren.x = cameren.x + 40
+		t = nowMs()
+		hear("hold up a second", "spatial")
+		sim.run(3)
+		if #entries(log.group, nil, t) ~= 0 then
+			fail("crewfix: the crew answered talk from 40 m away")
+		end
+		cameren.x = cameren.x - 40
+		sim.run(10)
+		-- Talking to someone else (a target outside the group)
+		local stranger = makeHuman("Zed", cameren.x + 6, cameren.y)
+		cameren.target = stranger.oid
+		t = nowMs()
+		hear("hold up a second", "spatial")
+		sim.run(3)
+		cameren.target = nil
+		if #entries(log.group, nil, t) ~= 0 then
+			fail("crewfix: the crew butted into talk aimed at someone else")
+		end
+		-- Talking to one crew member (targeting it): it answers alone, the others do not take it as group talk
+		cameren.target = rifleman.oid
+		t = nowMs()
+		hear("hold up a second", "spatial")
+		sim.run(3)
+		cameren.target = nil
+		local aimed = entries(log.group, nil, t)
+		if #aimed > 1 or (aimed[1] and aimed[1].bot ~= rifleman.oid) then
+			fail("crewfix: talk aimed at the rifleman got " .. #aimed .. " answers")
+		end
+		sim.run(6)
+		groupSay(cameren, "follow me")
+		sim.run(6)
+		-- The ranger further off (22 m): it hears "skin them" and answers, since the work is its; at 40 m it doesn't hear it
+		-- and another crew member takes the request
+		ranger.x, ranger.y = cameren.x + 22, cameren.y
+		ranger.noFollow = true
+		t = nowMs()
+		hear("skin them", "spatial")
+		sim.run(3)
+		local far = entries(log.group, nil, t)
+		if #far ~= 1 or far[1].bot ~= ranger.oid then
+			fail("crewfix: 'skin them' with the ranger 22 m off got " .. #far .. " answers" .. (far[1] and (" from " .. ctx.objects[far[1].bot].first) or ""))
+		end
+		sim.run(4)
+		ranger.x = cameren.x + 40
+		t = nowMs()
+		hear("skin them", "spatial")
+		sim.run(3)
+		far = entries(log.group, nil, t)
+		if #far ~= 1 or far[1].bot ~= tank.oid or not (isLine(far[1].text, "tank", "harvestAsk") or isLine(far[1].text, "tank", "harvestAskNone")) then
+			fail("crewfix: 'skin them' with the ranger 40 m off got " .. #far .. " answers" .. (far[1] and (" from " .. ctx.objects[far[1].bot].first .. ": " .. far[1].text) or ""))
+		end
+		ranger.x, ranger.noFollow = cameren.x + 4, nil
+		sim.run(8)
+		-- Naming someone else who is near (the town doctor)
+		local doc = ctx.newObject({isPlayer = true, first = "Veela", name = "Veela Dane", planet = "tatooine",
+			x = cameren.x + 5, y = cameren.y, z = 5, cell = 0, inWorld = true, buffs = {}, wounds = {}, skillMods = {}})
+		t = nowMs()
+		hear("Veela, can I get a buff?", "spatial")
+		sim.run(3)
+		doc.inWorld = false
+		if #entries(log.group, nil, t) ~= 0 then
+			fail("crewfix: the crew answered a line that named the town doctor")
+		end
+		-- Someone not in the group
+		t = nowMs()
+		each(function(role, b) sim.call("BotJobs", "onHeard", b, stranger, "hold up a second", "spatial") end)
+		sim.run(3)
+		if #entries(log.group, nil, t) ~= 0 then
+			fail("crewfix: the crew answered a stranger's spoken talk as group talk")
+		end
+
+		-- 4. Camp search: a straight line away from the lair, quick
+		cameren.x, cameren.y = cameren.x + 500, cameren.y + 500
+		sim.run(20)
+		ctx.campLair = {x = cameren.x, y = cameren.y, r = 50}
+		t = nowMs()
+		groupSay(cameren, "camp here")
+		sim.run(90)
+		local placed = entries(log.camps, ranger, t)
+		local refusals = entries(log.campRefusals, ranger, t)
+		if #placed ~= 1 then
+			fail("crewfix: " .. #placed .. " camps after a camp search")
+			teardown()
+			return
+		end
+		local camp = ctx.objects[placed[1].oid]
+		if placed[1].t - t > 45000 then
+			fail("crewfix: the camp search took " .. (placed[1].t - t) // 1000 .. " s")
+		end
+		if #refusals > 5 then
+			fail("crewfix: " .. #refusals .. " refused spots in a camp search")
+		end
+		-- Every try lies on one ray from the lair
+		local bearings = {}
+		for _, r in ipairs(refusals) do
+			if math.sqrt((r.x - ctx.campLair.x) ^ 2 + (r.y - ctx.campLair.y) ^ 2) > 8 then
+				table.insert(bearings, math.atan(r.x - ctx.campLair.x, r.y - ctx.campLair.y))
+			end
+		end
+		table.insert(bearings, math.atan(camp.x - ctx.campLair.x, camp.y - ctx.campLair.y))
+		for i = 2, #bearings do
+			local d = math.abs(bearings[i] - bearings[1])
+			if d > math.pi then d = 2 * math.pi - d end
+			if d > math.rad(12) then
+				fail(string.format("crewfix: the camp search turned (%.0f degrees off its line)", math.deg(d)))
+			end
+		end
+		if math.sqrt((camp.x - ctx.campLair.x) ^ 2 + (camp.y - ctx.campLair.y) ^ 2) <= 50 then
+			fail("crewfix: the camp is inside the lair's radius")
+		end
+		-- With the blocker unknown: still a single straight direction
+		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
+		ctx.campLair = nil
+		groupSay(cameren, "follow me")
+		sim.run(60)
+		t = nowMs()
+		ctx.campLair = {x = ranger.x, y = ranger.y, r = 50, unknown = true}
+		groupSay(cameren, "camp here")
+		sim.run(90)
+		placed = entries(log.camps, ranger, t)
+		if #placed ~= 1 then
+			fail("crewfix: " .. #placed .. " camps with an unknown blocker")
+		end
+		ctx.campLair = nil
+		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
+		groupSay(cameren, "follow me")
+		sim.run(60)
+
+		-- 5. After a fight, the crew finds the group's other corpses around (not on any kill list); a corpse of another group
+		-- stays
+		local function corpse(name, ownerGroup, loot, harvest, dx, dy)
+			local mob = makeMob(name, cameren.x + dx, cameren.y + dy, 100)
+			mob.dead, mob.ownerGroup, mob.loot, mob.credits, mob.harvest = true, ownerGroup, loot, 0, harvest
+			return mob
+		end
+		local function goodsCount(b) return #(b.goods or {}) end
+		local old = corpse("a dewback", gid, {"Dewback tooth"}, {kind = "hide", amount = 30, class = "Tatooinian Leathery Hide"}, 25, 5)
+		local theirs = corpse("a bantha", 999, {"Bantha horn"}, nil, 20, 10)
+		local fodder = makeMob("a womp rat", cameren.x + 10, cameren.y + 6, 300)
+		fodder.ownerGroup, fodder.loot, fodder.credits = gid, {"Rat tooth"}, 0
+		t = nowMs()
+		attack(cameren, fodder)
+		sim.run(60)
+		if not fodder.dead then
+			fail("crewfix: the womp rat didn't die")
+		end
+		if #entries(log.loots, nil, t) < 2 or #old.loot ~= 0 or not (old.harvested or {})[ranger.oid] then
+			fail("crewfix: the corpse the crew hadn't fought wasn't looted and harvested after the fight (" ..
+				#entries(log.loots, nil, t) .. " loot calls, " .. #old.loot .. " items left)")
+		end
+		if #theirs.loot ~= 1 then
+			fail("crewfix: the crew took another group's loot")
+		end
+
+		-- 6. Asked to loot and harvest: corpses it gave up on come back; "skin them" in group chat, "loot the bodies" out loud
+		local function fresh(name, harvestable, item)
+			return corpse(name, gid, {item, "Odd bone"}, harvestable and {kind = "meat", amount = 60, class = "Tatooinian Herbivore Meat"} or nil, 18, 3)
+		end
+		local stale = fresh("a bantha", true, "Hide scrap")
+		writeData("crew:corpse:" .. stale.oid .. ":seen", 1)
+		writeData("crew:corpse:" .. stale.oid .. ":done", 1)
+		t = nowMs()
+		groupSay(cameren, "ranger skin them")
+		sim.run(25)
+		if #entries(log.harvests, ranger, t) < 1 or not stale.harvested or not stale.harvested[ranger.oid] then
+			fail("crewfix: 'skin them' didn't harvest the corpse")
+		end
+		local named = false
+		for _, l in ipairs(entries(log.group, ranger, t)) do
+			if isLine(l.text, "ranger", "harvestedOne") and l.text:find("60 Tatooinian Herbivore Meat", 1, true) and l.text:find("bantha", 1, true) then named = true end
+		end
+		if not named then
+			fail("crewfix: the ranger didn't name what it skinned")
+		end
+		local stale2 = fresh("a dewback", false, "Dewback scrap")
+		writeData("crew:corpse:" .. stale2.oid .. ":seen", 1)
+		writeData("crew:corpse:" .. stale2.oid .. ":done", 1)
+		t = nowMs()
+		hear("loot the bodies", "spatial")
+		sim.run(30)
+		if #stale.loot ~= 0 or #stale2.loot ~= 0 then
+			fail("crewfix: 'loot the bodies' (out loud) left " .. #stale.loot + #stale2.loot .. " items on the corpses")
+		end
+		local lootLines = 0
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if (isLine(l.text, "tank", "lootedOne") or isLine(l.text, "tank", "lootedMany")) and l.text:find("scrap", 1, true) then lootLines = lootLines + 1 end
+		end
+		if lootLines ~= 1 or not anyLine(entries(log.group, tank, t), "tank", "lootAsk") then
+			fail("crewfix: " .. lootLines .. " lines naming the loot, or no answer to the request")
+		end
+
+		-- 7. Many corpses: one line for the harvest and one for the loot, not one per corpse
+		for i = 1, 3 do
+			corpse("a rock wart", gid, {"Wart tooth " .. i, "Wart horn " .. i}, {kind = "bone", amount = 10 * i, class = "Tatooinian Bone"}, 12 + i * 2, 8)
+		end
+		t = nowMs()
+		groupSay(cameren, "ranger harvest them all")
+		groupSay(cameren, "loot the bodies")
+		sim.run(60)
+		local harvestLines, manyLoot = 0, 0
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if isLine(l.text, "ranger", "harvestedMany") and l.text:find("60 Tatooinian Bone", 1, true) then harvestLines = harvestLines + 1 end
+			if isLine(l.text, "tank", "lootedMany") or isLine(l.text, "rifleman", "lootedMany") or isLine(l.text, "medic", "lootedMany") then
+				manyLoot = manyLoot + 1
+			end
+		end
+		local harvests = #entries(log.harvests, ranger, t)
+		if harvests ~= 3 or harvestLines ~= 1 then
+			fail("crewfix: " .. harvests .. " harvests and " .. harvestLines .. " lines for three carcasses")
+		end
+		if manyLoot ~= 1 then
+			fail("crewfix: " .. manyLoot .. " lines for the loot of three corpses")
+		end
+
+		-- 8. Nothing left: asked again, it says so
+		t = nowMs()
+		groupSay(cameren, "loot")
+		sim.run(5)
+		if not anyLine(entries(log.group, nil, t), "tank", "lootAskNone") then
+			fail("crewfix: no 'nothing left' line")
+		end
+
+		-- 9. The hunt's events: kills, a death, a camp, missions taken and done (and one dropped), and the tally
+		sim.call("BotJobs", "onEvent", rifleman, "died", kreetle, "")
+		sim.run(2)
+		local log9 = huntLog()
+		if not log9:find("(hunt)", 1, true) or not log9:find("Killed ", 1, true) or not log9:find(rifleman.first .. " died", 1, true) then
+			fail("crewfix: the hunt log lacks kills or the death:\n" .. log9)
+		end
+		local fields = BotCrew:requestFields(ranger, ranger.oid)
+		local tally = fields.huntTally or ""
+		if not tally:find("kills", 1, true) or not tally:find("corpses looted", 1, true) or not tally:find("camp", 1, true) or
+			not tally:find("crew death", 1, true) or not tally:find("harvested", 1, true) then
+			fail("crewfix: the hunt tally: '" .. tally .. "'")
+		end
+		-- Missions: taken (as a bot records it when it accepts), then one leaves the datapad with its lair having been up
+		-- (done), one without a lair ever (failed), one is dropped by the bot
+		tank.missions = {{oid = 777001, target = "womp rat lair", reward = 4300, x = 0, y = 0, distance = 1800, lairUp = true},
+			{oid = 777002, target = "gurnaset lair", reward = 3100, x = 0, y = 0, distance = 1500, lairUp = false}}
+		writeStringData("crew:mission:777001:text", "womp rat lair")
+		writeStringData("crew:mission:777002:text", "gurnaset lair")
+		BotCrew:missionHeldSet(tank, tank.oid)
+		sim.run(8)
+		tank.missions = {tank.missions[2]}
+		sim.run(8)
+		if count(huntLog(), "Lair destroyed") ~= 1 or not huntLog():find("womp rat lair", 1, true) then
+			fail("crewfix: a finished mission wasn't logged as a lair destroyed:\n" .. huntLog())
+		end
+		tally = BotCrew:requestFields(ranger, ranger.oid).huntTally or ""
+		if not tally:find("1 lair done, 1 mission left", 1, true) then
+			fail("crewfix: the tally after a mission: '" .. tally .. "'")
+		end
+		tank.missions = {}
+		sim.run(8)
+		if count(huntLog(), "Lair destroyed") ~= 1 or count(huntLog(), "gurnaset lair mission failed") ~= 1 then
+			fail("crewfix: a mission removed with no lair should be logged as failed, not done:\n" .. huntLog())
+		end
+		tally = BotCrew:requestFields(ranger, ranger.oid).huntTally or ""
+		if not tally:find("1 lair done, 0 missions left", 1, true) then
+			fail("crewfix: the tally after a failed mission: '" .. tally .. "'")
+		end
+		tank.missions = {{oid = 777003, target = "kreetle lair", reward = 2000, x = 0, y = 0, distance = 900, lairUp = true}}
+		BotCrew:missionHeldSet(tank, tank.oid)
+		BotCrew:missionDrop(tank, tank.oid, "Cameren")
+		tank.missions = {}
+		sim.run(12)
+		if count(huntLog(), "Lair destroyed") ~= 1 then
+			fail("crewfix: a dropped mission was counted as done")
+		end
+
+		realPrint(string.format("crewfix  %d loot calls, %d harvests, %d camps, %d group lines; tally: %s", #log.loots, #log.harvests,
+			#log.camps, #log.group, BotCrew:requestFields(ranger, ranger.oid).huntTally or ""))
 		teardown()
 	end
 
@@ -2313,13 +2782,20 @@ return function(ctx)
 		end
 		local said = {}
 		for _, l in ipairs(log.group) do said[#said + 1] = l.text end
+		-- What they got, said in group chat: the ranger names the harvest, the looter the items (and the credits)
 		local sawLooted, sawHarvested = false, false
 		for _, l in ipairs(log.group) do
-			if isLine(l.text, "tank", "looted") or isLine(l.text, "rifleman", "looted") or isLine(l.text, "medic", "looted") then sawLooted = true end
-			if isLine(l.text, "ranger", "harvested") then sawHarvested = true end
+			if (isLine(l.text, "tank", "lootedOne") or isLine(l.text, "rifleman", "lootedOne") or isLine(l.text, "medic", "lootedOne")) and
+				l.text:find("womp rat", 1, true) and l.text:find("Rat tooth", 1, true) and l.text:find("Credit chit", 1, true) and
+				l.text:find("120 credits", 1, true) then
+				sawLooted = true
+			end
+			if isLine(l.text, "ranger", "harvestedOne") and l.text:find("womp rat", 1, true) and l.text:find("40 Tatooinian Mammalian Hide", 1, true) then
+				sawHarvested = true
+			end
 		end
 		if not sawLooted or not sawHarvested then
-			fail("crewloot: no group line for the loot or the harvest")
+			fail("crewloot: no group line naming the loot or the harvest (" .. table.concat(said, " | ") .. ")")
 		end
 		-- (the rest of the crew went back to following)
 		each(function(role, b)
@@ -2503,7 +2979,7 @@ return function(ctx)
 		realPrint(string.format("crewloot %d loot calls, %d harvests, %d trades offered, %d items handed to the player", looted, harvests,
 			offered, sim.handedTotal or 0))
 		for _, l in ipairs(log.group) do
-			if l.text:find("trade", 1, true) or isLine(l.text, "ranger", "harvested") then
+			if l.text:find("trade", 1, true) or isLine(l.text, "ranger", "harvestedOne") then
 				realPrint("         " .. ctx.objects[l.bot].first .. ": " .. l.text)
 				break
 			end
@@ -2516,4 +2992,5 @@ return function(ctx)
 	table.insert(order, "crewmissions")
 	table.insert(order, "crewswoop")
 	table.insert(order, "crewloot")
+	table.insert(order, "crewfix")
 end

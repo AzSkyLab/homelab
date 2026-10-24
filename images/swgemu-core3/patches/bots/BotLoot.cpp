@@ -207,11 +207,16 @@ bool BotLoot::lootCorpse(CreatureObject* bot, uint64 corpseOid, BotLootResult& o
 		TransactionLog trx(corpse, bot, item, TrxCode::NPCLOOTCLAIM);
 		trx.setTrxGroup(trxGroup);
 
+		String itemName = item->getDisplayedName();
+
 		TransferItemMiscCommand::doTransferItemMisc(bot, item, botInventory, -1, trx);
 
 		if (botInventory->hasObjectInContainer(itemOid)) {
 			goods.put(itemOid);
 			out.moved++;
+
+			if (out.names.size() < NAMES_KEPT)
+				out.names.add(itemName);
 		}
 	}
 
@@ -232,6 +237,70 @@ bool BotLoot::lootCorpse(CreatureObject* bot, uint64 corpseOid, BotLootResult& o
 	}
 
 	return true;
+}
+
+void BotLoot::corpsesNear(CreatureObject* bot, SceneObject* center, float range, Vector<Reference<BotCorpseInfo*>>& out) {
+	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot))
+		return;
+
+	if (center == nullptr)
+		center = bot;
+
+	Zone* zone = center->getZone();
+	uint64 groupId = bot->getGroupID();
+
+	if (zone == nullptr || groupId == 0 || range <= 0)
+		return;
+
+	if (range > 128)
+		range = 128;
+
+	// World coordinates: indoors or mounted, the position is relative to a cell or a vehicle
+	Vector3 at = center->getWorldPosition();
+
+	SortedVector<ManagedReference<TreeEntry*>> objects(512, 512);
+	zone->getInRangeObjects(at.getX(), at.getZ(), at.getY(), range, &objects, true);
+
+	VectorMap<float, Reference<BotCorpseInfo*>> found;
+	found.setAllowDuplicateInsertPlan();
+
+	for (int i = 0; i < objects.size(); ++i) {
+		SceneObject* object = static_cast<SceneObject*>(objects.get(i).get());
+
+		if (object == nullptr || !object->isAiAgent() || object->isPlayerCreature())
+			continue;
+
+		AiAgent* corpse = object->asAiAgent();
+
+		if (corpse == nullptr || !corpse->isDead() || corpse->isPet() || corpse->getZone() == nullptr)
+			continue;
+
+		SceneObject* inventory = corpse->getSlottedObject("inventory");
+
+		if (inventory == nullptr || inventory->getContainerPermissions()->getOwnerID() != groupId)
+			continue;
+
+		Reference<BotCorpseInfo*> info = new BotCorpseInfo();
+		info->oid = corpse->getObjectID();
+		info->distance = center->getDistanceTo(corpse);
+		info->items = inventory->getContainerObjectsSize();
+		info->credits = corpse->getCashCredits();
+		info->name = corpse->getDisplayedName();
+
+		if (corpse->isCreature()) {
+			Creature* creature = static_cast<Creature*>(corpse);
+
+			info->harvest = creature->hasOrganics() && creature->getDnaState() != CreatureManager::DNADEATH;
+		}
+
+		if (info->items == 0 && info->credits == 0 && !info->harvest)
+			continue;
+
+		found.put(info->distance, info);
+	}
+
+	for (int i = 0; i < found.size() && i < CORPSES_MAX; ++i)
+		out.add(found.elementAt(i).getValue());
 }
 
 bool BotLoot::harvest(CreatureObject* bot, uint64 corpseOid, const String& kind, BotHarvestResult& out) {

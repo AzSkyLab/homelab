@@ -48,6 +48,10 @@ local function num(s)
 	return tonumber(s or "")
 end
 
+local function mkey(missionOid, field)
+	return "crew:mission:" .. missionOid .. ":" .. field
+end
+
 local function bot(name, ...)
 	local fn = _G[name]
 
@@ -269,6 +273,8 @@ function BotCrew:missionClear(oid)
 	end
 
 	deleteStringData(ckey(oid, "mState"))
+	deleteStringData(ckey(oid, "mHeld"))
+	deleteData(ckey(oid, "mHeldN"))
 	deleteStringData(ckey(oid, "mName"))
 	deleteStringData(ckey(oid, "mDirName"))
 end
@@ -476,6 +482,15 @@ function BotCrew:missionTake(pBot, oid, terminal, picks, now)
 	local word = COUNT_WORDS[#taken + 1] or tostring(#taken)
 
 	print("BotJobs: " .. self:name(oid) .. " took " .. #taken .. " mission(s) " .. dirName .. ": " .. table.concat(parts, "; "))
+
+	-- Remembered for the hunt: what each is (so its completion can be told), and that the bot holds them now
+	for _, m in ipairs(taken) do
+		writeStringData(mkey(m.oid, "text"), (tostring(m.target or "lair"):gsub("[%%|]", "")))
+	end
+
+	self:missionHeldSet(pBot, oid)
+	self:huntEvent(pBot, self:firstName(pBot) .. " took " .. #taken .. " destroy mission" .. (#taken == 1 and "" or "s") .. " " ..
+		dirName .. ": " .. table.concat(parts, "; "))
 	self:groupSay(pBot, oid, "missionTook", name, {dir = dirName, count = word, Count = word:sub(1, 1):upper() .. word:sub(2),
 		lairs = #taken == 1 and "lair" or "lairs", list = table.concat(parts, "; ")})
 end
@@ -492,6 +507,13 @@ function BotCrew:missionDrop(pBot, oid, name)
 	local aborted, why = bot("botMissionAbort", pBot)
 
 	aborted = aborted or 0
+
+	-- (dropped on purpose: not a completion)
+	self:missionHeldSet(pBot, oid)
+
+	if aborted > 0 then
+		self:huntEvent(pBot, self:firstName(pBot) .. " dropped " .. aborted .. " mission" .. (aborted == 1 and "" or "s"))
+	end
 
 	-- An errand on its way is over too
 	if readStringData(ckey(oid, "mState")) == "walking" then
@@ -528,6 +550,81 @@ function BotCrew:missionTick(pBot, oid, pLeader, now)
 	return false
 end
 
+-- The destroy missions the bot holds, as a list of oids ("123,456")
+function BotCrew:missionHeldList(pBot)
+	local held = bot("botMissions", pBot) or {}
+	local oids = {}
+
+	for _, m in ipairs(held) do
+		table.insert(oids, tostring(math.floor(m.oid)))
+	end
+
+	return table.concat(oids, ","), #oids
+end
+
+-- What the bot holds now is what it should hold: a mission that goes after this isn't ours to explain
+function BotCrew:missionHeldSet(pBot, oid)
+	local list, n = self:missionHeldList(pBot)
+
+	writeStringData(ckey(oid, "mHeld"), list)
+	put(ckey(oid, "mHeldN"), n)
+end
+
+-- From the bot's loop, in a fight or out of one (every few seconds): has a mission left the datapad without the bot
+-- dropping it? Core3 removes a destroy mission when its lair is destroyed (done), and also when it can't find a spot to
+-- spawn the lair (failed). The lair having been up at a look (lairUp) tells them apart; that is why this runs in fights
+-- too, where a lair spawns and falls without a quiet moment between. One log line each, and a count of the lairs done
+-- for the hunt's tally.
+function BotCrew:missionWatch(pBot, oid, now)
+	if now - readData(ckey(oid, "mWatchAt")) < 4 or botMissions == nil then
+		return
+	end
+
+	put(ckey(oid, "mWatchAt"), now)
+
+	local before = readStringData(ckey(oid, "mHeld"))
+
+	if before == "" then
+		return
+	end
+
+	local held = bot("botMissions", pBot) or {}
+	local list, nowSet = {}, {}
+
+	for _, m in ipairs(held) do
+		local digits = tostring(math.floor(m.oid))
+
+		table.insert(list, digits)
+		nowSet[digits] = true
+
+		if m.lairUp then
+			put(mkey(digits, "lair"), 1)
+		end
+	end
+
+	for digits in before:gmatch("%d+") do
+		if not nowSet[digits] then
+			local text = readStringData(mkey(digits, "text"))
+			local name = text ~= "" and text or "destroy"
+
+			if readData(mkey(digits, "lair")) == 1 then
+				print("BotJobs: " .. self:name(oid) .. "'s mission is done: " .. name)
+				self:huntTallyAdd(pBot, "lairs", 1)
+				self:huntEvent(pBot, "Lair destroyed: " .. self:firstName(pBot) .. "'s " .. name .. " mission is done")
+			else
+				print("BotJobs: " .. self:name(oid) .. "'s mission failed: " .. name)
+				self:huntEvent(pBot, self:firstName(pBot) .. "'s " .. name .. " mission failed (it never got a lair)")
+			end
+
+			deleteStringData(mkey(digits, "text"))
+			deleteData(mkey(digits, "lair"))
+		end
+	end
+
+	writeStringData(ckey(oid, "mHeld"), table.concat(list, ","))
+	put(ckey(oid, "mHeldN"), #list)
+end
+
 -- Out of the group: its waypoints leave the leader's datapad, an errand on its way ends
 function BotCrew:missionLeft(pBot, oid)
 	if readStringData(ckey(oid, "mState")) == "walking" then
@@ -539,6 +636,9 @@ function BotCrew:missionLeft(pBot, oid)
 
 	-- Out of the group, its missions go: a bot's lair could otherwise pay nobody, or be done by the bot alone
 	local count = bot("botMissionAbort", pBot) or 0
+
+	deleteStringData(ckey(oid, "mHeld"))
+	deleteData(ckey(oid, "mHeldN"))
 
 	if count > 0 then
 		print("BotJobs: " .. self:name(oid) .. " drops " .. count .. " mission(s) on leaving the group")

@@ -103,6 +103,8 @@ void pushMissions(lua_State* L, const Vector<Reference<BotMissionInfo*>>& missio
 		setString(L, "direction", info->direction);
 		setString(L, "target", info->target);
 		setInteger(L, "level", info->level);
+		lua_pushboolean(L, info->lairUp);
+		lua_setfield(L, -2, "lairUp");
 
 		lua_rawseti(L, -2, i + 1);
 	}

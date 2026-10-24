@@ -9,6 +9,7 @@
 #include "server/zone/Zone.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
+#include "server/zone/objects/creature/ai/AiAgent.h"
 #include "server/zone/objects/player/PlayerObject.h"
 #include "server/zone/objects/group/GroupObject.h"
 #include "server/zone/objects/structure/StructureObject.h"
@@ -193,7 +194,7 @@ uint64 BotGroup::getCamp(CreatureObject* bot) {
 	return camp != nullptr ? camp->getObjectID() : 0;
 }
 
-uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, String& error) {
+uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, String& error, uint64* blocker) {
 	if (bot == nullptr)
 		return 0;
 
@@ -281,11 +282,19 @@ uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, Strin
 
 			if (object->isCampStructure() && distance <= object->getObjectTemplate()->getNoBuildRadius() + campData->getRadius()) {
 				error = "camp too close";
+
+				if (blocker != nullptr)
+					*blocker = object->getObjectID();
+
 				return 0;
 			}
 
 			if (!object->isCampStructure() && object->isStructureObject() && distance <= 100) {
 				error = "building too close";
+
+				if (blocker != nullptr)
+					*blocker = object->getObjectID();
+
 				return 0;
 			}
 
@@ -298,6 +307,10 @@ uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, Strin
 				for (int j = 0; j < observers.size(); ++j) {
 					if (observers.get(j)->isObserverType(ObserverType::LAIR)) {
 						error = "lair too close";
+
+						if (blocker != nullptr)
+							*blocker = object->getObjectID();
+
 						return 0;
 					}
 				}
@@ -402,6 +415,78 @@ bool BotGroup::removeCamp(CreatureObject* bot) {
 }
 
 // --- Tracking ---
+
+void BotGroup::attackers(CreatureObject* creature, Vector<uint64>& out) {
+	if (creature == nullptr)
+		return;
+
+	ThreatMap* threatMap = creature->getThreatMap();
+
+	if (threatMap == nullptr)
+		return;
+
+	VectorMap<float, uint64> sorted;
+	sorted.setAllowDuplicateInsertPlan();
+
+	for (int i = 0; i < threatMap->size(); ++i) {
+		TangibleObject* attacker = threatMap->elementAt(i).getKey().get();
+
+		if (attacker == nullptr || !attacker->isAiAgent())
+			continue;
+
+		AiAgent* agent = attacker->asAiAgent();
+
+		if (agent == nullptr || agent->isDead() || agent->isIncapacitated() || agent->isPet() || agent->getZone() == nullptr)
+			continue;
+
+		// Still fighting it: a creature that gave up or lost the thread has it no more as a defender
+		if (!agent->isInCombat() || !agent->hasDefender(creature))
+			continue;
+
+		sorted.put(creature->getDistanceTo(agent), agent->getObjectID());
+	}
+
+	for (int i = 0; i < sorted.size(); ++i)
+		out.add(sorted.elementAt(i).getValue());
+}
+
+void BotGroup::peopleNear(SceneObject* center, float range, Vector<Reference<BotTrackEntry*>>& out) {
+	if (center == nullptr || range <= 0)
+		return;
+
+	Zone* zone = center->getZone();
+
+	if (zone == nullptr)
+		return;
+
+	Vector3 at = center->getWorldPosition();
+
+	SortedVector<ManagedReference<TreeEntry*>> objects(256, 256);
+	zone->getInRangeObjects(at.getX(), at.getZ(), at.getY(), range, &objects, true);
+
+	for (int i = 0; i < objects.size() && out.size() < 64; ++i) {
+		SceneObject* object = static_cast<SceneObject*>(objects.get(i).get());
+
+		if (object == nullptr || object == center || !object->isCreatureObject())
+			continue;
+
+		CreatureObject* creature = object->asCreatureObject();
+
+		if (creature == nullptr || creature->isInvisible() || creature->isDead())
+			continue;
+
+		bool player = creature->isPlayerCreature();
+
+		if (!player && (creature->isCreature() || !creature->isNonPlayerCreatureObject()))
+			continue;
+
+		Reference<BotTrackEntry*> entry = new BotTrackEntry();
+		entry->name = creature->getDisplayedName();
+		entry->oid = creature->getObjectID();
+		entry->kind = player ? "player" : "npc";
+		out.add(entry);
+	}
+}
 
 bool BotGroup::track(CreatureObject* bot, int type, Vector<Reference<BotTrackEntry*>>& out, String& error) {
 	if (bot == nullptr)

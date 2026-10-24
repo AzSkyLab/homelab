@@ -215,6 +215,7 @@ void BotLootLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botLootCorpse", botLootCorpse);
 	lua->registerFunction("botHarvest", botHarvest);
 	lua->registerFunction("botGoods", botGoods);
+	lua->registerFunction("botCorpsesNear", botCorpsesNear);
 	lua->registerFunction("botOfferGoods", botOfferGoods);
 	lua->registerFunction("botCancelOffer", botCancelOffer);
 
@@ -238,6 +239,47 @@ int BotLootLua::botLootCorpse(lua_State* L) {
 	setInteger(L, "credits", result.credits);
 	setBoolean(L, "full", result.full);
 	setString(L, "error", result.error);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < result.names.size(); ++i) {
+		lua_pushstring(L, result.names.get(i).toCharArray());
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	lua_setfield(L, -2, "names");
+
+	return 1;
+}
+
+// botCorpsesNear(pBot, range[, pCenter]): array of {oid, distance, items, credits, harvest, name}, nearest first
+int BotLootLua::botCorpsesNear(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	Vector<Reference<BotCorpseInfo*>> found;
+
+	if (bot != nullptr) {
+		SceneObject* center = nullptr;
+
+		if (lua_gettop(L) >= 3 && lua_islightuserdata(L, 3))
+			center = static_cast<SceneObject*>(lua_touserdata(L, 3));
+
+		BotLoot::corpsesNear(bot, center, (float) toOid(L, 2), found);
+	}
+
+	lua_newtable(L);
+
+	for (int i = 0; i < found.size(); ++i) {
+		BotCorpseInfo* info = found.get(i);
+
+		lua_newtable(L);
+		setInteger(L, "oid", info->oid);
+		setInteger(L, "distance", (int) info->distance);
+		setInteger(L, "items", info->items);
+		setInteger(L, "credits", info->credits);
+		setBoolean(L, "harvest", info->harvest);
+		setString(L, "name", info->name);
+		lua_rawseti(L, -2, i + 1);
+	}
 
 	return 1;
 }

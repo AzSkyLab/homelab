@@ -56,6 +56,7 @@ public:
 	String direction;		// "north", "northeast", ...
 	String target;			// what the lair is, as the client shows it ("womp rat lair")
 	int level = 0;			// the difficulty shown to the player
+	bool lairUp = false;	// an accepted mission: its lair has spawned (the objective watches it)
 };
 
 // A waypoint in a player's datapad

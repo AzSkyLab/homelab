@@ -61,8 +61,16 @@ public:
 	static uint64 getInviter(server::zone::objects::creature::CreatureObject* bot);
 
 	// Places a camp from kitTemplate (made in the bot's inventory if it has none), where the bot stands. Returns the
-	// camp's oid (an existing camp's, with error "already camping"), or 0 and why. Locks the bot
-	static uint64 placeCamp(server::zone::objects::creature::CreatureObject* bot, const String& kitTemplate, String& error);
+	// camp's oid (an existing camp's, with error "already camping"), or 0 and why. Locks the bot. When a camp, a
+	// building or a lair is too close, blocker (if given) gets that object's oid
+	static uint64 placeCamp(server::zone::objects::creature::CreatureObject* bot, const String& kitTemplate, String& error,
+		uint64* blocker = nullptr);
+
+	// Who is attacking a creature: the live creatures (never players) in its threat map that fight it, nearest
+	// first. A creature that is attacked has no defender of its own until it hits back (Core3's startCombat only gives
+	// the attacker one), so the main defender alone misses what attacks a bot or a player who isn't fighting back. Pre:
+	// the creature is locked (a Lua event on it)
+	static void attackers(server::zone::objects::creature::CreatureObject* creature, Vector<uint64>& out);
 
 	// Disbands the bot's camp. Locks the bot
 	static bool removeCamp(server::zone::objects::creature::CreatureObject* bot);
@@ -72,6 +80,10 @@ public:
 
 	// The area track: type 0 animals, 1 NPCs, 2 players (as the skills allow), nearest first. Locks the bot
 	static bool track(server::zone::objects::creature::CreatureObject* bot, int type, Vector<Reference<BotTrackEntry*>>& out, String& error);
+
+	// The players (bots included) and the people NPCs (the crowd, vendors; no animals) within range of the centre, by name:
+	// who a spoken line might be for. name, oid and kind ("player" or "npc") are filled in. Reads only
+	static void peopleNear(server::zone::objects::scene::SceneObject* center, float range, Vector<Reference<BotTrackEntry*>>& out);
 
 	// Fairness (patches/0007)
 	static bool isBotPlayer(server::zone::objects::scene::SceneObject* object);

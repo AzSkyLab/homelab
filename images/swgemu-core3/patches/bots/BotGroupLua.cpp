@@ -507,6 +507,8 @@ void BotGroupLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botRemoveCamp", botRemoveCamp);
 	lua->registerFunction("botGetCamp", botGetCamp);
 	lua->registerFunction("botTrack", botTrack);
+	lua->registerFunction("botAttackers", botAttackers);
+	lua->registerFunction("botPeopleNear", botPeopleNear);
 
 	registerDevTable(lua->getLuaState());
 }
@@ -525,16 +527,42 @@ int BotGroupLua::botPlaceCamp(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 	String error = "no bot";
 	uint64 camp = 0;
+	uint64 blocker = 0;
 
 	if (bot != nullptr) {
 		error = "";
-		camp = BotGroup::placeCamp(bot, toString(L, 2), error);
+		camp = BotGroup::placeCamp(bot, toString(L, 2), error, &blocker);
 	}
 
 	lua_pushinteger(L, camp);
 	lua_pushstring(L, error.toCharArray());
+	lua_pushinteger(L, blocker);
 
-	return 2;
+	return 3;
+}
+
+// botAttackers(pCreature): the oids of the live creatures attacking it, nearest first (a bot, or a player: the creature
+// must be locked, i.e. called from an event on it)
+int BotGroupLua::botAttackers(lua_State* L) {
+	lua_newtable(L);
+
+	if (lua_gettop(L) < 1 || !lua_islightuserdata(L, 1))
+		return 1;
+
+	SceneObject* object = static_cast<SceneObject*>(lua_touserdata(L, 1));
+
+	if (object == nullptr || !object->isCreatureObject())
+		return 1;
+
+	Vector<uint64> found;
+	BotGroup::attackers(object->asCreatureObject(), found);
+
+	for (int i = 0; i < found.size() && i < 8; ++i) {
+		lua_pushinteger(L, found.get(i));
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
 }
 
 // botRemoveCamp(pBot)
@@ -551,6 +579,34 @@ int BotGroupLua::botGetCamp(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 
 	lua_pushinteger(L, bot != nullptr ? BotGroup::getCamp(bot) : 0);
+
+	return 1;
+}
+
+// botPeopleNear(pObject, range): array of {name, oid, kind} for the players (bots too) and people NPCs around it
+int BotGroupLua::botPeopleNear(lua_State* L) {
+	lua_newtable(L);
+
+	if (lua_gettop(L) < 1 || !lua_islightuserdata(L, 1))
+		return 1;
+
+	SceneObject* object = static_cast<SceneObject*>(lua_touserdata(L, 1));
+	Vector<Reference<BotTrackEntry*>> found;
+
+	BotGroup::peopleNear(object, (float) toNumber(L, 2, 25), found);
+
+	for (int i = 0; i < found.size(); ++i) {
+		BotTrackEntry* entry = found.get(i);
+
+		lua_newtable(L);
+		lua_pushstring(L, entry->name.toCharArray());
+		lua_setfield(L, -2, "name");
+		lua_pushinteger(L, entry->oid);
+		lua_setfield(L, -2, "oid");
+		lua_pushstring(L, entry->kind.toCharArray());
+		lua_setfield(L, -2, "kind");
+		lua_rawseti(L, -2, i + 1);
+	}
 
 	return 1;
 }

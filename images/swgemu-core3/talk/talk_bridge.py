@@ -27,8 +27,9 @@ Phases 4-6 add the jobs musician, smuggler, tank, rifleman, medic, ranger, mayor
 fights). The model judges the insult and the bridge checks it against the words, as it does the action. Optional
 request fields: "cityInfo" (a player city's news, from botCityInfo) and "cityName", "role" (a citizen's trade),
 "grouped" (the bot is in the player's group), "situation" (a crew bot: where it is and what it's doing, in words),
-"hunt" and "huntLog" (a crew bot on a hunt: the hunt's id, and what everyone said on it; it stands in for the bot's
-own memory, and the action check reads its last lines), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
+"hunt", "huntLog" and "huntTally" (a crew bot on a hunt: the hunt's id, what everyone said and what happened on it,
+"(hunt)" being the events; it stands in for the bot's own memory, and the action check reads its last lines; and the
+hunt's running numbers, e.g. "3 lairs done, 2 missions left, 41 kills"), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
 smuggler's prices; 4000 and 6000 if absent).
 
 Standard library only. Settings come from the environment:
@@ -157,7 +158,7 @@ def swearing(r):
 
 # Bot players: where each job stands, and the actions it may take. Phase 3: doctor, dancer. Phase 4: musician,
 # smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger). Phase 6: a player city's mayor and citizens.
-CREW = ("join", "follow", "stay", "home")
+CREW = ("join", "follow", "stay", "home", "harvest", "loot")
 CREW_JOBS = ("tank", "rifleman", "medic", "ranger")
 CITY_JOBS = ("mayor", "citizen")
 BOT_PLACES = {
@@ -180,7 +181,10 @@ _ENTERTAINER = {"bufftarget": "bufftarget", "buff": "bufftarget", "buffs": "buff
                 "mind buff": "bufftarget", "mindbuff": "bufftarget"}
 _CREW = {"join": "join", "group": "join", "invite": "join", "join group": "join", "follow": "follow",
          "follow me": "follow", "come": "follow", "stay": "stay", "wait": "stay", "hold": "stay", "back off": "stay",
-         "home": "home", "go home": "home", "leave": "home", "dismiss": "home"}
+         "home": "home", "go home": "home", "leave": "home", "dismiss": "home", "loot": "loot", "loot bodies": "loot",
+         "loot corpses": "loot", "loot all": "loot", "loot them": "loot", "looting": "loot", "harvest": "harvest",
+         "skin": "harvest", "skin them": "harvest", "skinning": "harvest", "harvesting": "harvest",
+         "harvest corpses": "harvest", "butcher": "harvest"}
 _RANGER = {"camp": "camp", "place camp": "camp", "rest": "camp", "track": "track", "tracking": "track",
            "scout": "track", "search": "track"}
 ACTION_ALIASES = {
@@ -233,6 +237,14 @@ WORDS = {
         r"rest\?|(let'?s|lets|time to|need( a| to)?|gotta|take a|could use a|we|us) (rest|break|breather)|"
         r"rest (up|here|a (bit|while|minute|sec))|breather|campfire|(drop|throw( down)?|pitch|set up|make|"
         r"put (up|down)|build|plant) (a |the |us a |your )?camp\w*)\b", re.I),
+    # "harvest them", "skin the bantha", "skin them all", "harvest everything"
+    "harvest": re.compile(
+        r"\b(harvest\w*|skin(ning)? ?(them|it|those|these|that|the|all|everything|'?em|up)\b|butcher\w*|"
+        r"carve (them|it|up|the)|process (them|the) (carcass\w*|bod\w+|corpse\w*))", re.I),
+    # "loot the bodies", "loot them", "search the corpses"
+    "loot": re.compile(
+        r"\b(loot\w*|search (the |those |them |all )?(bod\w+|corpses?|carcass\w*)|strip (the |them )?(bod\w+|corpses?))\b",
+        re.I),
     # "what's around?", "find me krayts", "any tuskens nearby?", "track something"
     "track": re.compile(
         r"\b(track\w*|scout (ahead|around|the area|it out)|what'?s (around|out (there|here)|nearby|close by)|"
@@ -268,7 +280,7 @@ REQUEST = re.compile(
     r"buff us|heal us|buff everyone|buff the group)\b", re.I)
 # Commands, said straight out ("follow me", "Varo, stay here", "ok everyone, go home"): the crew's actions count as
 # asked when a clause starts with them, after a word or two of lead-in
-COMMANDS = {"join", "follow", "stay", "home", "camp", "track"}
+COMMANDS = {"join", "follow", "stay", "home", "camp", "track", "harvest", "loot"}
 # ...and the buffers' work, in its imperative shapes only ("heal my wounds", but not "buffs are great")
 COMMAND_WORDS = {
     "buff": re.compile(r"\b((bu+f+|enhance) (me|us|everyone|the group|him|her|them|all|my|up)|(bu+f+|enhance) "
@@ -282,7 +294,7 @@ LEADIN = re.compile(r"^\W*((hey|yo|oi|ok|okay|alright|right|guys|all|everyone|ev
 CLAUSE = re.compile(r"[.!?;,:]+|\b(?:and|then|but)\b", re.I)
 # "I'll follow you", "I'm staying here": the player's own plans, not a command
 SELF = r"\b(i|i'?ll|i will|i'?m|im|i am|we'?ll|we will)\s+(gonna\s+|going to\s+|will\s+|just\s+|can\s+|should\s+)?"
-SELFISH = {"follow", "stay", "home"}
+SELFISH = {"follow", "stay", "home", "harvest", "loot"}
 # "buff?", "doc, buffs?", "enhances pls", "heal wounds?": the request word and little else
 BARE = re.compile(r"^\W*(\w+\W+){0,2}" + r"(bu+f+\w*|buf|enh\w*|wounds?|heals?)" + r"(\W+\w+){0,1}\W*$", re.I)
 # "don't need a buff", "no more buffs", "already buffed" (but not "nah, just buff me")
@@ -618,7 +630,10 @@ class Bridge:
                 '"lfg?", "join me", "can I invite you?", "need a tank"); "follow" when they tell you to follow them or '
                 'come along, or to back off and fall back to them ("follow me", "on me", "let\'s go", "back off"); '
                 '"stay" when they tell you to stay or wait where you are ("stay here", "wait up", "hold position"); '
-                '"home" when they send you home or let you go ("go home", "you can go", "we\'re done for tonight")'
+                '"home" when they send you home or let you go ("go home", "you can go", "we\'re done for tonight"); '
+                '"harvest" when they ask for the creatures to be skinned or harvested ("harvest them", "skin the '
+                'bantha", "skin everything"; the ranger does it); '
+                '"loot" when they ask the crew to loot the bodies ("loot the bodies", "loot them", "loot everything")'
             )
             if job == "medic":
                 actions = (
@@ -729,8 +744,12 @@ class Bridge:
                        f"don't recite it): {HUNTING.get(r.get('city'), '(you know it from experience)')}\n\n")
         if crew and r.get("huntLog"):
             hunting += ("What's been said and done on this hunt so far, by everyone in the group, oldest first (it's "
-                        "the same hunt: remember it, and don't repeat yourself):\n" + str(r.get("huntLog")).strip() +
-                        "\n\n")
+                        "the same hunt: remember it, and don't repeat yourself; lines from (hunt) are things that "
+                        "happened, like kills, missions taken and done, camps and deaths, not anything said):\n" +
+                        str(r.get("huntLog")).strip() + "\n\n")
+        if crew and r.get("huntTally"):
+            hunting += ("The hunt in numbers so far (use them when asked how it's going or how many; don't make up "
+                        "others): " + str(r.get("huntTally")).strip() + ".\n\n")
         if actions:
             act = (f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
                    "you're about to do, not that it's done.\n\n")

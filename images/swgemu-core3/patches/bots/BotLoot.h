@@ -25,6 +25,9 @@ namespace objects {
 namespace creature {
 class CreatureObject;
 }
+namespace scene {
+class SceneObject;
+}
 }
 
 namespace managers {
@@ -37,6 +40,7 @@ public:
 	int moved = 0;			// items now in the bot's inventory
 	int left = 0;			// items still on the corpse (a full inventory, or a refusal)
 	int credits = 0;		// the credits the corpse held, split among the humans in the group
+	Vector<String> names;	// what moved (display names, at most NAMES_KEPT)
 	bool full = false;		// the bot's inventory ran out of room
 	String error;			// when !ok: "no bot", "no corpse", "player corpse", "alive", "not grouped", "not the group's", "too far"
 };
@@ -49,6 +53,17 @@ public:
 	int amount = 0;			// units now in the bot's inventory
 	String resource;		// the resource's class, e.g. "Tatooinian Bone"
 	String error;			// when !ok: "no bot", "no corpse", "not a creature", "alive", "too far", "nothing to harvest", "cannot harvest", "no <kind>", "failed"
+};
+
+// One corpse botCorpsesNear found
+class BotCorpseInfo : public Object {
+public:
+	uint64 oid = 0;
+	float distance = 0;		// metres from the scan's centre
+	int items = 0;			// items still on it
+	int credits = 0;		// credits still on it
+	bool harvest = false;	// a creature with something to harvest (the bot may not have the skill, or may have harvested it)
+	String name;
 };
 
 // One thing in botGoods
@@ -65,9 +80,17 @@ class BotLoot {
 public:
 	static const int MAX_BUNDLE = 20;		// items in one handover trade
 	static const int OFFER_RANGE = 13;		// Core3 refuses a trade at 15 m
+	static const int NAMES_KEPT = 12;		// item names a loot result carries
+	static const int CORPSES_MAX = 40;		// corpses one scan returns
 
 	// Moves everything the bot's group may loot off the corpse into the bot's inventory. Locks the bot and the corpse
 	static bool lootCorpse(server::zone::objects::creature::CreatureObject* bot, uint64 corpseOid, BotLootResult& out);
+
+	// The corpses within range of the centre (the bot itself, or a group mate) that the bot's group may loot or harvest
+	// (Core3's own permission: the loot container's owner is the group; never a player's corpse, never another group's
+	// or player's), with something still on them or to harvest, nearest first. Reads only, locks nothing
+	static void corpsesNear(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::scene::SceneObject* center,
+		float range, Vector<Reference<BotCorpseInfo*>>& out);
 
 	// Harvests the corpse with the bot's own skills. kind: "meat", "hide", "bone", or "" for the one the creature has
 	// most of. Locks the bot and the corpse

@@ -6,11 +6,15 @@
  *                                        off the corpse goes into the bot's inventory (under any loot rule); the
  *                                        credits go through Core3's group split to the humans. error: "no bot",
  *                                        "no corpse", "player corpse", "alive", "not grouped", "not the group's",
- *                                        "too far" (it must be within 16 m)
+ *                                        "too far" (it must be within 16 m). names: the item names that moved (at most 12)
  *   botHarvest(pBot, corpseOid[, kind])  {ok, kind, amount, resource, error}: Core3's own harvest ("meat", "hide",
  *                                        "bone"; default the one the creature has most of). error: "too far" (within
  *                                        7 m), "cannot harvest" (skill, combat, already harvested), "nothing to
  *                                        harvest", "alive", "not a creature", "no corpse"
+ *   botCorpsesNear(pBot, range[, pCenter])  array of {oid, distance, items, credits, harvest, name}, nearest first: the
+ *                                        corpses within range of pCenter (default the bot) that the bot's group may loot
+ *                                        or harvest (Core3's permission: the loot container belongs to the group), with
+ *                                        something on them or to harvest. Reads only
  *   botGoods(pBot)                       array of {oid, name, quantity, resource, tradable}: what the bot holds that
  *                                        isn't its own gear (what it looted, and every resource container)
  *   botOfferGoods(pBot, playerOid)       true, offered, remaining: opens a hand-over trade on the player's client with
@@ -45,6 +49,7 @@ private:
 	static int botLootCorpse(lua_State* L);
 	static int botHarvest(lua_State* L);
 	static int botGoods(lua_State* L);
+	static int botCorpsesNear(lua_State* L);
 	static int botOfferGoods(lua_State* L);
 	static int botCancelOffer(lua_State* L);
 };

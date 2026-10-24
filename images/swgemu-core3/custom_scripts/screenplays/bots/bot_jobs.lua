@@ -473,7 +473,12 @@ function BotJobs:heard(pBot, pSpeaker, text, channel, dev)
 	local module = self:module(job)
 
 	if channel == "spatial" and not dev and not self:addressed(pBot, pSpeaker, text) then
-		return
+		-- A crew bot on a hunt hears its group's humans out loud, nearby, without being named: it's group talk then
+		if module ~= nil and module.spatialGroup ~= nil and module:spatialGroup(pBot, pSpeaker, text) then
+			channel = "group"
+		else
+			return
+		end
 	end
 
 	-- Group chat: answered when the bot is named, or when its job says so (one crew member speaks for the group)

@@ -82,13 +82,46 @@ BotLines.crew = {
 		"Back up. Thanks.",
 		"Up again, thanks.",
 	},
-	-- Looting what the group killed (group chat; {n} items now in the pack)
-	looted = {
-		"Looted it.",
-		"Corpse is picked clean.",
-		"Got what was on it.",
-		"Looted. It's in my pack.",
-		"Searched the body.",
+	-- Looting what the group killed (group chat). One corpse: {creature} (the bare name) and {items} (what came off it,
+	-- "a Tusken Spear, a Power Core and 2 more"); several together: {n} corpses; {credits} (" and 85 credits for the
+	-- group", or nothing) ends the line
+	lootedOne = {
+		"Looted the {creature}: {items}{credits}.",
+		"Searched the {creature}: {items}{credits}.",
+		"Off the {creature}: {items}{credits}.",
+	},
+	lootedMany = {
+		"Looted {n} bodies: {items}{credits}.",
+		"Searched {n} corpses: {items}{credits}.",
+		"Went through {n} bodies: {items}{credits}.",
+	},
+	lootedNothing = {
+		"Nothing worth taking on the {creature}{credits}.",
+		"The {creature} had nothing on it{credits}.",
+	},
+	lootedNothingMany = {
+		"Searched {n} bodies, nothing worth taking{credits}.",
+		"{n} bodies and nothing on them{credits}.",
+	},
+	-- Asked to loot or harvest ({n} corpses found in reach, {name} the player)
+	lootAsk = {
+		"On it, {n} bodies to go through.",
+		"Looting. {n} bodies around here.",
+		"Right, {n} bodies to search.",
+	},
+	lootAskNone = {
+		"Nothing left to loot around here.",
+		"Everything's been searched, {name}.",
+		"No bodies of ours left to search.",
+	},
+	harvestAsk = {
+		"Skinning them. {n} to do.",
+		"On it, {n} carcasses to work.",
+		"Harvesting. {n} to go.",
+	},
+	harvestAskNone = {
+		"Nothing left to skin here, {name}.",
+		"No carcasses left to harvest around here.",
 	},
 	-- Handing the loot over by trade ({goods} is what's in the trade, {name} the player). Accept the window
 	handover = {
@@ -256,11 +289,17 @@ BotLines.medic = {
 }
 
 BotLines.ranger = {
-	-- After harvesting a creature ({amount} units of {what}, a kind of {kind})
-	harvested = {
-		"Skinned it: {amount} {what}.",
-		"Got {amount} {what} off that one.",
-		"{amount} units of {what} from the carcass.",
+	-- After harvesting: {creature} (the bare name) and {what} ("373 Tatooinian Herbivore Meat"); several carcasses:
+	-- {n} of them, {what} the totals
+	harvestedOne = {
+		"Skinned the {creature}: {what}.",
+		"Got {what} off the {creature}.",
+		"Harvested the {creature}: {what}.",
+	},
+	harvestedMany = {
+		"Skinned {n} carcasses: {what}.",
+		"Harvested {n} of them: {what}.",
+		"That's {n} carcasses worked: {what}.",
 	},
 	campUp = {
 		"Camp's up. Sit by the fire a while.",
