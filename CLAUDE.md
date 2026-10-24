@@ -342,7 +342,7 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomains kept on the home IP (`malliefivpn,charknox`) |
-| `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `friend`, SHA-512 hash) | fileshare | Download page password |
+| `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `fucksony`, SHA-512 hash) | fileshare | Download page password |
 | `homelab/swgemu/db-password` | swgemu-secrets (`db-password`) | swgemu | MariaDB `swgemu` user, used by Core3 |
 | `homelab/swgemu/db-root-password` | swgemu-secrets (`db-root-password`) | swgemu | MariaDB root |
 | `homelab/swgemu/db-secret` | swgemu-secrets (`db-secret`) | swgemu | Core3 `DBSecret`, mixed into every account password hash (changing it breaks all logins) |
@@ -667,7 +667,7 @@ kubectl -n swgemu patch serviceaccount default -p '{"imagePullSecrets":[{"name":
 ## File Share (Public Downloads)
 
 A password-protected download page for handing big files (tens of GB) to a friend: `https://charknox.duckdns.org`,
-user `friend`, password `pass homelab/fileshare/password`. Pull only: the friend downloads in a browser, nothing uploads.
+user `fucksony`, password `pass homelab/fileshare/password`. Pull only: the friend downloads in a browser, nothing uploads.
 
 ```
 Browser → USG TCP 443 → traefik-public 10.0.20.83 → Ingress fileshare (class traefik-public) → nginx :8080
@@ -692,9 +692,9 @@ nginx → NFS 10.0.10.11:/mnt/media/fileshare (read-only: the k8s VLAN's export 
 ```bash
 # Recreate the secret
 kubectl create namespace fileshare
-kubectl -n fileshare create secret generic fileshare-auth --from-literal=htpasswd="friend:$(openssl passwd -6 "$(pass homelab/fileshare/password)")"
+kubectl -n fileshare create secret generic fileshare-auth --from-literal=htpasswd="fucksony:$(openssl passwd -6 "$(pass homelab/fileshare/password)")"
 # Test from the LAN (by address: the public IP answers with the USG login page from inside)
-curl -s -o /dev/null -w "%{http_code}\n" -u "friend:$(pass homelab/fileshare/password)" --resolve charknox.duckdns.org:443:10.0.20.83 https://charknox.duckdns.org/
+curl -s -o /dev/null -w "%{http_code}\n" -u "fucksony:$(pass homelab/fileshare/password)" --resolve charknox.duckdns.org:443:10.0.20.83 https://charknox.duckdns.org/
 ```
 
 ## GitHub Actions CI/CD (ARC)
