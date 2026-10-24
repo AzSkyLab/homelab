@@ -21,6 +21,7 @@
 #include "server/zone/managers/collision/PathFinderManager.h"
 #include "server/zone/packets/scene/UpdateTransformMessage.h"
 #include "server/zone/packets/scene/UpdateTransformWithParentMessage.h"
+#include "server/zone/packets/object/DataTransform.h"
 #include "templates/params/creature/CreaturePosture.h"
 
 namespace {
@@ -373,10 +374,25 @@ float pathLength(const Vector3& from, const BotMovePath& path) {
 
 // --- Rules ---
 
-// Walking waits while it sits, lies, performs, is incapacitated or dead, or can't move
+// Walking waits while it sits, lies, performs, is incapacitated or dead, or can't move. (A rider is carried by its
+// vehicle, so riding doesn't pause it)
 bool isPaused(CreatureObject* bot) {
 	return bot->getPosture() != CreaturePosture::UPRIGHT || bot->isIncapacitated() || bot->isDead() || bot->isDancing()
-		|| bot->isPlayingMusic() || !bot->isMovementAllowed() || bot->isFrozen() || bot->isRidingMount();
+		|| bot->isPlayingMusic() || !bot->isMovementAllowed() || bot->isFrozen();
+}
+
+// The vehicle or mount a bot rides outdoors (Phase 7), else nullptr. A rider is a child of its vehicle: the mover
+// moves the two together, as a client's DataTransform does (the rider's position, then updateZone carries the vehicle)
+ManagedReference<SceneObject*> mountOf(CreatureObject* bot) {
+	if (!bot->isRidingMount())
+		return nullptr;
+
+	ManagedReference<SceneObject*> parent = bot->getParent().get();
+
+	if (parent == nullptr || !parent->isCreatureObject() || !(parent->isVehicleObject() || parent->isMount()))
+		return nullptr;
+
+	return parent;
 }
 
 // DataTransformWithParent's checks for stepping into a cell: the building's entry rules and the cell's WALKIN permission
@@ -439,6 +455,12 @@ void place(BotMoveJob* job, CreatureObject* bot, Zone* zone, BotMovePoint& to, c
 	to.local.setZ(z);
 	to.world = to.cell == nullptr ? to.local : toWorld(to.local, to.cell);
 
+	// Riding (outdoors only): the vehicle goes with the rider
+	ManagedReference<SceneObject*> mount;
+
+	if (to.cell == nullptr)
+		mount = mountOf(bot);
+
 	float dx = to.world.getX() - fromWorld.getX();
 	float dy = to.world.getY() - fromWorld.getY();
 
@@ -453,7 +475,16 @@ void place(BotMoveJob* job, CreatureObject* bot, Zone* zone, BotMovePoint& to, c
 	if (to.cell != nullptr) {
 		bot->updateZoneWithParent(to.cell.get(), true, true);
 	} else {
-		bot->updateZone(true, true);
+		if (mount != nullptr) {
+			// updateZone on a rider copies its position, direction and speed to the vehicle and sends the vehicle's
+			// transform (SceneObject::updateVehiclePosition); the vehicle is locked with the bot, as DataTransform does
+			Locker mountLocker(mount, bot);
+
+			bot->updateZone(true, true);
+			bot->updateWorldPosition(false);	// setPosition took the vehicle's place before it moved: now the vehicle's new one
+		} else {
+			bot->updateZone(true, true);
+		}
 
 		ZoneServer* zoneServer = bot->getZoneServer();
 		PlayerManager* playerManager = zoneServer != nullptr ? zoneServer->getPlayerManager() : nullptr;
@@ -477,6 +508,24 @@ void place(BotMoveJob* job, CreatureObject* bot, Zone* zone, BotMovePoint& to, c
 void stopMoving(BotMoveJob* job, CreatureObject* bot, const Vector3* faceWorld) {
 	bot->setCurrentSpeed(0);
 	bot->updateLocomotion();
+
+	ManagedReference<SceneObject*> mount = mountOf(bot);
+
+	if (mount != nullptr) {
+		// A rider stops with its vehicle (speed 0, a full transform of the vehicle); it keeps its heading
+		Locker mountLocker(mount, bot);
+
+		CreatureObject* vehicle = mount->asCreatureObject();
+
+		vehicle->setCurrentSpeed(0);
+		bot->updateWorldPosition(false);
+		bot->incrementMovementCounter();
+		mount->incrementMovementCounter();
+		mount->broadcastMessage(new UpdateTransformMessage(mount), false);
+
+		job->moving = false;
+		return;
+	}
 
 	BotMovePoint here;
 
@@ -516,7 +565,30 @@ void teleportTo(BotMoveJob* job, CreatureObject* bot, const BotMovePoint& point)
 		z = worldFloor(bot, zone, point.local.getX(), point.local.getY(), z, &intersections);
 	}
 
-	bot->teleport(point.local.getX(), z, point.local.getY(), point.cell != nullptr ? point.cell->getObjectID() : 0);
+	ManagedReference<SceneObject*> mount;
+
+	if (point.cell == nullptr)
+		mount = mountOf(bot);
+
+	if (mount != nullptr) {
+		// A rider appears with its vehicle: both get the position (updateZone carries the vehicle), the vehicle's
+		// transform goes out as a teleport's does
+		Locker mountLocker(mount, bot);
+
+		bot->setPosition(point.local.getX(), z, point.local.getY());
+		bot->updateZone(false, false);
+		bot->updateWorldPosition(false);
+		bot->incrementMovementCounter();
+		mount->incrementMovementCounter();
+		mount->broadcastMessage(new DataTransform(mount), true, false);
+
+		Reference<PlayerObject*> riderGhost = bot->getPlayerObject();
+
+		if (riderGhost != nullptr)
+			riderGhost->updateLastValidatedPosition();
+	} else {
+		bot->teleport(point.local.getX(), z, point.local.getY(), point.cell != nullptr ? point.cell->getObjectID() : 0);
+	}
 
 	job->ownTeleportAt = System::getMiliTime();
 	job->placedValid = false;
@@ -1045,6 +1117,7 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 	rememberSeen(job, seen, zone, now);
 
 	bool paused = isPaused(bot);
+	bool rider = mountOf(bot) != nullptr;
 
 	if (!job->together) {
 		// Moved away from the leader by someone else: wait until it's back within 64 m
@@ -1124,8 +1197,18 @@ void tickFollow(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMoveP
 	bool running = remaining > RUN_BEHIND || leaderRunning;
 	float speed = running ? runSpeedOf(bot) : walkSpeedOf(bot);
 
-	if (running && remaining > job->followDist + 3.f)
+	if (rider) {
+		// On a swoop: the vehicle's own speed (the rider's run speed is the vehicle's), matching the leader's speed
+		// when it is near and a little over the vehicle's top speed when it has to catch up
+		float top = runSpeedOf(bot);
+
+		speed = remaining > RUN_BEHIND ? top : Math::min(top, Math::max(leader->getCurrentSpeed(), 2.f));
+
+		if (remaining > job->followDist + 3.f)
+			speed = Math::min(top, speed * CATCH_UP_SPEED);
+	} else if (running && remaining > job->followDist + 3.f) {
 		speed *= CATCH_UP_SPEED;
+	}
 
 	float budget = Math::min(speed * dt, remaining - job->followDist);
 
@@ -1251,7 +1334,8 @@ void tickGoto(BotMoveJob* job, CreatureObject* bot, Zone* zone, const BotMovePoi
 		return;
 	}
 
-	float speed = job->run ? runSpeedOf(bot) : walkSpeedOf(bot);
+	// A rider goes at its vehicle's speed (its run speed is the vehicle's)
+	float speed = job->run || mountOf(bot) != nullptr ? runSpeedOf(bot) : walkSpeedOf(bot);
 	BotMoveResult result = advance(job, bot, zone, here, job->path, nullptr, speed * dt, speed);
 
 	if (result.blocked) {

@@ -23,6 +23,10 @@
  * - Going to a point uses PathFinderManager::findPath once (within one building, outdoors, or in and out of one); across
  *   two buildings it goes out by the first one's exit and in by the second one's entrance. Done: "arrived". Given up
  *   (a door it may not enter, no way on): "stuck".
+ * - Riding (Phase 7, BotVehicle): a bot on a swoop, speeder or mount is a child of its vehicle, and the mover moves the two
+ *   together as a client's DataTransform does (the rider's position, then updateZone carries the vehicle and sends its
+ *   transform), at the rider's run speed, which is the vehicle's. Catching up, appearing behind, stopping and going to
+ *   a point work as on foot, outdoors only.
  * - Moved by someone else (a teleport, cloning): the trail is dropped; a follower more than 64 m from its leader
  *   waits until the leader is back within 64 m or Lua calls botFollow again.
  *

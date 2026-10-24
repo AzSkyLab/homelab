@@ -14,6 +14,10 @@
 -- group with no player left; a duel at home that stops at the player's incap; restart; logout.
 -- crewbrain: group chat through the brain: one request for the group, its order for every crew member; the brain's
 -- camp and track actions; a named bot answering for itself.
+-- crewswoop (Phase 7): the swoops (crew_swoop.lua) against a mock of botMount / botDismount / botMounted / botVehicleOut:
+-- the crew mounts when the leader does and rides at swoop speed, gets off and stores when the leader does, gets off
+-- when attacked or when the leader fights, doesn't mount indoors or when told to stay, and gets off when it leaves
+-- the group.
 
 return function(ctx)
 	local sim, Obj, fail, realPrint = ctx.sim, ctx.Obj, ctx.fail, ctx.realPrint
@@ -64,7 +68,8 @@ return function(ctx)
 	local log = {}
 	local function resetLog()
 		log = {commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {}, stocks = {}, follows = {}, stops = {},
-			moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, tracks = {}, events = {}}
+			moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, tracks = {}, events = {}, mounts = {},
+			dismounts = {}}
 	end
 	resetLog()
 
@@ -558,6 +563,31 @@ return function(ctx)
 		table.insert(log.repairs, {bot = b.oid, t = nowMs()})
 		return 3
 	end
+	-- swoops (BotVehicle): the real ones queue the work on the bot's task; here it takes half a second. A swoop is made
+	-- on first use. Mounting fails indoors, in combat and when not upright, as Core3's mount does
+	function api.botMount(b)
+		if b == nil or not b.online or b.dead or b.riding then return false end
+		table.insert(log.mounts, {bot = b.oid, t = nowMs()})
+		sim.schedule(500, function()
+			if b.dead or b.riding or b.cell ~= 0 or b.inCombat or b.posture == "sitting" then return end
+			b.hasSwoop, b.swoopOut, b.riding = true, true, true
+		end)
+		return true
+	end
+	function api.botDismount(b)
+		if b == nil or not b.online then return false end
+		table.insert(log.dismounts, {bot = b.oid, t = nowMs()})
+		sim.schedule(500, function()
+			b.riding, b.vehicleAttacker = false, nil
+			if not b.inCombat then b.swoopOut = false end	-- storing waits for the end of a fight
+		end)
+		return true
+	end
+	function api.botMounted(p) return p ~= nil and p.riding == true end
+	-- Creatures attack a rider's swoop, not the rider: vehicleAttacker is the oid of whoever is attacking it
+	function api.botMountAttacker(p) return (p ~= nil and p.riding and p.vehicleAttacker) or 0 end
+	function api.botVehicleOut(b) return b ~= nil and b.swoopOut == true end
+	function api.botHasSwoop(b) return b ~= nil and b.hasSwoop == true end
 	-- tradegroup
 	function api.botGetGroupInviter(b) return b ~= nil and b.inviter or 0 end
 	function api.botPlaceCamp(b, kit)
@@ -602,15 +632,15 @@ return function(ctx)
 					if m.state == "follow" then
 						local leader = ctx.objects[m.leader]
 						if leader ~= nil and leader.planet == o.planet then
-							o.cell = leader.cell
+							if not o.pinCell then o.cell = leader.cell end
 							if dist(o, leader) > 80 then
 								o.x, o.y = leader.x - 10, leader.y
 							else
-								walkToward(o, leader.x, leader.y, 4, 6)
+								walkToward(o, leader.x, leader.y, 4, o.riding and 18 or 6)
 							end
 						end
 					elseif m.state == "goto" then
-						if walkToward(o, m.x, m.y, 0.3, 6) then
+						if walkToward(o, m.x, m.y, 0.3, o.riding and 18 or 6) then
 							o.x, o.y = m.x, m.y
 							o.cell = m.cell or 0
 							o.move = nil
@@ -1559,6 +1589,189 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Scenario: swoops
+
+	function scenarios.crewswoop()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		local sayChance = BotCrewSwoop.sayChance
+		BotCrewSwoop.sayChance = 100
+
+		local function riding(b) return b.riding == true end
+		local function ridersCount()
+			local n = 0
+			each(function(role, b) if riding(b) then n = n + 1 end end)
+			return n
+		end
+		local function mountsSince(t)
+			return #entries(log.mounts, nil, t)
+		end
+
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b) invite(cameren, b, true) end)
+		sim.run(10)
+		if members(cameren) ~= 5 then
+			fail("crewswoop: " .. members(cameren) .. " in the group, expected Cameren and four crew")
+		end
+		-- Out in the open, a little way from the cantina
+		each(function(role, b) b.cell = 0 end)
+		cameren.cell = 0
+		sim.run(15)
+
+		-- 1. The leader on foot: nobody calls a swoop
+		local t = nowMs()
+		cameren.move = {state = "goto", x = cameren.x + 20, y = cameren.y}
+		cameren.speed = 5
+		sim.run(10)
+		cameren.speed = 0
+		if mountsSince(t) > 0 or ridersCount() > 0 then
+			fail("crewswoop: the crew mounted with the leader on foot")
+		end
+
+		-- 2. The leader mounts: every crew bot within range mounts within a few seconds, and says so
+		t = nowMs()
+		cameren.riding = true
+		sim.run(8)
+		if ridersCount() ~= 4 then
+			fail("crewswoop: " .. ridersCount() .. " of four mounted eight seconds after the leader")
+		end
+		each(function(role, b)
+			if #entries(log.mounts, b, t) ~= 1 then
+				fail("crewswoop: the " .. role .. " tried to mount " .. #entries(log.mounts, b, t) .. " times")
+			end
+			if not b.hasSwoop then
+				fail("crewswoop: the " .. role .. " has no swoop")
+			end
+		end)
+		local lines = entries(log.group, nil, t)
+		if #lines ~= 4 or not anyLine(lines, "tank", "swoopMount") then
+			fail("crewswoop: " .. #lines .. " group lines on mounting, expected four of the swoopMount kind")
+		end
+
+		-- 3. Riding: a long ride at swoop speed, and the crew keep up (on foot they would fall 80 m behind)
+		cameren.move = {state = "goto", x = cameren.x + 300, y = cameren.y}
+		cameren.speed = 18
+		sim.run(10)
+		each(function(role, b)
+			if dist(b, cameren) > 14 then
+				fail(string.format("crewswoop: the %s is %.0f m behind the leader's swoop", role, dist(b, cameren)))
+			end
+			if not riding(b) then
+				fail("crewswoop: the " .. role .. " got off on the ride")
+			end
+		end)
+		sim.run(10)
+		cameren.speed = 0
+
+		-- 4. The leader gets off: they get off and store their swoops
+		t = nowMs()
+		cameren.riding = false
+		sim.run(8)
+		if ridersCount() ~= 0 then
+			fail("crewswoop: " .. ridersCount() .. " still riding after the leader got off")
+		end
+		each(function(role, b)
+			if b.swoopOut then fail("crewswoop: the " .. role .. " left its swoop standing") end
+		end)
+		if #entries(log.dismounts, nil, t) ~= 4 then
+			fail("crewswoop: " .. #entries(log.dismounts, nil, t) .. " dismounts, expected four")
+		end
+		if not anyLine(entries(log.group, nil, t), "tank", "swoopOff") then
+			fail("crewswoop: no line on getting off")
+		end
+
+		-- 5. Mount again; a creature attacks the tank: it gets off at once and fights, the others keep riding
+		cameren.riding = true
+		sim.run(8)
+		if ridersCount() ~= 4 then
+			fail("crewswoop: only " .. ridersCount() .. " remounted")
+		end
+		local mob = makeMob("a womp rat", tank.x + 20, tank.y, 600)
+		t = nowMs()
+		tank.vehicleAttacker = mob.oid	-- it goes for the tank's swoop, and the tank isn't "in combat" itself
+		sim.run(4)
+		if riding(tank) then
+			fail("crewswoop: the tank kept riding while its swoop was attacked")
+		end
+		if not anyLine(entries(log.group, tank, t), "tank", "swoopFight") then
+			fail("crewswoop: no line from the tank on getting off to fight")
+		end
+		if not engaged(tank, mob.oid, t) then
+			fail("crewswoop: the tank didn't fight what attacked its swoop")
+		end
+		-- And one attacked directly
+		local mob2 = makeMob("a womp rat", rifleman.x + 20, rifleman.y, 600)
+		startCombat(mob2, rifleman)
+		mob2.aggro = rifleman.oid
+		sim.run(4)
+		if riding(rifleman) then
+			fail("crewswoop: the rifleman kept riding while attacked")
+		end
+		sim.run(60)
+		if not mob.dead or not mob2.dead then
+			fail("crewswoop: the crew didn't defeat the womp rats")
+		end
+		-- The fight is over: the tank stores a swoop left standing or mounts again with the leader
+		sim.run(15)
+		if tank.inCombat then
+			fail("crewswoop: the tank is still in combat")
+		end
+		if not riding(tank) then
+			fail("crewswoop: the tank didn't mount again after the fight")
+		end
+
+		-- 6. Told to stay, the crew doesn't mount; the leader on foot again first
+		cameren.riding = false
+		sim.run(8)
+		groupSay(cameren, "everyone stay here a sec")
+		sim.run(4)
+		t = nowMs()
+		cameren.riding = true
+		sim.run(8)
+		if mountsSince(t) > 0 then
+			fail("crewswoop: the crew mounted while told to stay")
+		end
+		groupSay(cameren, "follow me")
+		sim.run(10)
+		if ridersCount() ~= 4 then
+			fail("crewswoop: only " .. ridersCount() .. " mounted after 'follow me'")
+		end
+
+		-- 7. Indoors: no mount (Core3 refuses; the crew doesn't try)
+		cameren.riding = false
+		sim.run(8)
+		each(function(role, b) if b.swoopOut then fail("crewswoop: the " .. role .. " left its swoop standing") end end)
+		t = nowMs()
+		ranger.cell, ranger.pinCell = 1082877, true
+		cameren.riding = true
+		sim.run(8)
+		if riding(ranger) or #entries(log.mounts, ranger, t) > 0 then
+			fail("crewswoop: the ranger tried to mount indoors")
+		end
+		ranger.cell, ranger.pinCell = 0, nil
+		sim.run(8)
+		if not riding(ranger) then
+			fail("crewswoop: the ranger didn't mount once outdoors")
+		end
+
+		-- 8. Dismissed while riding: it leaves the group, gets off and stores its swoop
+		api.botEnqueue(medic, "leavegroup", 0, "")
+		sim.run(6)
+		if riding(medic) or medic.swoopOut then
+			fail("crewswoop: the medic left the group still on its swoop")
+		end
+
+		each(function(role, b)
+			local r = refused(b, 0, {unarmedlunge2 = true, taunt = true})
+			if #r > 0 then fail("crewswoop: refused " .. r[1]) end
+		end)
+		realPrint(string.format("crewswoop %d mounts, %d dismounts, %d group lines", #log.mounts, #log.dismounts, #log.group))
+		BotCrewSwoop.sayChance = sayChance
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
+	table.insert(order, "crewswoop")
 end
