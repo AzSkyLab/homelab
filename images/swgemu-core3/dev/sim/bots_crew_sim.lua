@@ -580,7 +580,7 @@ return function(ctx)
 	local mw = {}
 	local DIRECTION_NAMES = {"north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"}
 	local function resetMissions()
-		mw = {terminals = {}, lists = {}, refreshes = {}, listAt = {}, listCalls = {}, nextOid = 9000000, accepts = {}, aborts = {},
+		mw = {terminals = {}, lists = {}, refreshes = {}, listAt = {}, listCalls = {}, nextOid = 9000000, done = {}, accepts = {}, aborts = {},
 			syncs = {}}
 	end
 	resetMissions()
@@ -660,6 +660,29 @@ return function(ctx)
 		if b == nil then return nil end
 		local out = {}
 		for _, m in ipairs(b.missions or {}) do table.insert(out, m) end
+		return out
+	end
+	-- Core3 leaves a player in combat on a corpse that another killed; this takes the dead off the list (live ones stay)
+	function api.botDropDeadDefenders(p)
+		if p == nil then return 0 end
+		local kept, dropped = {}, 0
+		for _, oid in ipairs(p.defenders or {}) do
+			local o = ctx.objects[oid]
+			if o == nil or o.dead or not o.inWorld then dropped = dropped + 1 else table.insert(kept, oid) end
+		end
+		if dropped > 0 then
+			p.defenders = kept
+			if #kept == 0 then p.inCombat = false end
+		end
+		return dropped
+	end
+	-- Completed and rewarded missions (patches/0008): mw.done[oid] = true
+	function api.botMissionDone(oid) return mw.done[oid] == true end
+	-- A human's own destroy missions (read-only)
+	function api.botPlayerMissions(p)
+		if p == nil or not p.isPlayer then return nil end
+		local out = {}
+		for _, m in ipairs(p.missions or {}) do table.insert(out, m) end
 		return out
 	end
 	function api.botMissionSync(b, leader)
@@ -1287,7 +1310,7 @@ return function(ctx)
 		dex.target = medic.oid
 		t = nowMs()
 		sim.run(65)
-		speak(medic, dex, "hey, want to come hunt with me?")
+		speak(medic, dex, "want to come hunt? let's go k" .. "ill them")	-- (an attack order to a bot with no group: a join)
 		sim.run(2)
 		local invites = okCommands(medic, "invite", t)
 		if #invites ~= 1 or invites[1].target ~= dex.oid or dex.inviter ~= medic.oid then
@@ -2184,6 +2207,52 @@ return function(ctx)
 			fail("crewfix: the crew answered a stranger's spoken talk as group talk")
 		end
 
+		-- 3b. "attack my target": with nothing targeted the crew says so and stays put; with a creature targeted that
+		-- fights nobody, the whole crew goes for it (nobody is in combat yet); "hold fire" calls them off
+		local mite = makeMob("a rock mite", cameren.x + 20, cameren.y, 9000)
+		cameren.target = nil
+		t = nowMs()
+		groupSay(cameren, "attack my target")
+		sim.run(4)
+		if not anyLine(entries(log.group, tank, t), "tank", "attackNoTarget") then
+			fail("crewfix: 'attack my target' with no target got no 'target something' line")
+		end
+		each(function(role, b)
+			if engaged(b, mite.oid, t) or readData("bot:" .. b.oid .. ":crew:focus") ~= 0 then
+				fail("crewfix: the " .. role .. " attacked with nothing targeted")
+			end
+		end)
+		cameren.target = mite.oid
+		t = nowMs()
+		groupSay(cameren, "attack my target")
+		sim.run(4)
+		if not anyLine(entries(log.group, tank, t), "tank", "attack") then
+			fail("crewfix: 'attack my target' got no attack line from the tank")
+		end
+		each(function(role, b)
+			if not engaged(b, mite.oid, t) then
+				fail("crewfix: the " .. role .. " didn't attack the creature Cameren targeted")
+			end
+		end)
+		sim.run(4)
+		each(function(role, b)
+			if readData("bot:" .. b.oid .. ":crew:focus") ~= mite.oid then
+				fail("crewfix: the " .. role .. " lost its focus on the creature")
+			end
+		end)
+		groupSay(cameren, "hold fire")
+		sim.run(3)
+		each(function(role, b)
+			if readData("bot:" .. b.oid .. ":crew:focus") ~= 0 or readData("bot:" .. b.oid .. ":crew:target") ~= 0 then
+				fail("crewfix: the " .. role .. " kept its focus after 'hold fire'")
+			end
+		end)
+		dropFromCombat(mite)
+		each(function(role, b) dropFromCombat(b) end)
+		mite.inWorld = false
+		cameren.target = nil
+		sim.run(15)
+
 		-- 4. Camp search: a straight line away from the lair, quick
 		cameren.x, cameren.y = cameren.x + 500, cameren.y + 500
 		sim.run(20)
@@ -2356,6 +2425,7 @@ return function(ctx)
 		writeStringData("crew:mission:777002:text", "gurnaset lair")
 		BotCrew:missionHeldSet(tank, tank.oid)
 		sim.run(8)
+		mw.done[777001] = true
 		tank.missions = {tank.missions[2]}
 		sim.run(8)
 		if count(huntLog(), "Lair destroyed") ~= 1 or not huntLog():find("womp rat lair", 1, true) then
@@ -2382,6 +2452,146 @@ return function(ctx)
 		if count(huntLog(), "Lair destroyed") ~= 1 then
 			fail("crewfix: a dropped mission was counted as done")
 		end
+
+		-- 9. The human's own destroy missions count: one done (its lair was up), one failed (it never got one), one held
+		cameren.missions = {{oid = 888001, target = "grizzled dewback lair", reward = 4000, x = 0, y = 0, distance = 900, lairUp = false},
+			{oid = 888002, target = "kreetle lair", reward = 3000, x = 0, y = 0, distance = 700, lairUp = false}}
+		sim.run(6)
+		local lairsKey = "crew:group:" .. cameren.oid .. ":lairs"
+		local lairsBefore = readData(lairsKey)
+		if not BotCrew:huntTally(cameren.oid, BotCrew:group(tank)):find("2 missions left", 1, true) then
+			fail("crewfix: the tally misses the human's two missions: " .. BotCrew:huntTally(cameren.oid, BotCrew:group(tank)))
+		end
+		cameren.missions[1].lairUp = true
+		sim.run(6)
+		mw.done[888001] = true
+		cameren.missions = {cameren.missions[2]}
+		sim.run(8)
+		if readData(lairsKey) ~= lairsBefore + 1 then
+			fail("crewfix: the human's finished mission counted " .. (readData(lairsKey) - lairsBefore) .. " times, expected once")
+		end
+		if count(huntLog(), "Lair destroyed: Cameren's grizzled dewback lair mission is done") ~= 1 then
+			fail("crewfix: the hunt log has the human's lair " .. count(huntLog(), "Lair destroyed: Cameren's grizzled dewback lair mission is done") .. " times")
+		end
+		if not BotCrew:huntTally(cameren.oid, BotCrew:group(tank)):find("1 mission left", 1, true) then
+			fail("crewfix: the tally misses the human's held mission: " .. BotCrew:huntTally(cameren.oid, BotCrew:group(tank)))
+		end
+		cameren.missions = {}
+		sim.run(8)
+		if readData(lairsKey) ~= lairsBefore + 1 or count(huntLog(), "kreetle lair") ~= 0 then
+			fail("crewfix: the human's mission dropped before any lair counted as done or was logged")
+		end
+		-- ...and one dropped with its lair up (re-rolled at a terminal): not a lair destroyed
+		cameren.missions = {{oid = 888003, target = "tusken lair", reward = 2500, x = 0, y = 0, distance = 800, lairUp = true}}
+		sim.run(6)
+		cameren.missions = {}
+		sim.run(8)
+		if readData(lairsKey) ~= lairsBefore + 1 or count(huntLog(), "tusken lair") ~= 0 then
+			fail("crewfix: a mission the human dropped with its lair up counted as a lair destroyed")
+		end
+
+		-- 10. A human left in combat on a corpse another killed: the dead are dropped and combat ends; a live one stays; and
+		-- with the drop missing, a dead-only list isn't a fight for the crew either (so looting goes on)
+		local corpse1 = makeMob("a dead gurnaset", cameren.x + 10, cameren.y, 100)
+		corpse1.dead = true
+		cameren.defenders, cameren.inCombat = {corpse1.oid}, true
+		sim.run(4)
+		if cameren.inCombat or #(cameren.defenders or {}) ~= 0 then
+			fail("crewfix: the human stayed in combat on a corpse")
+		end
+		local live = makeMob("a krayt cub", cameren.x + 15, cameren.y, 90000)
+		cameren.defenders, cameren.inCombat = {corpse1.oid, live.oid}, true
+		live.inCombat = true
+		sim.run(2)
+		if not cameren.inCombat or #(cameren.defenders or {}) ~= 1 or cameren.defenders[1] ~= live.oid then
+			fail("crewfix: the live defender didn't stay on the human's list")
+		end
+		if not BotCrew:groupFighting(BotCrew:group(tank)) then
+			fail("crewfix: a human fighting a live creature isn't a fight")
+		end
+		dropFromCombat(live)
+		live.dead = true
+		each(function(role, b) dropFromCombat(b) end)
+		cameren.defenders, cameren.inCombat = {corpse1.oid}, true
+		local drop = _G.botDropDeadDefenders
+		_G.botDropDeadDefenders = nil
+		sim.run(3)
+		_G.botDropDeadDefenders = drop
+		if BotCrew:groupFighting(BotCrew:group(tank)) then
+			fail("crewfix: a human in combat on a corpse alone counted as a fight")
+		end
+		cameren.defenders, cameren.inCombat = {}, false
+		sim.run(5)
+
+		-- 11. What the Lua takes for an attack order: the orders ("kill" at the start of a clause, a negation just before
+		-- the word) and the talk that is not
+		local KILL = "k" .. "ill"
+		for _, line in ipairs({"attack my target", KILL .. " it", KILL .. "!", "ok guys, " .. KILL .. " the krayt", KILL .. " the tusken",
+			"don't just stand there, " .. KILL .. " it!", "don't let it get away, " .. KILL .. " it", "assist me", "assist", "take it down",
+			"come on, " .. KILL .. " it", "take him out", "nevermind, attack it", "engage", "help me " .. KILL .. " it"}) do
+			if BotCrew:intentFor(line, nil) ~= "attack" then
+				fail("crewfix: '" .. line .. "' should be an attack order, got " .. tostring(BotCrew:intentFor(line, nil)))
+			end
+		end
+		for _, line in ipairs({"did that thing attack the medic?", "take it out of your pack", "don't attack it", "never attack that",
+			"hold fire", "stop attacking", "they attack what I attack", "did you get em all?", "I " .. KILL .. "ed it", 
+			"he attacked me", "can you assist with crafting?", "did the tusken attack the camp?"}) do
+			if BotCrew:intentFor(line, nil) == "attack" then
+				fail("crewfix: '" .. line .. "' is not an attack order")
+			end
+		end
+		if BotCrew:intentFor("hold fire", nil) ~= "follow" or BotCrew:intentFor("stop attacking", nil) ~= "follow" then
+			fail("crewfix: 'hold fire' and 'stop attacking' should still be follow")
+		end
+
+		-- 12. A human shooting a lair (a building, not a creature) is still in a fight
+		local lair = ctx.newObject({display = "a kreetle lair", name = "a kreetle lair", planet = "tatooine", x = cameren.x + 20,
+			y = cameren.y, z = 5, cell = 0, inWorld = true})
+		cameren.defenders, cameren.inCombat = {lair.oid}, true
+		sim.run(4)
+		if not BotCrew:groupFighting(BotCrew:group(tank)) then
+			fail("crewfix: a human attacking a lair isn't a fight")
+		end
+		cameren.defenders, cameren.inCombat = {}, false
+		sim.run(2)
+
+		-- 13. What the brain is told of the speaker's target: its name, or none
+		local dummy = makeMob("a rock mite", cameren.x + 12, cameren.y, 900000)
+		cameren.target = nil
+		if BotCrew:requestFields(tank, tank.oid, cameren.oid).attackTarget ~= "none" then
+			fail("crewfix: the brain isn't told that nothing is targeted")
+		end
+		cameren.target = dummy.oid
+		if BotCrew:requestFields(tank, tank.oid, cameren.oid).attackTarget ~= "a rock mite" then
+			fail("crewfix: the brain isn't told the speaker's target: " .. tostring(BotCrew:requestFields(tank, tank.oid, cameren.oid).attackTarget))
+		end
+		cameren.target = nil
+
+		-- 14. A second human (not the leader) on a swoop whose swoop is attacked (they are not "in combat"): the crew's
+		-- riders get off to help
+		local fenn = makeHuman("Fenn", cameren.x + 5, cameren.y)
+		joinGroup(fenn, tank)
+		sim.run(3)
+		cameren.riding, fenn.riding = true, true
+		sim.run(10)
+		local riders = 0
+		each(function(role, b) if b.riding then riders = riders + 1 end end)
+		if riders == 0 then
+			fail("crewfix: nobody mounted with the human riding (test setup)")
+		end
+		t = nowMs()
+		fenn.vehicleAttacker = dummy.oid
+		sim.run(6)
+		each(function(role, b)
+			if b.riding then
+				fail("crewfix: the " .. role .. " kept riding while a human's swoop was attacked")
+			end
+		end)
+		fenn.vehicleAttacker, fenn.riding, cameren.riding = nil, false, false
+		dropFromCombat(dummy)
+		dummy.dead = true
+		each(function(role, b) dropFromCombat(b) end)
+		sim.run(15)
 
 		realPrint(string.format("crewfix  %d loot calls, %d harvests, %d camps, %d group lines; tally: %s", #log.loots, #log.harvests,
 			#log.camps, #log.group, BotCrew:requestFields(ranger, ranger.oid).huntTally or ""))
@@ -2628,6 +2838,15 @@ return function(ctx)
 		end
 		if not engaged(tank, mob.oid, t) then
 			fail("crewswoop: the tank didn't fight what attacked its swoop")
+		end
+		-- The other riders get off to help the tank (a crew mate is attacked), and fight it
+		for _, b in ipairs({rifleman, medic, ranger}) do
+			if riding(b) then
+				fail("crewswoop: the " .. b.role .. " kept riding while the tank was attacked")
+			end
+		end
+		if not engaged(rifleman, mob.oid, t) or not engaged(ranger, mob.oid, t) then
+			fail("crewswoop: the rifleman and the ranger didn't fight what attacked the tank's swoop")
 		end
 		-- And one attacked directly
 		local mob2 = makeMob("a womp rat", rifleman.x + 20, rifleman.y, 600)

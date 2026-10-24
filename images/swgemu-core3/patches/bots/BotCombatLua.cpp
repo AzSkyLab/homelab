@@ -65,6 +65,7 @@ void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botRepairGear", botRepairGear);
 	lua->registerFunction("botFindPack", botFindPack);
 	lua->registerFunction("botRecentIncaps", botRecentIncaps);
+	lua->registerFunction("botDropDeadDefenders", botDropDeadDefenders);
 
 	BotCombat::start();
 }
@@ -149,6 +150,15 @@ int BotCombatLua::botFindPack(lua_State* L) {
 	}
 
 	lua_pushinteger(L, (lua_Integer) oid);
+
+	return 1;
+}
+
+// botDropDeadDefenders(pCreature) -> how many it removed
+int BotCombatLua::botDropDeadDefenders(lua_State* L) {
+	CreatureObject* creature = toCreature(L, 1);
+
+	lua_pushinteger(L, creature != nullptr ? BotCombat::dropDeadDefenders(creature) : 0);
 
 	return 1;
 }

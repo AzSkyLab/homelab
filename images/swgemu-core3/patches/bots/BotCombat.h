@@ -79,6 +79,12 @@ public:
 	// after the first tick, Core3's list alone. At 2, the next incap kills: no fight, and no duel worth accepting
 	static int recentIncaps(server::zone::objects::creature::CreatureObject* creature);
 
+	// Takes the dead (or no longer in the world) off a creature's defender list, and the combat state with them when the
+	// list is then empty; live defenders stay (duels, adds still fighting). Core3 clears a corpse from its killer's list
+	// and from its own, not from a third party's who had attacked it: that player stays in combat until /peace. Returns
+	// how many it removed. The creature should be locked (an event on it).
+	static int dropDeadDefenders(server::zone::objects::creature::CreatureObject* creature);
+
 	// Ends a fight or a duel with that player now: event "fightEnded", detail "ended". False if there was none
 	static bool endFight(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* human);
 

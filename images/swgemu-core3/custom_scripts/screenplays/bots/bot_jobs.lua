@@ -553,7 +553,7 @@ function BotJobs:ask(pBot, oid, playerOid, playerName, text, channel, intent)
 
 	-- The job's own fields (a musician's instrument, a smuggler's prices, grouped, a city's news); they win
 	if module.requestFields ~= nil then
-		for field, value in pairs(module:requestFields(pBot, oid) or {}) do
+		for field, value in pairs(module:requestFields(pBot, oid, playerOid) or {}) do
 			request[field] = value
 		end
 	end

@@ -14,6 +14,9 @@
  *   botFindPack(pBot, template) -> oid          a pack of that template in the inventory, or 0
  *   botRecentIncaps(pCreature) -> count         incaps in the last ten minutes; at 2 the next one kills, so no fight
  *                                               (botStartFight refuses) and no duel worth accepting
+ *   botDropDeadDefenders(pCreature) -> count   takes the dead from a creature's defender list (a player left in combat on
+ *                                               a corpse something else killed); live defenders stay. Call it in an event on
+ *                                               the creature
  *
  * Also starts BotCombat's tick (its events: "incapacitated", "died", "revived", "cloned", "duel", "fightEnded").
  */
@@ -42,6 +45,7 @@ private:
 	static int botRepairGear(lua_State* L);
 	static int botFindPack(lua_State* L);
 	static int botRecentIncaps(lua_State* L);
+	static int botDropDeadDefenders(lua_State* L);
 };
 
 } // namespace bot

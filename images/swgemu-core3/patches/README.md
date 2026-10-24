@@ -21,6 +21,7 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
 | `0005-bots-close-sui-boxes` | `PlayerObjectImplementation.cpp` | Closes any game window a bot gets |
 | `0006-sui-page-null-client` | `SuiPageData.cpp` | Null-client check in `sendTo` (an upstream crash with a clientless player) |
 | `0007-bots-fairness` | group loot, mission rewards, XP | Bots are left out of the credit split, random loot and lottery candidates, the mission reward divisor and the XP damage share |
+| `0008-bots-mission-done` | `MissionObjectiveImplementation.cpp` | `awardReward` notes the mission as completed (`BotGroup::missionDone`), so the crew tells a lair destroyed from a mission dropped |
 
 The Dockerfile applies both after the checkout. A patch that doesn't apply fails the build, so after a `CORE3_REF`
 bump, fix the patches first (`dev/build-core3.sh` shows which one fails).

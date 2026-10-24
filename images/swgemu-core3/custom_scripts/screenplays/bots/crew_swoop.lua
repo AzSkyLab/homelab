@@ -71,7 +71,7 @@ function BotCrewSwoop:retried(oid, now)
 end
 
 -- A grouped crew bot with its leader (a player), once a step. Cheap when nothing changes: it reads a few flags
-function BotCrewSwoop:tick(pBot, oid, pLeader, now)
+function BotCrewSwoop:tick(pBot, oid, pLeader, now, g)
 	if call("botMounted", pBot) == nil then
 		return
 	end
@@ -95,6 +95,9 @@ function BotCrewSwoop:tick(pBot, oid, pLeader, now)
 				put(ckey(oid, "defenderAt"), now)
 			end
 
+			self:getOff(pBot, oid, now, "swoopFight")
+		elseif BotCrew:helpWanted(pBot, oid, g, now) then
+			-- A crew mate or a human of the group is attacked or fighting: off at once to help
 			self:getOff(pBot, oid, now, "swoopFight")
 		elseif not leaderRiding or CreatureObject(pLeader):isInCombat() or (call("botMountAttacker", pLeader) or 0) ~= 0 then
 			if self:due(oid, now) then
@@ -122,7 +125,7 @@ function BotCrewSwoop:tick(pBot, oid, pLeader, now)
 
 	-- The leader rides and the bot doesn't: mount, if it can
 	if CreatureObject(pBot):isInCombat() or CreatureObject(pLeader):isInCombat() or (call("botMountAttacker", pLeader) or 0) ~= 0 or
-		SceneObject(pBot):getParentID() ~= 0 then
+		SceneObject(pBot):getParentID() ~= 0 or BotCrew:helpWanted(pBot, oid, g, now) then
 		deleteData(ckey(oid, "swoopAt"))
 		return
 	end

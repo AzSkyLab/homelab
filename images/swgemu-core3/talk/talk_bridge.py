@@ -158,7 +158,7 @@ def swearing(r):
 
 # Bot players: where each job stands, and the actions it may take. Phase 3: doctor, dancer. Phase 4: musician,
 # smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger). Phase 6: a player city's mayor and citizens.
-CREW = ("join", "follow", "stay", "home", "harvest", "loot")
+CREW = ("join", "follow", "stay", "home", "harvest", "loot", "attack")
 CREW_JOBS = ("tank", "rifleman", "medic", "ranger")
 CITY_JOBS = ("mayor", "citizen")
 BOT_PLACES = {
@@ -184,7 +184,9 @@ _CREW = {"join": "join", "group": "join", "invite": "join", "join group": "join"
          "home": "home", "go home": "home", "leave": "home", "dismiss": "home", "loot": "loot", "loot bodies": "loot",
          "loot corpses": "loot", "loot all": "loot", "loot them": "loot", "looting": "loot", "harvest": "harvest",
          "skin": "harvest", "skin them": "harvest", "skinning": "harvest", "harvesting": "harvest",
-         "harvest corpses": "harvest", "butcher": "harvest"}
+         "harvest corpses": "harvest", "butcher": "harvest", "attack": "attack", "attack target": "attack",
+         "attack my target": "attack", "assist": "attack", "engage": "attack", "kill": "attack", "kill it": "attack",
+         "kill target": "attack", "fight": "attack", "open fire": "attack"}
 _RANGER = {"camp": "camp", "place camp": "camp", "rest": "camp", "track": "track", "tracking": "track",
            "scout": "track", "search": "track"}
 ACTION_ALIASES = {
@@ -245,6 +247,15 @@ WORDS = {
     "loot": re.compile(
         r"\b(loot\w*|search (the |those |them |all )?(bod\w+|corpses?|carcass\w*)|strip (the |them )?(bod\w+|corpses?))\b",
         re.I),
+    # "attack my target", "kill it", "assist me", "take it down", "engage"; not "stop attacking", "hold fire" (follow's)
+    # nor "they attack what I attack". A bare "attack", "kill" or "assist" counts only starting a clause (COMMAND_WORDS)
+    "attack": re.compile(
+        r"\b(attack(?=\s+(my|that|it|him|her|them|this|those|these|his|its|target|now|please|pl[sz]|'?em|at will)\b)|"
+        r"kill (it|that|him|her|them|this|those|these|'?em|my target|the target|target)\b|"
+        r"take (it|him|her|them|that|this|'?em|the target|my target) (down|out)\b|"
+        r"hit (it|him|her|them|that|my target|the target)\b(?! off)|assist (me|us)\b|help (me|us) (kill|fight|attack)\w*|"
+        r"on my target|engage\b|open fire|fire at will|light (it|him|her|them|that|'?em) up|"
+        r"focus (my target|fire)\b)", re.I),
     # "what's around?", "find me krayts", "any tuskens nearby?", "track something"
     "track": re.compile(
         r"\b(track\w*|scout (ahead|around|the area|it out)|what'?s (around|out (there|here)|nearby|close by)|"
@@ -280,7 +291,7 @@ REQUEST = re.compile(
     r"buff us|heal us|buff everyone|buff the group)\b", re.I)
 # Commands, said straight out ("follow me", "Varo, stay here", "ok everyone, go home"): the crew's actions count as
 # asked when a clause starts with them, after a word or two of lead-in
-COMMANDS = {"join", "follow", "stay", "home", "camp", "track", "harvest", "loot"}
+COMMANDS = {"join", "follow", "stay", "home", "camp", "track", "harvest", "loot", "attack"}
 # ...and the buffers' work, in its imperative shapes only ("heal my wounds", but not "buffs are great")
 COMMAND_WORDS = {
     "buff": re.compile(r"\b((bu+f+|enhance) (me|us|everyone|the group|him|her|them|all|my|up)|(bu+f+|enhance) "
@@ -288,13 +299,18 @@ COMMAND_WORDS = {
     "wounds": re.compile(r"\b(heal (me|my|us|up|him|her|them|these|those|this|the)|patch (me |us )?up|"
                          r"fix (me |us )?up)\b", re.I),
     "bufftarget": re.compile(r"\b(bu+f+ (me|us|pl[sz]|please)|set me|make me)\b", re.I),
+    # Orders to fight, starting a clause: "kill!", "kill the krayt", "attack", "assist me", "engage", "take him out"
+    "attack": re.compile(r"\b(attack|kill|assist|engage|open fire|fire at will|light (it|him|her|them|that|'?em) up|"
+                         r"take (it|him|her|them|that|this|'?em) (down|out)|hit (it|him|her|them|that|my target|the target)|"
+                         r"help (me|us) (kill|fight|attack)|on my target|focus (my target|fire)|get (him|her|'?em))\b",
+                         re.I),
 }
 LEADIN = re.compile(r"^\W*((hey|yo|oi|ok|okay|alright|right|guys|all|everyone|everybody|team|crew|y'?all|now|so|"
                     r"please|pls|plz|just|you two|both of you|all of you|and)\b\W*)*", re.I)
 CLAUSE = re.compile(r"[.!?;,:]+|\b(?:and|then|but)\b", re.I)
 # "I'll follow you", "I'm staying here": the player's own plans, not a command
 SELF = r"\b(i|i'?ll|i will|i'?m|im|i am|we'?ll|we will)\s+(gonna\s+|going to\s+|will\s+|just\s+|can\s+|should\s+)?"
-SELFISH = {"follow", "stay", "home", "harvest", "loot"}
+SELFISH = {"follow", "stay", "home", "harvest", "loot", "attack"}
 # "buff?", "doc, buffs?", "enhances pls", "heal wounds?": the request word and little else
 BARE = re.compile(r"^\W*(\w+\W+){0,2}" + r"(bu+f+\w*|buf|enh\w*|wounds?|heals?)" + r"(\W+\w+){0,1}\W*$", re.I)
 # "don't need a buff", "no more buffs", "already buffed" (but not "nah, just buff me")
@@ -625,6 +641,13 @@ class Bridge:
             if r.get("situation"):
                 who += (f" Right now you're {r.get('situation')}. That's where you are, whatever was said before; "
                         "don't talk as if you were anywhere else.")
+            # What the speaker has targeted (the Lua reads it): the brain says so when asked to attack with nothing
+            target = r.get("attackTarget")
+            if target == "none":
+                who += (" The player has nothing targeted that you can attack right now: if they tell you to attack, "
+                        "ask them to target something first, and don't say you are attacking.")
+            elif target:
+                who += f" The player's current target is {target}."
             crew_actions = (
                 '"join" when they ask you to group up or come hunting with them, in any words ("wanna hunt?", '
                 '"lfg?", "join me", "can I invite you?", "need a tank"); "follow" when they tell you to follow them or '
@@ -633,7 +656,9 @@ class Bridge:
                 '"home" when they send you home or let you go ("go home", "you can go", "we\'re done for tonight"); '
                 '"harvest" when they ask for the creatures to be skinned or harvested ("harvest them", "skin the '
                 'bantha", "skin everything"; the ranger does it); '
-                '"loot" when they ask the crew to loot the bodies ("loot the bodies", "loot them", "loot everything")'
+                '"loot" when they ask the crew to loot the bodies ("loot the bodies", "loot them", "loot everything"); '
+                '"attack" when they tell the crew to attack, kill or assist on their target ("attack my target", "kill '
+                'it", "assist me", "take it down")'
             )
             if job == "medic":
                 actions = (
@@ -864,16 +889,21 @@ class Bridge:
         def words(action):
             return JOB_WORDS.get((job, action)) or WORDS[action]
 
-        def commanded(action):
+        def commanded(action, said=None):
             """A clause that starts with the command ("follow me", "ok guys, stay here", "Varo, go home", "nice,
             heal my wounds")."""
             pattern = COMMAND_WORDS.get(action) or (words(action) if action in COMMANDS else None)
+            said = text if said is None else said
             return pattern is not None and any(pattern.match(LEADIN.sub("", c.strip(), count=1))
-                                               for c in CLAUSE.split(text) if c and c.strip())
+                                               for c in CLAUSE.split(said) if c and c.strip())
 
         def asking(action):
             """A request word, a command, or a short question that isn't about something ("full set of buffs?");
             any question asks a ranger to track ("what's around?", "any krayts nearby?")."""
+            if action == "attack":
+                # Only an order counts: "did you get em all?" has a request word and isn't one
+                return commanded(action) or (not text.rstrip().endswith("?") and mentioned(action, text)) or \
+                    bool(re.match(r"\W*(\w+,?\s+)?(can|could|would|will)\s+(you|u|ya)\b", text, re.I) and mentioned(action, text))
             if REQUEST.search(text) or commanded(action):
                 return True
             if not text.rstrip().endswith("?"):
@@ -891,7 +921,8 @@ class Bridge:
             rest = other.sub(" ", said) if other else said
             if action == "wounds" and FATIGUE.search(said) and not re.search(r"\bwound", rest, re.I):
                 return False
-            return bool(words(action).search(rest))
+            # (an order that starts a clause, "kill the krayt", needs no phrase of the list)
+            return bool(words(action).search(rest)) or (action == "attack" and commanded(action, said))
 
         def negated(action):
             """"don't need a buff", "stop following me"; and for the crew, the player's own plans ("I'll stay")."""
@@ -901,7 +932,7 @@ class Bridge:
             return action in SELFISH and bool(re.search(SELF + pattern, text, re.I))
 
         def ok(action):
-            return not aside(action) and not negated(action)
+            return not aside(action) and not negated(action) and (action != "attack" or asking(action))
 
         if proposed in allowed and ok(proposed):
             # A short reply carries the action on from the exchange before, unless it asks for something else itself

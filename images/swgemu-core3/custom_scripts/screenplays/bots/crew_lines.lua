@@ -55,6 +55,18 @@ BotLines.crew = {
 		"I'll wait here.",
 		"Staying put.",
 	},
+	attack = {
+		"On it.",
+		"Engaging.",
+		"Taking it down.",
+		"Going in.",
+	},
+	-- Told to attack with nothing of theirs to attack (no target, dead, too far, a player or one of the group)
+	attackNoTarget = {
+		"Target something first, {name}.",
+		"What am I hitting?",
+		"Which one, {name}? Mark it first.",
+	},
 	home = {
 		"Heading back to the cantina. Good hunting, {name}.",
 		"I'm off. Holler if you need a hand again.",

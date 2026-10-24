@@ -961,6 +961,33 @@ int BotCombat::recentIncaps(CreatureObject* creature) {
 	return sawAll ? Math::min(listed, seen) : listed;
 }
 
+int BotCombat::dropDeadDefenders(CreatureObject* creature) {
+	if (creature == nullptr)
+		return 0;
+
+	Locker locker(creature);
+
+	auto* defenders = creature->getDefenderList();
+	Vector<Reference<SceneObject*>> gone;
+
+	for (int i = 0; i < defenders->size(); ++i) {
+		SceneObject* defender = defenders->get(i);
+
+		if (defender == nullptr || defender->getZone() == nullptr ||
+			(defender->isCreatureObject() && defender->asCreatureObject()->isDead()))
+			gone.add(defender);
+	}
+
+	for (int i = 0; i < gone.size(); ++i)
+		creature->removeDefender(gone.get(i));
+
+	// (removeDefender leaves combat with the last one; this is for a list that was left empty)
+	if (gone.size() > 0 && creature->getDefenderList()->size() == 0)
+		creature->clearCombatState(false);
+
+	return gone.size();
+}
+
 bool BotCombat::startFight(CreatureObject* bot, CreatureObject* human) {
 	if (!BotManager::instance()->isOnlineBot(bot) || human == nullptr || human == bot || !human->isPlayerCreature())
 		return false;

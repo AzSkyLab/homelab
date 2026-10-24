@@ -91,6 +91,11 @@ public:
 	// The damage the humans' XP shares divide: the total less the bots' damage (the total if the humans did none)
 	static uint32 getRewardDamage(server::zone::objects::tangible::threat::ThreatMap* threatMap, uint32 totalDamage);
 
+	// Hook (patches/0008): a mission is being rewarded, so it was completed (a mission that leaves the datapad any other
+	// way was dropped, failed or expired). Remembers the last few; wasMissionDone asks. Thread-safe
+	static void missionDone(uint64 missionOid);
+	static bool wasMissionDone(uint64 missionOid);
+
 	// True if object is a bot left out of `reward` (logged with Core3.BotManager.DevLogRewards = true)
 	static bool skipReward(server::zone::objects::scene::SceneObject* object, const char* reward);
 };

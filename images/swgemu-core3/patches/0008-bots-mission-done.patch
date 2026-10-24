@@ -1,0 +1,14 @@
+diff --git a/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp b/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
+index 51278ae..8928fdd 100644
+--- a/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/mission/MissionObjectiveImplementation.cpp
+@@ -189,6 +189,9 @@ void MissionObjectiveImplementation::awardReward() {
+ 		return;
+ 	}
+ 
++	// The mission was completed, not dropped (our patch): the crew tells a lair destroyed from a mission abandoned
++	BotGroup::missionDone(mission->getObjectID());
++
+ 	Vector<ManagedReference<CreatureObject*> > players;
+ 	PlayMusicMessage* pmm = new PlayMusicMessage("sound/music_mission_complete.snd");
+ 

@@ -613,6 +613,33 @@ bool BotGroup::isBotPlayer(SceneObject* object) {
 	return object != nullptr && object->isPlayerCreature() && BotManager::instance()->isBotOid(object->getObjectID());
 }
 
+namespace {
+
+Mutex doneMutex;
+Vector<uint64> doneMissions;		// the last completed missions, oldest first
+
+}
+
+void BotGroup::missionDone(uint64 missionOid) {
+	Locker locker(&doneMutex);
+
+	doneMissions.add(missionOid);
+
+	while (doneMissions.size() > 200)
+		doneMissions.remove(0);
+}
+
+bool BotGroup::wasMissionDone(uint64 missionOid) {
+	Locker locker(&doneMutex);
+
+	for (int i = 0; i < doneMissions.size(); ++i) {
+		if (doneMissions.get(i) == missionOid)
+			return true;
+	}
+
+	return false;
+}
+
 bool BotGroup::skipReward(SceneObject* object, const char* reward) {
 	if (!isBotPlayer(object))
 		return false;

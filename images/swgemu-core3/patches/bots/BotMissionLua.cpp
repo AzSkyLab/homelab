@@ -5,6 +5,7 @@
 #include "BotMissionLua.h"
 #include "BotMission.h"
 #include "BotManager.h"
+#include "BotGroup.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
 
@@ -118,6 +119,8 @@ void BotMissionLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botMissionAccept", botMissionAccept);
 	lua->registerFunction("botMissionAbort", botMissionAbort);
 	lua->registerFunction("botMissions", botMissions);
+	lua->registerFunction("botPlayerMissions", botPlayerMissions);
+	lua->registerFunction("botMissionDone", botMissionDone);
 	lua->registerFunction("botMissionSync", botMissionSync);
 	lua->registerFunction("botWaypoints", botWaypoints);
 }
@@ -212,6 +215,29 @@ int BotMissionLua::botMissions(lua_State* L) {
 	}
 
 	pushMissions(L, missions);
+
+	return 1;
+}
+
+// botPlayerMissions(pCreature)
+int BotMissionLua::botPlayerMissions(lua_State* L) {
+	// Any player creature (a human of the group): read-only, the datapad is read with the player locked, as botWaypoints does
+	CreatureObject* player = toCreature(L, 1);
+	Vector<Reference<BotMissionInfo*>> missions;
+
+	if (player == nullptr || !player->isPlayerCreature() || !BotMission::current(player, missions)) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	pushMissions(L, missions);
+
+	return 1;
+}
+
+// botMissionDone(missionOid)
+int BotMissionLua::botMissionDone(lua_State* L) {
+	lua_pushboolean(L, BotGroup::wasMissionDone(toOid(L, 1)));
 
 	return 1;
 }

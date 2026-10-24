@@ -12,6 +12,9 @@
  *   botMissionAbort(pBot) -> how many missions it aborted, and "combat" if some stayed
  *   botMissions(pBot) -> the destroy missions it holds, as botMissionList gives them (distance and direction from the
  *       bot; lairUp is true once the mission's lair has spawned), or nil
+ *   botPlayerMissions(pCreature) -> the same for any player creature (a human's own missions; read-only), or nil
+ *   botMissionDone(missionOid) -> true if that mission was completed and rewarded (patches/0008), as against dropped,
+ *       failed or expired: a mission that left a datapad with its lair up is a lair destroyed only if this is true
  *   botMissionSync(pBot[, pLeader]) -> 1 if it queued the work (it runs a moment later), else 0. With a leader: each mission has a waypoint in the
  *       leader's datapad, "<Bot>: <target>", and finished ones go. Without: the bot's waypoints in its old leader's
  *       datapad go
@@ -38,6 +41,8 @@ private:
 	static int botMissionAccept(lua_State* L);
 	static int botMissionAbort(lua_State* L);
 	static int botMissions(lua_State* L);
+	static int botPlayerMissions(lua_State* L);
+	static int botMissionDone(lua_State* L);
 	static int botMissionSync(lua_State* L);
 	static int botWaypoints(lua_State* L);
 };

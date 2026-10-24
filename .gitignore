@@ -55,3 +55,4 @@ home-lab-root-ca.crt
 
 # Python bytecode (the talk bridge, dev tools)
 __pycache__/
+notes.txt

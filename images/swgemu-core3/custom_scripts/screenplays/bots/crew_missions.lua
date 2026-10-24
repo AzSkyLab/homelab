@@ -570,6 +570,23 @@ function BotCrew:missionHeldSet(pBot, oid)
 	put(ckey(oid, "mHeldN"), n)
 end
 
+-- How a mission left a datapad: "done" (completed and rewarded: the lair was destroyed), "dropped" (its lair was up and it
+-- went anyway: abandoned or expired) or "failed" (it never got a lair). The reward hook (patches/0008) says "done"; a
+-- build without it takes a lair that was up for destroyed.
+local function missionOutcome(digits)
+	local lair = readData(mkey(digits, "lair")) == 1
+
+	if botMissionDone ~= nil then
+		if botMissionDone(tonumber(digits)) then
+			return "done"
+		end
+
+		return lair and "dropped" or "failed"
+	end
+
+	return lair and "done" or "failed"
+end
+
 -- From the bot's loop, in a fight or out of one (every few seconds): has a mission left the datapad without the bot
 -- dropping it? Core3 removes a destroy mission when its lair is destroyed (done), and also when it can't find a spot to
 -- spawn the lair (failed). The lair having been up at a look (lairUp) tells them apart; that is why this runs in fights
@@ -607,10 +624,14 @@ function BotCrew:missionWatch(pBot, oid, now)
 			local text = readStringData(mkey(digits, "text"))
 			local name = text ~= "" and text or "destroy"
 
-			if readData(mkey(digits, "lair")) == 1 then
+			local outcome = missionOutcome(digits)
+
+			if outcome == "done" then
 				print("BotJobs: " .. self:name(oid) .. "'s mission is done: " .. name)
 				self:huntTallyAdd(pBot, "lairs", 1)
 				self:huntEvent(pBot, "Lair destroyed: " .. self:firstName(pBot) .. "'s " .. name .. " mission is done")
+			elseif outcome == "dropped" then
+				print("BotJobs: " .. self:name(oid) .. "'s mission was dropped: " .. name)
 			else
 				print("BotJobs: " .. self:name(oid) .. "'s mission failed: " .. name)
 				self:huntEvent(pBot, self:firstName(pBot) .. "'s " .. name .. " mission failed (it never got a lair)")
@@ -623,6 +644,81 @@ function BotCrew:missionWatch(pBot, oid, now)
 
 	writeStringData(ckey(oid, "mHeld"), table.concat(list, ","))
 	put(ckey(oid, "mHeldN"), #list)
+end
+
+-- The group's humans' own destroy missions, read the same way (botPlayerMissions) for the hunt's tally: from the
+-- group's loop of any crew member, in an event on the human (so only the human is locked), at most every 4 s per human.
+-- The state is shared and keyed by the human, so a mission that ends is counted once, whoever looked.
+function BotCrew:missionWatchHumans(g)
+	if botPlayerMissions == nil then
+		return
+	end
+
+	local now = os.time()
+
+	for _, m in ipairs(g.humans) do
+		local base = "crew:human:" .. m.oid
+
+		if now - readData(base .. ":mWatchAt") >= 4 then
+			put(base .. ":mWatchAt", now)
+			createEvent(1, "BotCrew", "missionWatchHuman", m.p, "")
+		end
+	end
+end
+
+function BotCrew:missionWatchHuman(pHuman, args)
+	local held = pHuman ~= nil and botPlayerMissions ~= nil and botPlayerMissions(pHuman) or nil
+
+	if held == nil then
+		return
+	end
+
+	local now = os.time()
+	local base = "crew:human:" .. SceneObject(pHuman):getObjectID()
+	local before = readStringData(base .. ":mHeld")
+
+	-- Not looked at for a while (no crew with them): what ended in between isn't this hunt's
+	if now - readData(base .. ":mSeenAt") > 120 then
+		before = ""
+	end
+
+	local list, nowSet = {}, {}
+
+	for _, m in ipairs(held) do
+		local digits = tostring(math.floor(m.oid))
+
+		table.insert(list, digits)
+		nowSet[digits] = true
+		writeStringData(mkey(digits, "text"), (tostring(m.target or "lair"):gsub("[%%|]", "")))
+
+		if m.lairUp then
+			put(mkey(digits, "lair"), 1)
+		end
+	end
+
+	for digits in before:gmatch("%d+") do
+		if not nowSet[digits] then
+			local text = readStringData(mkey(digits, "text"))
+			local name = text ~= "" and text or "destroy"
+			local who = self:firstName(pHuman)
+
+			if missionOutcome(digits) == "done" then
+				print("BotJobs: " .. who .. "'s mission is done: " .. name)
+				self:huntTallyAdd(pHuman, "lairs", 1)
+				self:huntEvent(pHuman, "Lair destroyed: " .. who .. "'s " .. name .. " mission is done")
+			else
+				-- (re-rolled at a terminal, abandoned or expired: not a lair destroyed)
+				print("BotJobs: " .. who .. "'s mission was dropped: " .. name)
+			end
+
+			deleteStringData(mkey(digits, "text"))
+			deleteData(mkey(digits, "lair"))
+		end
+	end
+
+	writeStringData(base .. ":mHeld", table.concat(list, ","))
+	put(base .. ":mHeldN", #list)
+	put(base .. ":mSeenAt", now)
 end
 
 -- Out of the group: its waypoints leave the leader's datapad, an errand on its way ends

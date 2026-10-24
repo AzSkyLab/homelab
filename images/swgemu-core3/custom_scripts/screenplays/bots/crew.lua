@@ -189,9 +189,24 @@ BotCrew = ScreenPlay:new {
 			"drop group", "go away", "you're done", "youre done", "that's all for today", "thats all for today"},
 		follow = {"follow", "stay with me", "stay close", "on me", "with me", "come on", "let's go", "lets go", "move out",
 			"back off", "disengage", "fall back", "come here", "regroup", "keep up", "this way", "let's move",
-			"lets move", "hold fire", "stop fighting", "peace"},
+			"lets move", "hold fire", "cease fire", "stop fighting", "stop attacking", "peace"},
 		stay = {"stay", "wait here", "hold here", "hold up", "hold position", "wait for me", "stop here", "hang back",
 			"wait up", "sit tight"},
+		-- Orders only ("attack my target", "kill it"), not talk about fights. These are matched anywhere, unless a
+		-- negation sits right before them ("don't attack it"); a clause that starts with "attack", "kill", "assist",
+		-- "get him" or "get em" counts too (attackOrder). Checked before follow ("come on, kill it").
+		attack = {"attack my", "attack that", "attack it", "attack him", "attack her", "attack them", "attack this",
+			"attack now", "attack please", "attack em", "attack at will", "kill it", "kill that", "kill him", "kill her",
+			"kill them", "kill this", "kill my target", "kill the target", "kill em", "take it down", "take him down",
+			"take them down", "take that down", "take him out", "take them out", " hit it", " hit him", " hit that",
+			" hit my target", "assist me", "assist us", "help me kill", "help me fight", "help me attack", "on my target",
+			" engage ", "open fire", "fire at will", "light it up", "light him up", "light them up", "focus my target",
+			"focus fire"},
+		-- ...a clause that starts with these is an attack order too
+		attackStart = {"attack", "kill", "assist", "get him", "get em"},
+		-- ...not an attack: calling them off ("hold fire", "stop attacking")
+		notAttack = {"hold fire", "cease fire", "back off", "disengage", "fall back", "leave it", "leave him", "leave them",
+			"stop attacking", "stop fighting", "peace"},
 		join = {"hunt", "join", "invite", "group up", "come along", "come with", "tag along", "team up", "lfg", "wanna go",
 			"want to go", "need a hand", "you in", "grp", " inv ", "inv me", "wanna group", "want to group",
 			"up for a"},
@@ -214,7 +229,7 @@ BotCrew = ScreenPlay:new {
 	-- Work that is one crew member's: in group chat, that member answers it
 	owners = {camp = "ranger", track = "ranger", buff = "medic", wounds = "medic", harvest = "ranger"},
 	-- Work any crew member may answer (the first in earshot does)
-	anyone = {loot = true, harvest = true},
+	anyone = {loot = true, harvest = true, attack = true},
 	affirmative = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please", "do it", "go ahead", "sounds good",
 		"good idea", "why not", "camp", "aye", "ya", "y", "absolutely", "definitely"},
 	-- Not creature names, when the ranger looks for one in what was said
@@ -441,9 +456,45 @@ function BotCrew:group(pBot)
 	return g
 end
 
+-- Is a human in combat with something alive (a creature, or a lair)? Core3 can leave a player in combat on a corpse
+-- that another killed (scanHuman clears those); until then the flag alone doesn't make a fight. The scan's last look (a
+-- second old at most) says who is on them; with no recent look, the flag stands.
+function BotCrew:humanFighting(m, now)
+	if not CreatureObject(m.p):isInCombat() then
+		return false
+	end
+
+	local base = "crew:human:" .. m.oid
+
+	if now - readData(base .. ":at") > 3 then
+		return true
+	end
+
+	local foes = oidList(readStringData(base .. ":attackers"))
+
+	table.insert(foes, 1, readData(base .. ":defender"))
+
+	for _, foeOid in ipairs(foes) do
+		local pFoe = foeOid ~= 0 and getSceneObject(foeOid) or nil
+
+		-- (a lair is a foe too: only a dead creature isn't, and one out of the zone has no distance)
+		if pFoe ~= nil and not (SceneObject(pFoe):isCreatureObject() and CreatureObject(pFoe):isDead()) then
+			local dist = BotJobs:distance(m.p, pFoe)
+
+			if dist ~= nil and dist <= self.engageRange then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 function BotCrew:groupFighting(g)
+	local now = os.time()
+
 	for _, m in ipairs(g.members) do
-		if CreatureObject(m.p):isInCombat() then
+		if m.human and self:humanFighting(m, now) or (not m.human and CreatureObject(m.p):isInCombat()) then
 			return true
 		end
 	end
@@ -531,7 +582,7 @@ function BotCrew:clear(oid)
 		"cloneAsked", "cloneAt", "sitting", "sitUntil", "inCamp", "campAsked", "goX", "goY", "goAt", "followAt",
 		"tauntAt", "lungeAt", "injuryReady", "stateReady", "cureReady", "rezAt", "rezFor", "rezTries", "rezSaid",
 		"offerAt", "peaceAt", "leftAt", "handedAt", "saidBye", "leavingAt", "homeAt", "inviteSeen", "inviteSeenAt",
-		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt"}) do
+		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt", "focus"}) do
 		deleteData(ckey(oid, field))
 	end
 
@@ -873,7 +924,8 @@ function BotCrew:step(pBot, oid, now)
 
 		put(ckey(oid, "leader"), SceneObject(pLeader):getObjectID())
 		self:scanHumans(g, oid)
-		BotCrewSwoop:tick(pBot, oid, pLeader, now)
+		self:missionWatchHumans(g)
+		BotCrewSwoop:tick(pBot, oid, pLeader, now, g)
 	end
 
 	local role = self:role(oid)
@@ -961,6 +1013,7 @@ function BotCrew:enterGroup(pBot, oid, g, pLeader, now)
 	putString(ckey(oid, "order"), "follow")
 	put(ckey(oid, "groupedAt"), now)
 	deleteData(ckey(oid, "holdUntil"))
+	deleteData(ckey(oid, "focus"))
 	deleteData(ckey(oid, "followAt"))
 	self:standUp(pBot, oid)
 	print("BotJobs: " .. self:name(oid) .. " is in " .. self:firstName(pLeader) .. "'s group (" .. #g.members .. ")")
@@ -973,6 +1026,7 @@ function BotCrew:leftGroup(pBot, oid, now)
 	print("BotJobs: " .. self:name(oid) .. " is out of the group")
 	self:stopMoving(pBot)
 	self:standUp(pBot, oid)
+	deleteData(ckey(oid, "focus"))
 
 	if self:role(oid) == "medic" and BotDoctor ~= nil then
 		BotDoctor:clear(oid)
@@ -1182,7 +1236,8 @@ function BotCrew:noteDefender(pBot, oid, now)
 end
 
 -- The crew reads what the players in the group are fighting and what attacks them, in an event on each of them. Any
--- crew member may do it (the first one could be down or busy); a human is read once a second at most.
+-- crew member may do it (the first one could be down or busy); a human is read once a second at most. A human on a
+-- swoop is read through botMountAttacker.
 function BotCrew:scanHumans(g, oid)
 	local now = os.time()
 
@@ -1192,7 +1247,15 @@ function BotCrew:scanHumans(g, oid)
 		if now - readData(base .. ":scanAt") >= 1 then
 			put(base .. ":scanAt", now)
 
-			if CreatureObject(m.p):isInCombat() then
+			-- Riding: creatures attack the swoop, not the rider, who is never "in combat" (the crew's riders get off for it)
+			local mountAttacker = bot("botMountAttacker", m.p) or 0
+
+			if mountAttacker ~= 0 then
+				put(base .. ":defender", mountAttacker)
+				put(base .. ":pvp", 0)
+				writeStringData(base .. ":attackers", tostring(mountAttacker))
+				put(base .. ":at", now)
+			elseif CreatureObject(m.p):isInCombat() then
 				createEvent(1, "BotCrew", "scanHuman", m.p, "")
 			elseif readData(base .. ":defender") ~= 0 or readStringData(base .. ":attackers") ~= "" then
 				put(base .. ":defender", 0)
@@ -1212,6 +1275,13 @@ function BotCrew:scanHuman(pHuman, args)
 	local defender = 0
 	local attackers = ""
 	local pvp = 0
+
+	-- Left in combat on corpses something else killed (Core3 clears them only from the killer's list): clear them
+	local dropped = bot("botDropDeadDefenders", pHuman) or 0
+
+	if dropped > 0 then
+		print("BotJobs: " .. self:firstName(pHuman) .. " was left in combat on " .. dropped .. " dead creature(s): cleared")
+	end
 
 	if CreatureObject(pHuman):isInCombat() then
 		local pDefender = CreatureObject(pHuman):getMainDefender()
@@ -1268,9 +1338,9 @@ function BotCrew:validTarget(pBot, pTarget, g, allowPlayer)
 	return pTarget
 end
 
--- What to fight: its own provoked fight or duel; the leader's target while the leader fights; else the current one
--- while still fighting it; else whatever attacks this bot, a crew mate or a player in the group. Ungrouped, only its
--- own fight.
+-- What to fight: its own provoked fight or duel; what it was told to attack; the leader's target while the leader
+-- fights; else the current one while still fighting it; else whatever attacks this bot, a crew mate or a player in the
+-- group. Ungrouped, only its own fight.
 function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 	-- A provoked fight or a duel of its own (fight.lua) comes first: the crew fights those properly
 	local opponent = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) or 0
@@ -1285,6 +1355,19 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 
 	if now < readData(ckey(oid, "holdUntil")) then
 		return nil
+	end
+
+	-- Told to attack something ("attack my target"): that, until it's dead or gone
+	local focus = readData(ckey(oid, "focus"))
+
+	if focus ~= 0 then
+		local pFocus = self:validTarget(pBot, getSceneObject(focus), g, false)
+
+		if pFocus ~= nil then
+			return pFocus
+		end
+
+		deleteData(ckey(oid, "focus"))
 	end
 
 	local own = readData(ckey(oid, "defender"))
@@ -1342,6 +1425,37 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 	end
 
 	return pOwn
+end
+
+-- Does the group need this bot's hand? A crew mate or a human of the group has something to fight (the signals
+-- pickTarget reads), or it was told to attack something. A rider gets off for it (crew_swoop.lua).
+function BotCrew:helpWanted(pBot, oid, g, now)
+	if g == nil then
+		return false
+	end
+
+	local focus = readData(ckey(oid, "focus"))
+
+	if focus ~= 0 and self:validTarget(pBot, getSceneObject(focus), g, false) ~= nil then
+		return true
+	end
+
+	for _, m in ipairs(g.crew) do
+		if m.oid ~= oid and now - readData(ckey(m.oid, "defenderAt")) <= self.attackerFresh and
+			self:nearestAttacker(pBot, g, readStringData(ckey(m.oid, "attackers")), readData(ckey(m.oid, "defender"))) ~= nil then
+			return true
+		end
+	end
+
+	for _, m in ipairs(g.humans) do
+		if now - readData("crew:human:" .. m.oid .. ":at") <= self.attackerFresh and
+			self:nearestAttacker(pBot, g, readStringData("crew:human:" .. m.oid .. ":attackers"),
+				readData("crew:human:" .. m.oid .. ":defender")) ~= nil then
+			return true
+		end
+	end
+
+	return false
 end
 
 -- The nearest creature this bot may attack among an attackers list ("oid,oid") and one more oid (a main defender)
@@ -2632,13 +2746,104 @@ local lastHeard, lastForGroup = nil, false
 -- ...and spatialGroup tells groupAddressed that the line was spoken out loud, not in group chat
 local spatialHeard = false
 
+local STARTERS = {harvest = {"harvest"}, loot = {"loot"}}
+local NEGATIONS = {["don't"] = true, dont = true, ["not"] = true, never = true, no = true, stop = true, nor = true}
+local FILLER = {just = true, ever = true, yet = true, go = true, to = true, please = true, you = true, now = true}
+-- Words that open a clause without being the order ("ok guys, kill it")
+local LEADIN = {hey = true, yo = true, ok = true, okay = true, alright = true, right = true, guys = true, all = true,
+	everyone = true, team = true, crew = true, now = true, so = true, please = true, just = true, ["and"] = true, ["then"] = true}
+
+-- Does the text (wordsOf) start with this intent's word?
+function BotCrew:startsWith(t, intent)
+	for _, word in ipairs(STARTERS[intent] or {}) do
+		if t:find("^ " .. word .. " ") then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- The clauses of a line (wordsOf each), without the words that open them ("ok guys, kill it" -> " kill it ")
+local function clausesOf(text)
+	local out = {}
+
+	for clause in tostring(text or ""):lower():gmatch("[^%.!%?;,:]+") do
+		local t = wordsOf(clause:match("^%s*(.-)%s*$"))
+
+		while true do
+			local first, rest = t:match("^ (%S+)( .*)$")
+
+			if first == nil or not LEADIN[first] then
+				break
+			end
+
+			t = rest
+		end
+
+		table.insert(out, t)
+	end
+
+	return out
+end
+
+-- Is there a negation just before position at of t? ("don't attack it", "never just attack", not "nevermind" or "stopped")
+local function negatedAt(t, at)
+	local before = {}
+
+	for word in t:sub(1, at - 1):gmatch("%S+") do
+		table.insert(before, word)
+	end
+
+	local last, previous = before[#before], before[#before - 1]
+
+	return last ~= nil and (NEGATIONS[last] == true or (FILLER[last] == true and previous ~= nil and NEGATIONS[previous] == true))
+end
+
+-- An order to attack: one of the attack phrases not preceded by a negation, or a clause that starts with the verb; and not
+-- called off ("hold fire", "stop attacking")
+function BotCrew:attackOrder(text, t)
+	if hasAny(t, self.words.notAttack) then
+		return false
+	end
+
+	for _, phrase in ipairs(self.words.attack) do
+		local from = 1
+
+		while true do
+			local at = t:find(phrase, from, true)
+
+			if at == nil then
+				break
+			end
+
+			if not negatedAt(t, at) then
+				return true
+			end
+
+			from = at + 1
+		end
+	end
+
+	for _, clause in ipairs(clausesOf(text)) do
+		for _, word in ipairs(self.words.attackStart) do
+			if clause:find("^ " .. word .. " ") then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 -- The intent in the words for a role (nil: any role)
 function BotCrew:intentFor(text, role)
 	local t = wordsOf(text)
 
-	for _, intent in ipairs({"home", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
-		-- A line that starts with the word is an order too ("loot", "harvest?", "loot, please")
-		if hasAny(t, self.words[intent]) or ((intent == "harvest" or intent == "loot") and t:find("^ " .. intent .. " ")) then
+	for _, intent in ipairs({"home", "attack", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
+		-- A line that starts with the word is an order too ("loot", "harvest?", "loot, please", "kill!")
+		if (intent == "attack" and self:attackOrder(text, t)) or
+			(intent ~= "attack" and (hasAny(t, self.words[intent]) or self:startsWith(t, intent))) then
 			local owner = self.owners[intent]
 
 			if owner == nil or role == nil or owner == role or self.anyone[intent] == true then
@@ -2657,7 +2862,7 @@ function BotCrew:intent(text)
 	return self:intentFor(text, self.crewRole)
 end
 
-local ORDERS = {join = true, follow = true, stay = true, home = true}
+local ORDERS = {join = true, follow = true, stay = true, home = true, attack = true}
 
 function BotCrew:isAction(intent)
 	return intent ~= nil and (ORDERS[intent] == true or self.owners[intent] ~= nil or self.anyone[intent] == true)
@@ -2710,11 +2915,21 @@ function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 end
 
 -- Extra fields for the brain's request (BotJobs:ask): grouped is 1 while this bot is in a player's group
-function BotCrew:requestFields(pBot, oid)
+function BotCrew:requestFields(pBot, oid, playerOid)
 	local fields = {grouped = (pBot ~= nil and CreatureObject(pBot):isGrouped()) and 1 or 0}
 
 	if pBot == nil then
 		return fields
+	end
+
+	-- What the speaker has targeted that this bot may attack, for "attack my target": its name, or "none"
+	local pPlayer = playerOid ~= nil and getSceneObject(playerOid) or nil
+	local g = pPlayer ~= nil and self:group(pBot) or nil
+
+	if g ~= nil and g.byOid[playerOid] ~= nil then
+		local targetOid = self:attackTarget(pBot, pPlayer, g)
+
+		fields.attackTarget = targetOid ~= 0 and (SceneObject(getSceneObject(targetOid)):getDisplayedName() or "a creature") or "none"
 	end
 
 	fields.situation = self:situation(pBot, oid)
@@ -2883,6 +3098,11 @@ function BotCrew:huntTally(leaderOid, g)
 
 	for _, m in ipairs(g ~= nil and g.crew or {}) do
 		held = held + readData(ckey(m.oid, "mHeldN"))
+	end
+
+	-- ...and the humans' own (crew_missions.lua)
+	for _, m in ipairs(g ~= nil and g.humans or {}) do
+		held = held + readData("crew:human:" .. m.oid .. ":mHeldN")
 	end
 
 	local parts = {}
@@ -3264,14 +3484,26 @@ function BotCrew:join(pBot, oid, pPlayer, channel, brainLine)
 	end
 end
 
--- follow, stay, home from a group member; from someone else, "follow" is a join and the rest a shrug
+-- The speaker's target as an oid, if this bot may attack it (else 0)
+function BotCrew:attackTarget(pBot, pPlayer, g)
+	local targetOid = CreatureObject(pPlayer):getTargetID()
+
+	if targetOid ~= 0 and self:validTarget(pBot, getSceneObject(targetOid), g, false) ~= nil then
+		return targetOid
+	end
+
+	return 0
+end
+
+-- follow, stay, home, attack from a group member; from someone else, "follow" is a join and the rest a shrug
 function BotCrew:order(pBot, oid, pPlayer, action, channel, brainLine)
 	local playerOid = SceneObject(pPlayer):getObjectID()
 	local name = self:firstName(pPlayer)
 	local g = self:group(pBot)
 
 	if g == nil or g.byOid[playerOid] == nil then
-		if action == "follow" then
+		-- ("wanna hunt? let's go ..." taken as an attack, from someone not in a group, to a bot with none: a join)
+		if action == "follow" or (action == "attack" and g == nil) then
 			self:join(pBot, oid, pPlayer, channel, brainLine)
 		elseif brainLine == nil then
 			self:say(pBot, oid, playerOid, channel, "notWith", name)
@@ -3280,13 +3512,28 @@ function BotCrew:order(pBot, oid, pPlayer, action, channel, brainLine)
 		return
 	end
 
-	local fighting = readData(ckey(oid, "target")) ~= 0
+	local fighting = readData(ckey(oid, "target")) ~= 0 or readData(ckey(oid, "focus")) ~= 0
+	local targetOid = 0
+
+	-- Their target, read now; none that it can attack: it says so and does nothing
+	if action == "attack" then
+		targetOid = self:attackTarget(pBot, pPlayer, g)
+
+		if targetOid == 0 then
+			-- (the brain was told there is no target, and has said so)
+			if brainLine == nil then
+				self:say(pBot, oid, playerOid, channel, "attackNoTarget", name)
+			end
+
+			return
+		end
+	end
 
 	if brainLine == nil then
 		self:say(pBot, oid, playerOid, channel, (action == "follow" and fighting) and "backOff" or action, name)
 	end
 
-	self:applyOrder(pBot, oid, action, os.time())
+	self:applyOrder(pBot, oid, action, os.time(), targetOid)
 
 	-- Said to the whole group (this bot answered for it): the other crew members do it too, quietly
 	if channel == "group" and readData(ckey(oid, "forGroup")) == 1 then
@@ -3294,7 +3541,7 @@ function BotCrew:order(pBot, oid, pPlayer, action, channel, brainLine)
 
 		for i, m in ipairs(g.crew) do
 			if m.oid ~= oid then
-				createEvent(300 * i, "BotCrew", "groupOrder", m.p, packArgs(readData(key(m.oid, "gen")), action))
+				createEvent(300 * i, "BotCrew", "groupOrder", m.p, packArgs(readData(key(m.oid, "gen")), action, targetOid))
 			end
 		end
 	end
@@ -3307,21 +3554,36 @@ function BotCrew:groupOrder(pBot, args)
 		return
 	end
 
-	self:applyOrder(pBot, SceneObject(pBot):getObjectID(), a[2], os.time())
+	self:applyOrder(pBot, SceneObject(pBot):getObjectID(), a[2], os.time(), num(a[3]) or 0)
 end
 
-function BotCrew:applyOrder(pBot, oid, action, now)
+-- (targetOid is an attack's target, the speaker's)
+function BotCrew:applyOrder(pBot, oid, action, now, targetOid)
 	print("BotJobs: " .. self:name(oid) .. " " .. action .. "s")
 
-	if action == "stay" then
+	local focus = readData(ckey(oid, "focus"))
+
+	if action == "attack" then
+		-- Each bot checks the target for itself (it may be out of its reach)
+		if targetOid ~= nil and self:validTarget(pBot, getSceneObject(targetOid), self:group(pBot), false) ~= nil then
+			put(ckey(oid, "focus"), targetOid)
+			deleteData(ckey(oid, "holdUntil"))
+
+			-- Told to stay, it stays no longer; the fight starts on the next step (pickTarget takes the focus)
+			putString(ckey(oid, "order"), "follow")
+			self:startLoop(pBot, oid, 200)
+		end
+	elseif action == "stay" then
+		deleteData(ckey(oid, "focus"))
 		putString(ckey(oid, "order"), "stay")
 		self:stopMoving(pBot)
 	elseif action == "follow" then
+		deleteData(ckey(oid, "focus"))
 		putString(ckey(oid, "order"), "follow")
 		deleteData(ckey(oid, "followAt"))
 
 		-- "Back off" in a fight: peace, and no new fight for a moment
-		if readData(ckey(oid, "target")) ~= 0 then
+		if readData(ckey(oid, "target")) ~= 0 or focus ~= 0 then
 			put(ckey(oid, "holdUntil"), now + self.holdFire)
 			self:endFight(pBot, oid, now)
 		end
@@ -3332,6 +3594,7 @@ function BotCrew:applyOrder(pBot, oid, action, now)
 			self:ensureFollow(pBot, oid, pLeader, now)
 		end
 	elseif action == "home" then
+		deleteData(ckey(oid, "focus"))
 		put(ckey(oid, "saidBye"), 1)
 
 		if readData(ckey(oid, "target")) ~= 0 then
