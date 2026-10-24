@@ -558,6 +558,118 @@ return function(ctx)
 		table.insert(log.repairs, {bot = b.oid, t = nowMs()})
 		return 3
 	end
+	-- missions (BotMission): a general terminal offers the bot six destroy missions that a scenario scripts, per bot and
+	-- per refresh; the list refreshes at most every 1.4 s and only within 6 m; Core3's limit is two missions; the
+	-- waypoints (botMissionSync) are kept in the leader's table
+	local mw = {}
+	local DIRECTION_NAMES = {"north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"}
+	local function resetMissions()
+		mw = {terminals = {}, lists = {}, refreshes = {}, listAt = {}, listCalls = {}, nextOid = 9000000, accepts = {}, aborts = {},
+			syncs = {}}
+	end
+	resetMissions()
+	local function directionOf(degrees)
+		return DIRECTION_NAMES[(math.floor((degrees + 22.5) / 45) % 8) + 1]
+	end
+	local function missionTerminal(oid)
+		for _, t in ipairs(mw.terminals) do
+			if t.oid == oid then return t end
+		end
+		return nil
+	end
+	function api.botMissionTerminals(b, range)
+		assert(b ~= nil and type(range) == "number", "botMissionTerminals: bad arguments")
+		local out = {}
+		for _, t in ipairs(mw.terminals) do
+			local d = dist(b, t)
+			if d <= range then
+				table.insert(out, {oid = t.oid, distance = d, x = t.x, z = 5, y = t.y, cell = 0, planet = "tatooine"})
+			end
+		end
+		table.sort(out, function(a, c) return a.distance < c.distance end)
+		return out
+	end
+	function api.botMissionList(b, terminal, refresh)
+		assert(b ~= nil and math.type(terminal) == "integer", "botMissionList: bad arguments")
+		local t = missionTerminal(terminal)
+		if t == nil then return nil, "terminal" end
+		if dist(b, t) > 6 then return nil, "far" end
+		mw.listCalls[b.oid] = (mw.listCalls[b.oid] or 0) + 1
+		if refresh ~= false then
+			if nowMs() < (mw.listAt[b.oid] or -1e9) + 1400 then return nil, "wait" end
+			mw.listAt[b.oid] = nowMs()
+			mw.refreshes[b.oid] = (mw.refreshes[b.oid] or 0) + 1
+			local script = mw.lists[b.first] or mw.lists.default
+			local list = script[math.min(mw.refreshes[b.oid], #script)]
+			b.offered = {}
+			for _, m in ipairs(list) do
+				mw.nextOid = mw.nextOid + 1
+				table.insert(b.offered, {oid = mw.nextOid, reward = m.reward, degrees = m.degrees, distance = m.distance or 1500,
+					target = m.target or "womp rat lair", x = 0, y = 0, planet = "tatooine", level = 20,
+					direction = directionOf(m.degrees)})
+			end
+		end
+		local out = {}
+		for _, m in ipairs(b.offered or {}) do
+			table.insert(out, m)
+		end
+		return out
+	end
+	function api.botMissionAccept(b, terminal, missionOid)
+		assert(b ~= nil and math.type(terminal) == "integer" and math.type(missionOid) == "integer", "botMissionAccept: bad arguments")
+		local t = missionTerminal(terminal)
+		if t == nil then return false, "terminal" end
+		if dist(b, t) > 6 then return false, "far" end
+		for i, m in ipairs(b.offered or {}) do
+			if m.oid == missionOid then
+				b.missions = b.missions or {}
+				if #b.missions + (b.otherMissions or 0) >= 2 then return false, "full" end
+				table.remove(b.offered, i)
+				table.insert(b.missions, m)
+				table.insert(mw.accepts, {bot = b.oid, mission = m, terminal = terminal, t = nowMs()})
+				return true, ""
+			end
+		end
+		return false, "gone"
+	end
+	function api.botMissionAbort(b)
+		if b == nil then return 0, "" end
+		if b.inCombat then return 0, "combat" end
+		local n = #(b.missions or {})
+		b.missions = {}
+		table.insert(mw.aborts, {bot = b.oid, n = n, t = nowMs()})
+		return n, ""
+	end
+	function api.botMissions(b)
+		if b == nil then return nil end
+		local out = {}
+		for _, m in ipairs(b.missions or {}) do table.insert(out, m) end
+		return out
+	end
+	function api.botMissionSync(b, leader)
+		if b == nil then return 0 end
+		table.insert(mw.syncs, {bot = b.oid, leader = leader and leader.oid or 0, t = nowMs()})
+		for _, o in pairs(ctx.objects) do
+			if o.waypoints ~= nil then
+				for oid, w in pairs(o.waypoints) do
+					local held = false
+					for _, m in ipairs(b.missions or {}) do
+						if m.oid == oid then held = true end
+					end
+					if w.bot == b.oid and (not held or leader ~= o) then
+						o.waypoints[oid] = nil
+					end
+				end
+			end
+		end
+		if leader ~= nil then
+			leader.waypoints = leader.waypoints or {}
+			for _, m in ipairs(b.missions or {}) do
+				leader.waypoints[m.oid] = leader.waypoints[m.oid] or {bot = b.oid, name = b.first .. ": " .. m.target}
+			end
+		end
+		return 0
+	end
 	-- tradegroup
 	function api.botGetGroupInviter(b) return b ~= nil and b.inviter or 0 end
 	function api.botPlaceCamp(b, kit)
@@ -708,6 +820,7 @@ return function(ctx)
 			Obj[name] = fn
 		end
 		resetLog()
+		resetMissions()
 		crew, byFirst, groups, nextGroup, trackList = {}, {}, {}, 1, {}
 		sim.chatLog = {}
 		-- The crew at the Mos Eisley cantina (world coordinates are the cell's here)
@@ -1429,6 +1542,209 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Scenario: destroy missions in the leader's direction (crew_missions.lua)
+
+	function scenarios.crewmissions()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+
+		-- 1. What group chat asks for: eight directions in words and letters, a count, the drop, and what isn't a request
+		local cases = {
+			{"grab two destroy missions north", "take", 0}, {"missions NE", "take", 45}, {"get missions east", "take", 90},
+			{"Missions south east please", "take", 135}, {"missions S", "take", 180}, {"missions SW", "take", 225},
+			{"get me missions west", "take", 270}, {"missions north-west", "take", 315}, {"missions NW", "take", 315},
+			{"take missions southwest", "take", 225}, {"mission e", "take", 90}, {"drop your missions", "drop"},
+			{"abort missions", "drop"}, {"get missions", "take"}, {"what's the plan, kragoth?", nil},
+			{"no missions here", nil}, {"north of the dune sea", nil},
+		}
+		for _, c in ipairs(cases) do
+			local r = BotCrew:missionRequest(c[1])
+			if (c[2] == nil) ~= (r == nil) or (r ~= nil and (r.kind ~= c[2] or r.dir ~= c[3])) then
+				fail("crewmissions: '" .. c[1] .. "' read as " .. (r and (r.kind .. " " .. tostring(r.dir)) or "nothing"))
+			end
+		end
+		if BotCrew:missionRequest("grab one mission south").count ~= 1 or BotCrew:missionRequest("grab two missions south").count ~= 2 then
+			fail("crewmissions: the count in the request")
+		end
+
+		-- 2. The pick: within 45 degrees (the edge counts), best pay first, at most the count
+		local picked = BotCrew:missionPick({{oid = 1, reward = 100, degrees = 315}, {oid = 2, reward = 9999, degrees = 46},
+			{oid = 3, reward = 4000, degrees = 0}, {oid = 4, reward = 7000, degrees = 44}, {oid = 5, reward = 5000, degrees = 200}},
+			0, 2, 45)
+		if #picked ~= 2 or picked[1].oid ~= 4 or picked[2].oid ~= 3 then
+			fail("crewmissions: the pick took " .. #picked .. " missions, first " .. tostring(picked[1] and picked[1].oid))
+		end
+		if #BotCrew:missionPick({{oid = 1, reward = 1, degrees = 350}}, 10, 2, 45) ~= 1 then
+			fail("crewmissions: the pick should wrap around north")
+		end
+
+		-- 3. The crew joins the leader, who stands by a terminal
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		for _, b in ipairs({tank, rifleman, medic, ranger}) do
+			invite(cameren, b, true)
+			sim.run(4)
+		end
+		if members(cameren) ~= 5 then
+			fail("crewmissions: the crew didn't all join (" .. members(cameren) .. ")")
+		end
+		sim.run(10)
+		local t1 = {oid = 7001, x = cameren.x + 8, y = cameren.y, planet = "tatooine"}
+		mw.terminals = {t1}
+		mw.lists.default = {{{degrees = 180, reward = 5000}, {degrees = 190, reward = 4000}, {degrees = 0, reward = 9000},
+			{degrees = 270, reward = 3500}, {degrees = 90, reward = 2500}}}
+		local function waypointsOf(b)
+			local n = 0
+			for _, w in pairs(cameren.waypoints or {}) do
+				if w.bot == b.oid then n = n + 1 end
+			end
+			return n
+		end
+		local function lines(b, since) return entries(log.group, b, since) end
+
+		-- 4. "get missions" with no direction: one question from the crew, nobody leaves
+		local t = nowMs()
+		groupSay(cameren, "get missions")
+		sim.run(4)
+		if #entries(log.group, nil, t) ~= 1 or not anyLine(entries(log.group, nil, t), "tank", "missionWhere") or #mw.accepts > 0 or
+			next(mw.listCalls) ~= nil then
+			fail("crewmissions: 'get missions' with no direction: " .. #entries(log.group, nil, t) .. " lines")
+		end
+
+		-- 5. "grab two destroy missions north": each bot walks to the terminal, refreshes for its pick, takes what Core3
+		-- allows, reports its own, and its waypoints are in the leader's datapad
+		mw.lists[tank.first] = {
+			{{degrees = 350, reward = 3000}, {degrees = 46, reward = 9999}, {degrees = 180, reward = 8000}},
+			{{degrees = 0, reward = 4000, target = "dewback nest"}, {degrees = 44, reward = 7000, distance = 1800}, {degrees = 315, reward = 100},
+				{degrees = 46, reward = 9999}, {degrees = 200, reward = 5000}},
+		}
+		mw.lists[rifleman.first] = {{{degrees = 10, reward = 5000}, {degrees = 20, reward = 6000}}}
+		mw.lists[ranger.first] = {{{degrees = 180, reward = 3000}, {degrees = 135, reward = 2000}}}
+		rifleman.missions = {{oid = 1, reward = 1111, degrees = 0, distance = 800, target = "old lair"}}
+		medic.missions = {{oid = 2, reward = 2222, degrees = 0, distance = 900, target = "mountain dewback lair"},
+			{oid = 3, reward = 3333, degrees = 90, distance = 1100, target = "krayt lair"}}
+		t = nowMs()
+		groupSay(cameren, "grab two destroy missions north")
+		sim.run(45)
+
+		local function rewards(b)
+			local out = {}
+			for _, m in ipairs(b.missions or {}) do table.insert(out, m.reward) end
+			return table.concat(out, ",")
+		end
+		if rewards(tank) ~= "7000,4000" then
+			fail("crewmissions: the tank took " .. rewards(tank) .. " (7000,4000 are the best within 45 degrees)")
+		end
+		if mw.refreshes[tank.oid] ~= 2 then
+			fail("crewmissions: the tank refreshed " .. tostring(mw.refreshes[tank.oid]) .. " times (the first list had one)")
+		end
+		if rewards(rifleman) ~= "1111,6000" then
+			fail("crewmissions: the rifleman, holding one, should fill up to two: " .. rewards(rifleman))
+		end
+		if rewards(medic) ~= "2222,3333" or mw.listCalls[medic.oid] ~= nil then
+			fail("crewmissions: the medic holds two and shouldn't have gone to the terminal")
+		end
+		if rewards(ranger) ~= "" or mw.refreshes[ranger.oid] ~= 5 then
+			fail("crewmissions: the ranger took '" .. rewards(ranger) .. "' after " .. tostring(mw.refreshes[ranger.oid]) .. " refreshes (5, nothing north)")
+		end
+		for _, b in ipairs({tank, rifleman, medic, ranger}) do
+			if #lines(b, t) ~= 1 then
+				fail("crewmissions: " .. b.first .. " said " .. #lines(b, t) .. " lines, one report expected")
+			end
+			if #(b.missions or {}) > 2 then fail("crewmissions: " .. b.first .. " holds more than Core3's two") end
+			if moveState(b) ~= "follow" then fail("crewmissions: " .. b.first .. " isn't following again (" .. moveState(b) .. ")") end
+		end
+		local said = lines(tank, t)[1].text
+		if not anyLine(lines(tank, t), "tank", "missionTook") or not said:find("7,000", 1, true) or not said:find("1.8 km", 1, true) or
+			not said:find("dewback nest", 1, true) or not said:find("north", 1, true) then
+			fail("crewmissions: the tank's report: " .. said)
+		end
+		if not said:find("4,000", 1, true) then fail("crewmissions: the tank's report misses a lair: " .. said) end
+		if not anyLine(lines(rifleman, t), "rifleman", "missionTook") or not lines(rifleman, t)[1].text:find("6,000", 1, true) or
+			lines(rifleman, t)[1].text:find("1,111", 1, true) then
+			fail("crewmissions: the rifleman reports only what it took: " .. lines(rifleman, t)[1].text)
+		end
+		if not anyLine(lines(medic, t), "medic", "missionFull") then
+			fail("crewmissions: the medic should say it's full: " .. lines(medic, t)[1].text)
+		end
+		if not anyLine(lines(ranger, t), "ranger", "missionNone") or not lines(ranger, t)[1].text:find("north", 1, true) then
+			fail("crewmissions: the ranger's report: " .. lines(ranger, t)[1].text)
+		end
+		if waypointsOf(tank) ~= 2 or waypointsOf(rifleman) ~= 2 or waypointsOf(medic) ~= 2 or waypointsOf(ranger) ~= 0 then
+			fail("crewmissions: waypoints in the leader's datapad: " .. waypointsOf(tank) .. waypointsOf(rifleman) ..
+				waypointsOf(medic) .. waypointsOf(ranger))
+		end
+
+		-- 6. "Drop your missions": every bot aborts its own, the waypoints go, each says so
+		t = nowMs()
+		groupSay(cameren, "drop your missions")
+		sim.run(10)
+		for _, b in ipairs({tank, rifleman, medic, ranger}) do
+			if #(b.missions or {}) ~= 0 or waypointsOf(b) ~= 0 then
+				fail("crewmissions: " .. b.first .. " still holds missions or has waypoints after the drop")
+			end
+		end
+		if #lines(tank, t) ~= 1 or not anyLine(lines(tank, t), "tank", "missionDropped") or
+			not anyLine(lines(ranger, t), "ranger", "missionNoneHeld") then
+			fail("crewmissions: the drop lines")
+		end
+
+		-- 7. A bot that is named does its own errand only, and takes the one it was asked for
+		mw.refreshes = {}
+		mw.lists = {default = mw.lists.default}
+		t = nowMs()
+		groupSay(cameren, ranger.first .. ", get one mission west")
+		sim.run(25)
+		if rewards(ranger) ~= "3500" or mw.refreshes[tank.oid] ~= nil or #mw.accepts ~= 4 then
+			fail("crewmissions: named, the ranger took '" .. rewards(ranger) .. "', the tank refreshed " .. tostring(mw.refreshes[tank.oid]))
+		end
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+
+		-- 8. Two terminals: the crew spreads over them
+		local t2 = {oid = 7002, x = cameren.x - 8, y = cameren.y, planet = "tatooine"}
+		mw.terminals = {t1, t2}
+		mw.refreshes, mw.accepts = {}, {}
+		groupSay(cameren, "get two missions south")
+		sim.run(45)
+		local used = {}
+		for _, a in ipairs(mw.accepts) do used[a.terminal] = true end
+		if not used[7001] or not used[7002] then
+			fail("crewmissions: the crew should use both terminals")
+		end
+		if rewards(tank) ~= "5000,4000" then fail("crewmissions: south, the tank took " .. rewards(tank)) end
+
+		-- 9. A mission that ends takes its waypoint with it; a bot that leaves the group takes its waypoints
+		local before = waypointsOf(tank)
+		tank.missions = {tank.missions[1]}
+		sim.run(10)
+		if waypointsOf(tank) ~= before - 1 then
+			fail("crewmissions: a finished mission should lose its waypoint (" .. before .. " -> " .. waypointsOf(tank) .. ")")
+		end
+		t = nowMs()
+		groupSay(cameren, "kragoth, you can go home")
+		sim.run(15)
+		if tank.groupId ~= nil or waypointsOf(tank) ~= 0 or waypointsOf(rifleman) == 0 then
+			fail("crewmissions: the tank left with its waypoints? tank " .. waypointsOf(tank) .. ", rifleman " .. waypointsOf(rifleman))
+		end
+
+		-- 10. No terminal near
+		mw.terminals = {}
+		for _, b in ipairs({rifleman, medic, ranger}) do b.missions = {} end
+		t = nowMs()
+		groupSay(cameren, ranger.first .. ", missions north")
+		sim.run(5)
+		if not anyLine(lines(ranger, t), "ranger", "missionNoTerminal") then
+			fail("crewmissions: no terminal, no line")
+		end
+
+		local calls = 0
+		for _, n in pairs(mw.listCalls) do calls = calls + n end
+		realPrint(string.format("crewmissions %d missions accepted (the last round), %d list reads, %d aborts, %d group lines",
+			#mw.accepts, calls, #mw.aborts, #log.group))
+		teardown()
+	end
+
 	-- Scenario: the talk bridge faked
 
 	function scenarios.crewbrain()
@@ -1561,4 +1877,5 @@ return function(ctx)
 
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
+	table.insert(order, "crewmissions")
 end

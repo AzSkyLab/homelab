@@ -89,6 +89,48 @@ BotLines.crew = {
 		"Anyone need an extra gun out there?",
 		"Got time for a hunt if anyone's going out.",
 	},
+	-- Destroy missions (crew_missions.lua), group chat. {dir} is the direction asked, {list} the lairs it took ("womp
+	-- rat lair 1.8 km out, 4,300; ..."), {count} "one" or "two", {lairs} "lair" or "lairs"
+	missionTook = {
+		"Took {count} {dir}: {list}.",
+		"{Count} {dir} {lairs} for me: {list}.",
+		"Got {count} to the {dir}: {list}.",
+		"{Count} {lairs} {dir}. {list}.",
+	},
+	missionNone = {
+		"Nothing worth taking {dir} on that terminal. Tried {tries} lists.",
+		"No lair {dir} on offer after {tries} refreshes, {name}.",
+		"Couldn't find a lair {dir}. The terminal had nothing for me.",
+	},
+	missionFull = {
+		"I'm carrying two already: {list}.",
+		"My hands are full, {name}: {list}.",
+	},
+	missionWhere = {
+		"Which way, {name}? North, south, east, west, or in between.",
+		"Missions in what direction, {name}?",
+	},
+	missionNoTerminal = {
+		"No mission terminal near here, {name}.",
+		"I don't see a mission terminal close by.",
+	},
+	missionLost = {
+		"Couldn't get to the terminal. Skipping the missions.",
+		"Never made it to the mission terminal. Maybe later.",
+	},
+	missionCombat = {
+		"Not while we're fighting!",
+		"Ask me again when this is over.",
+	},
+	missionDropped = {
+		"Dropped {count}.",
+		"Scrapped {count}, {name}.",
+		"Missions dropped.",
+	},
+	missionNoneHeld = {
+		"I haven't got any.",
+		"Nothing to drop.",
+	},
 	-- Asked for something that's another crew member's work
 	notMine = {
 		"That's not my line of work. Ask the others.",
