@@ -32,6 +32,11 @@ enum { STAGE_NONE, STAGE_REQUESTED, STAGE_OPEN, STAGE_VERIFIED };
 // What the bot got in a trade goes back by itself if the jobs haven't handed it back this long after (ms)
 const int HELD_MS = 120000;
 
+// A handover (BotTrade::giveBundle) is dropped if the owner hasn't taken it this long after the window opened (ms),
+// or the window couldn't be opened
+const int BUNDLE_MS = 90000;
+const float BUNDLE_RANGE = 14.f;
+
 // What the watcher last saw of one bot's trade, and what the jobs last read. Changed only with the bot locked; the map
 // itself is guarded by watchMutex
 class Watched : public Object {
@@ -51,6 +56,13 @@ public:
 	// An item the bot owes its owner (give-back trade, or waiting for room in the owner's inventory)
 	uint64 giveItem = 0;
 	uint64 giveTo = 0;
+
+	// Phase 7: a bundle of items handed to bundleTo in one give-back trade (BotLoot's handover), independent of the
+	// single-item give above. bundleOpened: the window has been opened on the owner's client
+	Vector<uint64> bundle;
+	uint64 bundleTo = 0;
+	bool bundleOpened = false;
+	Time bundleSince;
 
 	// What the bot got in its last trade, until the jobs hand it back (botSlice): if they don't, it goes back anyway
 	Vector<uint64> heldItems;
@@ -106,7 +118,7 @@ void forget(uint64 oid) {
 
 	Watched* entry = watched.elementAt(pos).getValue();
 
-	if (entry->giveItem == 0 && entry->heldItems.isEmpty() && entry->owed.isEmpty())
+	if (entry->giveItem == 0 && entry->heldItems.isEmpty() && entry->owed.isEmpty() && entry->bundle.isEmpty())
 		watched.drop(oid);
 }
 
@@ -362,6 +374,161 @@ bool runGive(CreatureObject* bot, CreatureObject* owner, Watched* entry) {
 	return getTradeSession(bot) == nullptr;
 }
 
+// Ends a handover without it being taken. Pre: bot locked
+void endBundle(CreatureObject* bot, Watched* entry, const char* detail, const char* why) {
+	uint64 ownerOid = entry->bundleTo;
+
+	tradeLog().info(true) << bot->getFirstName() << "'s handover to " << ownerOid << " ends: " << why;
+
+	if (getTradeSession(bot) != nullptr) {
+		PlayerManager* playerManager = getPlayerManager(bot);
+
+		if (playerManager != nullptr)
+			playerManager->handleAbortTradeMessage(bot);
+	}
+
+	if (entry->giveItem == 0)
+		bot->setTradeTargetID(0);
+
+	entry->bundle.removeAll();
+	entry->bundleTo = 0;
+	entry->bundleOpened = false;
+	entry->reset();
+
+	fireEvent(bot, ownerOid, detail);
+}
+
+// The bot's handover, one round of the watcher. Returns true when it was the bot's business (no customer events
+// then), like a single give-back. Pre: bot locked
+bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint64 partnerOid) {
+	ZoneServer* zoneServer = bot->getZoneServer();
+	PlayerManager* playerManager = getPlayerManager(bot);
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	if (zoneServer == nullptr || playerManager == nullptr || inventory == nullptr)
+		return false;
+
+	// A customer's trade is the jobs' business: the handover waits
+	if (session != nullptr && partnerOid != entry->bundleTo)
+		return false;
+
+	for (int i = entry->bundle.size() - 1; i >= 0; --i) {
+		if (!inventory->hasObjectInContainer(entry->bundle.get(i)))
+			entry->bundle.remove(i);
+	}
+
+	ManagedReference<CreatureObject*> owner = zoneServer->getObject(entry->bundleTo).castTo<CreatureObject*>();
+
+	if (entry->bundle.isEmpty()) {
+		endBundle(bot, entry, "bundleCancelled", "nothing left to hand over");
+		return true;
+	}
+
+	if (owner == nullptr || !owner->isOnline() || owner->getZone() == nullptr) {
+		endBundle(bot, entry, "bundleCancelled", "the owner is gone");
+		return true;
+	}
+
+	if (entry->bundleSince.miliDifference() > BUNDLE_MS) {
+		endBundle(bot, entry, "bundleCancelled", "not taken in time");
+		return true;
+	}
+
+	Locker clocker(owner, bot);
+
+	if (session == nullptr) {
+		if (entry->bundleOpened) {
+			endBundle(bot, entry, "bundleCancelled", "the owner cancelled");
+			return true;
+		}
+
+		// Wait for the owner to be near and free, then open the window on its client: the same two halves as a
+		// player's drag onto the bot (ItemDropTradeCallback), done from this side
+		ManagedReference<TradeSession*> ownerSession = getTradeSession(owner);
+
+		if (ownerSession != nullptr || (owner->getTradeTargetID() != 0 && owner->getTradeTargetID() != bot->getObjectID()))
+			return true;
+
+		if (bot->getDistanceTo(owner) >= BUNDLE_RANGE)
+			return true;
+
+		owner->setTradeTargetID(bot->getObjectID());
+
+		String error;
+
+		if (!openTrade(bot, owner, error)) {
+			owner->setTradeTargetID(0);
+			return true;
+		}
+
+		entry->bundleOpened = true;
+		entry->bundleSince.updateToCurrentTime();
+
+		tradeLog().info(true) << bot->getFirstName() << " opens a handover trade with " << owner->getFirstName() << " (" << entry->bundle.size() << " item(s))";
+
+		return true;
+	}
+
+	ManagedReference<TradeSession*> ownerSession = getTradeSession(owner);
+
+	if (ownerSession == nullptr || ownerSession->getTradeTargetPlayer() != bot->getObjectID()) {
+		endBundle(bot, entry, "bundleCancelled", "the owner's side is gone");
+		return true;
+	}
+
+	SortedVector<uint64> offered;
+
+	for (int i = 0; i < session->getTradeSize(); ++i) {
+		ManagedReference<SceneObject*> item = session->getTradeItem(i);
+
+		if (item != nullptr)
+			offered.put(item->getObjectID());
+	}
+
+	for (int i = 0; i < entry->bundle.size(); ++i) {
+		if (offered.contains(entry->bundle.get(i)))
+			continue;
+
+		playerManager->handleAddItemToTradeWindow(bot, entry->bundle.get(i));
+
+		if (getTradeSession(bot) == nullptr) {
+			// Core3 refused an item and aborted
+			entry->bundle.removeAll();
+			endBundle(bot, entry, "bundleCancelled", "Core3 refused an item");
+			return true;
+		}
+	}
+
+	if (!session->getAcceptedTrade())
+		playerManager->handleAcceptTransactionMessage(bot);
+
+	// Only a hand-over (a tip is fine): if the owner offers items, it isn't verified
+	if (!ownerSession->hasVerifiedTrade() || ownerSession->getTradeSize() > 0)
+		return true;
+
+	if (!playerManager->checkTradeItems(bot, owner)) {
+		endBundle(bot, entry, "bundleCancelled", "Core3's checks failed");
+		return true;
+	}
+
+	playerManager->handleVerifyTradeMessage(bot);
+
+	if (getTradeSession(bot) == nullptr) {
+		tradeLog().info(true) << bot->getFirstName() << " handed " << entry->bundle.size() << " item(s) to " << owner->getFirstName() << " by trade";
+
+		uint64 ownerOid = entry->bundleTo;
+
+		entry->bundle.removeAll();
+		entry->bundleTo = 0;
+		entry->bundleOpened = false;
+		entry->reset();
+
+		fireEvent(bot, ownerOid, "bundleDone");
+	}
+
+	return true;
+}
+
 // Hands back what the bot got in its last trade and still holds (the jobs never sliced it). Pre: bot locked
 void returnHeld(CreatureObject* bot, Watched* entry, const char* why) {
 	ZoneServer* zoneServer = bot->getZoneServer();
@@ -577,7 +744,7 @@ void BotTrade::watch() {
 
 			if (pos != -1) {
 				Watched* entry = watched.elementAt(pos).getValue();
-				tracked = entry->stage != STAGE_NONE || entry->giveItem != 0 || !entry->heldItems.isEmpty() || !entry->owed.isEmpty();
+				tracked = entry->stage != STAGE_NONE || entry->giveItem != 0 || !entry->heldItems.isEmpty() || !entry->owed.isEmpty() || !entry->bundle.isEmpty();
 			}
 		}
 
@@ -645,6 +812,10 @@ void BotTrade::check(CreatureObject* bot, uint64 requester) {
 		partnerOid = requester;
 		stage = STAGE_REQUESTED;
 	}
+
+	// A handover (BotLoot): the bot's own business too
+	if (!entry->bundle.isEmpty() && runBundle(bot, entry, session, partnerOid))
+		return;
 
 	// An item the bot owes (a give-back trade is the bot's own business: no customer events for it)
 	if (entry->giveItem != 0) {
@@ -996,6 +1167,8 @@ void BotTrade::abortAtLogout(CreatureObject* bot) {
 		return;
 
 	entry->reset();
+	entry->bundle.removeAll();	// the goods stay in the pack, and the jobs offer them again
+	entry->bundleOpened = false;
 
 	if (!entry->heldItems.isEmpty() && entry->giveItem == 0)
 		returnHeld(bot, entry, "logging out");
@@ -1132,6 +1305,57 @@ bool BotTrade::give(CreatureObject* bot, CreatureObject* owner, uint64 itemOid) 
 	owner->sendSystemMessage(request);
 
 	return true;
+}
+
+bool BotTrade::giveBundle(CreatureObject* bot, CreatureObject* owner, const Vector<uint64>& items) {
+	// pre: bot locked
+	if (bot == nullptr || owner == nullptr || items.isEmpty())
+		return false;
+
+	Reference<Watched*> entry = getWatched(bot->getObjectID(), true);
+
+	if (!entry->bundle.isEmpty())
+		return false;
+
+	entry->bundle = items;
+	entry->bundleTo = owner->getObjectID();
+	entry->bundleOpened = false;
+	entry->bundleSince.updateToCurrentTime();
+
+	tradeLog().info(true) << bot->getFirstName() << " hands " << items.size() << " item(s) to " << owner->getFirstName() << ": opening a trade";
+
+	return true;
+}
+
+bool BotTrade::hasBundle(CreatureObject* bot) {
+	// pre: bot locked
+	Reference<Watched*> entry = getWatched(bot->getObjectID(), false);
+
+	return entry != nullptr && !entry->bundle.isEmpty();
+}
+
+void BotTrade::cancelBundle(CreatureObject* bot) {
+	// pre: bot locked
+	Reference<Watched*> entry = getWatched(bot->getObjectID(), false);
+
+	if (entry == nullptr || entry->bundle.isEmpty())
+		return;
+
+	PlayerManager* playerManager = getPlayerManager(bot);
+	ManagedReference<TradeSession*> session = getTradeSession(bot);
+
+	if (playerManager != nullptr && session != nullptr && session->getTradeTargetPlayer() == entry->bundleTo)
+		playerManager->handleAbortTradeMessage(bot);
+
+	if (entry->giveItem == 0)
+		bot->setTradeTargetID(0);
+
+	entry->bundle.removeAll();
+	entry->bundleTo = 0;
+	entry->bundleOpened = false;
+	entry->reset();
+
+	tradeLog().info(true) << bot->getFirstName() << " drops its handover";
 }
 
 // --- Development: a bot plays the human ---

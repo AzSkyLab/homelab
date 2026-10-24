@@ -63,7 +63,7 @@ return function(ctx)
 
 	local log = {}
 	local function resetLog()
-		log = {commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {}, stocks = {}, follows = {}, stops = {},
+		log = {loots = {}, harvests = {}, offers = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {}, stocks = {}, follows = {}, stops = {},
 			moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, tracks = {}, events = {}}
 	end
 	resetLog()
@@ -122,6 +122,8 @@ return function(ctx)
 	function methods.getWorldPositionY(self) return self:getPositionY() end
 	function methods.getCurrentSpeed(self) return self.speed or 0 end
 	function methods.isCreatureObject(self) return self.isPlayer == true or self.isMob == true end
+	-- A creature (as opposed to a humanoid) has something to harvest
+	function methods.isCreature(self) return self.harvest ~= nil end
 	function methods.getDisplayedName(self) return self.display or self.name or "something" end
 	function methods.isAttackableBy(self, other)
 		if self.dead or self.incap then
@@ -573,6 +575,120 @@ return function(ctx)
 	function api.botTrack(b)
 		table.insert(log.tracks, {bot = b.oid, t = nowMs()})
 		return trackList
+	end
+
+	-- Phase 7 loot: looting, harvesting, goods and the handover (patches/bots/BotLoot*). A mob may carry
+	-- loot = {names}, credits, ownerGroup (the group whose corpse it is), harvest = {kind, amount, class}
+	local nextItem = 9000000
+	local function newItem(name, resource, quantity)
+		nextItem = nextItem + 1
+		return {oid = nextItem, name = name, resource = resource == true, quantity = quantity or 1, tradable = true}
+	end
+	local function goodsOf(b)
+		b.goods = b.goods or {}
+		return b.goods
+	end
+	function api.botLootCorpse(b, oid)
+		local r = {ok = false, moved = 0, left = 0, credits = 0, full = false, error = ""}
+		local c = ctx.objects[oid]
+		table.insert(log.loots, {bot = b.oid, t = nowMs(), corpse = oid})
+		if c == nil or not c.isMob then r.error = "no corpse" return r end
+		if not c.dead then r.error = "alive" return r end
+		if b.groupId == nil then r.error = "not grouped" return r end
+		if c.ownerGroup ~= b.groupId then r.error = "not the group's" return r end
+		if dist(b, c) > 16 then r.error = "too far" return r end
+		r.credits = c.credits or 0
+		if r.credits > 0 then
+			-- Core3's split: the humans in the group in range, none for the bots
+			local human = {}
+			for _, m in ipairs(groups[b.groupId].members) do
+				local o = ctx.objects[m]
+				if not o.isBotFlag and dist(o, c) <= 128 then table.insert(human, o) end
+			end
+			for _, o in ipairs(human) do o.cash = (o.cash or 0) + r.credits // #human end
+			c.credits = 0
+		end
+		while #(c.loot or {}) > 0 do
+			if #goodsOf(b) >= (b.packRoom or 40) then r.full = true break end
+			local item = newItem(table.remove(c.loot, 1))
+			table.insert(goodsOf(b), item)
+			r.moved = r.moved + 1
+		end
+		r.left = #(c.loot or {})
+		r.ok = true
+		return r
+	end
+	function api.botHarvest(b, oid)
+		local r = {ok = false, kind = "", amount = 0, resource = "", error = ""}
+		local c = ctx.objects[oid]
+		table.insert(log.harvests, {bot = b.oid, t = nowMs(), corpse = oid})
+		if c == nil or c.harvest == nil then r.error = "not a creature" return r end
+		if not c.dead then r.error = "alive" return r end
+		if dist(b, c) > 7 then r.error = "too far" return r end
+		if c.ownerGroup ~= b.groupId or (c.harvested or {})[b.oid] then r.error = "cannot harvest" return r end
+		c.harvested = c.harvested or {}
+		c.harvested[b.oid] = true
+		local h = c.harvest
+		local found = false
+		for _, item in ipairs(goodsOf(b)) do
+			if item.resource and item.name == h.class then
+				item.quantity = item.quantity + h.amount
+				found = true
+			end
+		end
+		if not found then
+			table.insert(goodsOf(b), newItem(h.class, true, h.amount))
+		end
+		r.ok, r.kind, r.amount, r.resource = true, h.kind, h.amount, h.class
+		return r
+	end
+	function api.botGoods(b)
+		local out = {}
+		for _, item in ipairs(goodsOf(b)) do
+			table.insert(out, {oid = item.oid, name = item.name, quantity = item.quantity, resource = item.resource, tradable = item.tradable})
+		end
+		return out
+	end
+	function api.botOfferGoods(b, playerOid)
+		local p = ctx.objects[playerOid]
+		if p == nil or not p.isPlayer then return false, "no player", 0 end
+		if b.bundle ~= nil then return false, "busy", 0 end
+		if dist(b, p) >= 13 then return false, "too far", 0 end
+		local items = {}
+		for _, item in ipairs(goodsOf(b)) do
+			if item.tradable then table.insert(items, item) end
+		end
+		if #items == 0 then return false, "no goods", 0 end
+		p.room = p.room or 80
+		if p.room <= 0 then return false, "inventory full", 0 end
+		local n = math.min(#items, 20, p.room)
+		local chosen = {}
+		for i = 1, n do table.insert(chosen, items[i]) end
+		b.bundle = {to = p.oid, items = chosen}
+		table.insert(log.offers, {bot = b.oid, t = nowMs(), to = p.oid, count = n, items = chosen})
+		sim.schedule(3000, function()
+			if b.bundle == nil then return end
+			local bundle = b.bundle
+			b.bundle = nil
+			if sim.declineOffers then
+				sim.call("BotJobs", "onEvent", b, "trade", p, "bundleCancelled")
+				return
+			end
+			for _, item in ipairs(bundle.items) do
+				for i, held in ipairs(goodsOf(b)) do
+					if held.oid == item.oid then table.remove(goodsOf(b), i) break end
+				end
+				p.received = p.received or {}
+				table.insert(p.received, item)
+				sim.handedTotal = (sim.handedTotal or 0) + 1
+				p.room = p.room - 1
+			end
+			sim.call("BotJobs", "onEvent", b, "trade", p, "bundleDone")
+		end)
+		return true, n, #items - n
+	end
+	function api.botCancelOffer(b)
+		b.bundle = nil
 	end
 
 	-- The world: walking, creatures fighting, auto-attack, regeneration, the camp's medical rating (every 500 ms)
@@ -1559,6 +1675,288 @@ return function(ctx)
 		teardown()
 	end
 
+
+	-- Scenario: looting, harvesting and the handover (Phase 7: crew_loot.lua against the mocked BotLoot bindings)
+
+	function scenarios.crewloot()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+
+		-- Gear the bots own: never goods, never offered (the mock's goods are only what it looted and harvested)
+		each(function(role, b) b.gear = {"outfit", "weapon", "stims", "camp kit"} end)
+
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		if members(cameren) ~= 5 then
+			fail("crewloot: " .. members(cameren) .. " in the group")
+		end
+		sim.run(10)
+		local gid = cameren.groupId
+
+		local function goodsCount(b)
+			return #(b.goods or {})
+		end
+		local function totalGoods()
+			local n = 0
+			each(function(role, b) n = n + goodsCount(b) end)
+			return n
+		end
+
+		-- A creature the group kills: 3 things on it, credits, a hide to harvest
+		local function kill(name, ownerGroup, loot, harvest)
+			local mob = makeMob(name, cameren.x + 10, cameren.y + 6, 300)
+			mob.ownerGroup, mob.loot, mob.credits, mob.harvest = ownerGroup, loot, 120, harvest
+			attack(cameren, mob)
+			return mob
+		end
+
+		-- 1. A fight: after it the ranger harvests the corpse, then a crew member (not the ranger) loots it
+		local before = nowMs()
+		local rat = kill("a womp rat", gid, {"Rat tooth", "Rusty blaster", "Credit chit"}, {kind = "hide", amount = 40, class = "Tatooinian Mammalian Hide"})
+		sim.run(40)
+		if not rat.dead then
+			fail("crewloot: the womp rat didn't die")
+		end
+		local harvested = entries(log.harvests, nil, before)
+		local looted = entries(log.loots, nil, before)
+		local okHarvest, okLoot = nil, nil
+		for _, h in ipairs(harvested) do
+			if h.bot ~= ranger.oid then fail("crewloot: someone besides the ranger harvested") end
+			if rat.harvested ~= nil and rat.harvested[ranger.oid] then okHarvest = okHarvest or h end
+		end
+		for _, l in ipairs(looted) do
+			if l.bot == ranger.oid then fail("crewloot: the ranger looted with other crew in the group") end
+			if #(ctx.objects[l.bot].goods or {}) > 0 then okLoot = okLoot or l end
+		end
+		if okHarvest == nil then
+			fail("crewloot: the ranger didn't harvest the womp rat")
+		end
+		if okLoot == nil then
+			fail("crewloot: nobody looted the womp rat")
+		end
+		if okHarvest.t > okLoot.t then
+			fail("crewloot: looting didn't wait for the harvest")
+		end
+		if (rat.credits or 0) ~= 0 or cameren.cash < 120 then
+			fail("crewloot: the credits didn't go to the human (" .. tostring(cameren.cash) .. ")")
+		end
+		for _, role in ipairs({"tank", "rifleman", "medic", "ranger"}) do
+			if crew[role].cash ~= 100 then fail("crewloot: a bot took credits") end
+		end
+		if #rat.loot ~= 0 then
+			fail("crewloot: " .. #rat.loot .. " items left on the corpse")
+		end
+		if totalGoods() ~= 4 then
+			fail("crewloot: " .. totalGoods() .. " goods after one kill (3 items and the hide)")
+		end
+		if #(ranger.goods or {}) ~= 1 or ranger.goods[1].quantity ~= 40 then
+			fail("crewloot: the ranger's hide")
+		end
+		local said = {}
+		for _, l in ipairs(log.group) do said[#said + 1] = l.text end
+		local sawLooted, sawHarvested = false, false
+		for _, l in ipairs(log.group) do
+			if isLine(l.text, "tank", "looted") or isLine(l.text, "rifleman", "looted") or isLine(l.text, "medic", "looted") then sawLooted = true end
+			if isLine(l.text, "ranger", "harvested") then sawHarvested = true end
+		end
+		if not sawLooted or not sawHarvested then
+			fail("crewloot: no group line for the loot or the harvest")
+		end
+		-- (the rest of the crew went back to following)
+		each(function(role, b)
+			if dist(b, cameren) > 14 then
+				fail(string.format("crewloot: the %s stayed %.0f m behind after looting", role, dist(b, cameren)))
+			end
+		end)
+
+		-- 2. Another group's kill and a player's corpse are left alone
+		local before2 = totalGoods()
+		local other = kill("a dewback", 999, {"Dewback hide scrap"}, nil)
+		sim.run(40)
+		if not other.dead or #other.loot ~= 1 or totalGoods() ~= before2 then
+			fail("crewloot: the crew took another group's loot")
+		end
+
+		-- 3. "Hand it over" in group chat: every bot with goods offers; the ranger's hide and the loot reach Cameren; no gear
+		local t = nowMs()
+		cameren.received = {}
+		groupSay(cameren, "ok everybody hand it over")
+		sim.run(20)
+		local offers = entries(log.offers, nil, t)
+		if #offers < 1 then
+			fail("crewloot: nobody offered on 'hand it over'")
+		end
+		for _, o in ipairs(offers) do
+			if o.to ~= cameren.oid then fail("crewloot: an offer to someone else") end
+			for _, item in ipairs(o.items) do
+				if item.oid < 9000000 then fail("crewloot: a non-goods item in an offer") end
+			end
+		end
+		if #cameren.received < 4 or totalGoods() ~= 0 then
+			fail("crewloot: Cameren got " .. #cameren.received .. " items, " .. totalGoods() .. " still held")
+		end
+		local hideInTrade = false
+		for _, item in ipairs(cameren.received) do
+			if item.resource and item.quantity == 40 then hideInTrade = true end
+			if item.name == "outfit" or item.name == "weapon" or item.name == "stims" or item.name == "camp kit" then
+				fail("crewloot: gear in the handover")
+			end
+		end
+		if not hideInTrade then
+			fail("crewloot: the harvested hide wasn't handed over")
+		end
+		local gotLine = false
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if l.text:find("Accept the trade", 1, true) or l.text:find("Trade's open", 1, true) or isLine(l.text, "tank", "handoverFull") then
+				gotLine = true
+			end
+		end
+		if not gotLine then
+			fail("crewloot: no 'Accept the trade' line (" .. table.concat(said, " | ") .. ")")
+		end
+
+		-- 4. Nothing held: the first crew member says so
+		t = nowMs()
+		groupSay(cameren, "give me the loot")
+		sim.run(8)
+		local nones = 0
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if isLine(l.text, "tank", "handoverNone") then nones = nones + 1 end
+		end
+		if nones ~= 1 or #entries(log.offers, nil, t) ~= 0 then
+			fail("crewloot: asked with nothing held, " .. nones .. " lines and " .. #entries(log.offers, nil, t) .. " offers")
+		end
+
+		-- 5. A trade that doesn't all fit: the rest in a second trade once there's room
+		local mob3 = kill("a rock wart", gid, {"Wart tooth", "Wart horn", "Wart eye"}, nil)
+		sim.run(40)
+		if not mob3.dead then fail("crewloot: the rock wart didn't die") end
+		local held = totalGoods()
+		if held ~= 3 then
+			fail("crewloot: " .. held .. " goods after the rock wart (3)")
+		end
+		cameren.received, cameren.room = {}, 2
+		sim.schedule(8000, function() cameren.room = 5 end)
+		t = nowMs()
+		groupSay(cameren, "trade me")
+		sim.run(30)
+		if #cameren.received ~= 3 or totalGoods() ~= 0 then
+			fail("crewloot: split handover gave " .. #cameren.received .. " items, " .. totalGoods() .. " still held")
+		end
+		local batches = #entries(log.offers, nil, t)
+		if batches < 2 then
+			fail("crewloot: the split handover took " .. batches .. " trade(s)")
+		end
+
+		-- 6. A cancelled trade: it keeps the goods and doesn't offer again by itself
+		local mob4 = kill("a krayt tooth thief", gid, {"Tooth"}, {kind = "bone", amount = 12, class = "Tatooinian Bone"})
+		sim.run(40)
+		held = totalGoods()
+		if held ~= 2 then fail("crewloot: " .. held .. " goods after the fourth kill (2)") end
+		sim.declineOffers = true
+		t = nowMs()
+		cameren.received = {}
+		groupSay(cameren, "hand it over")
+		sim.run(25)
+		sim.declineOffers = false
+		if totalGoods() ~= held or #cameren.received ~= 0 then
+			fail("crewloot: a cancelled trade lost goods")
+		end
+		local offersMade = #entries(log.offers, nil, t)
+		sim.run(30)
+		if #entries(log.offers, nil, t) ~= offersMade then
+			fail("crewloot: it offered again after the player cancelled")
+		end
+		local cancelLine = false
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if isLine(l.text, "tank", "handoverCancelled") then cancelLine = true end
+		end
+		if not cancelLine then
+			fail("crewloot: no line after a cancelled trade")
+		end
+
+		-- 7. Dismissed with goods: it offers them before heading home, and only then goes
+		local holder = nil
+		each(function(role, b)
+			if goodsCount(b) > 0 and holder == nil and role ~= "ranger" then holder = b end
+		end)
+		if holder == nil then
+			holder = ranger
+		end
+		if goodsCount(holder) == 0 then
+			fail("crewloot: nobody holds goods to dismiss with")
+		end
+		t = nowMs()
+		cameren.received = {}
+		local count = goodsCount(holder)
+		leaveGroup(holder)
+		holder.dismissed = true
+		sim.run(6)
+		if #entries(log.offers, holder, t) < 1 then
+			fail("crewloot: a dismissed bot didn't offer its goods")
+		end
+		if mode(holder) == "home" then
+			fail("crewloot: the dismissed bot went home before the handover")
+		end
+		sim.run(40)
+		if goodsCount(holder) ~= 0 or #cameren.received < count then
+			fail("crewloot: the dismissed bot kept " .. goodsCount(holder) .. " items")
+		end
+		if mode(holder) ~= "home" and mode(holder) ~= "walkingHome" then
+			fail("crewloot: the dismissed bot didn't head home after (" .. mode(holder) .. ")")
+		end
+
+		-- 8. Regrouped while still holding goods from before: it says so and offers them
+		holder.goods = {{oid = 9100001, name = "Old trophy", quantity = 1, resource = false, tradable = true}}
+		t = nowMs()
+		cameren.received = {}
+		invite(cameren, holder, true)
+		sim.run(25)
+		local holding = false
+		for _, l in ipairs(entries(log.group, holder, t)) do
+			if isLine(l.text, holder.role, "holding") then holding = true end
+		end
+		if not holding then
+			fail("crewloot: no 'still holding' line on regrouping")
+		end
+		if #cameren.received ~= 1 or goodsCount(holder) ~= 0 then
+			fail("crewloot: regrouped, the old goods weren't handed over")
+		end
+
+		-- 9. Sent home by the group: the same
+		local rider = rifleman
+		rider.goods = {{oid = 9100002, name = "Spare part", quantity = 1, resource = false, tradable = true}}
+		sim.run(6)
+		t = nowMs()
+		cameren.received = {}
+		groupSay(cameren, "everyone go home, that's all for today")
+		sim.run(60)
+		if #cameren.received < 1 then
+			fail("crewloot: sent home, the rifleman didn't hand over its goods")
+		end
+		each(function(role, b)
+			if mode(b) ~= "home" and mode(b) ~= "walkingHome" then
+				fail("crewloot: the " .. role .. " isn't going home (" .. mode(b) .. ")")
+			end
+		end)
+
+		local looted, harvests, offered = #log.loots, #log.harvests, #log.offers
+		realPrint(string.format("crewloot %d loot calls, %d harvests, %d trades offered, %d items handed to the player", looted, harvests,
+			offered, sim.handedTotal or 0))
+		for _, l in ipairs(log.group) do
+			if l.text:find("trade", 1, true) or isLine(l.text, "ranger", "harvested") then
+				realPrint("         " .. ctx.objects[l.bot].first .. ": " .. l.text)
+				break
+			end
+		end
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
+	table.insert(order, "crewloot")
 end
