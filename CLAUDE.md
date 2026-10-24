@@ -39,7 +39,8 @@ homelab/
 │   │   ├── litellm/             # LiteLLM API gateway
 │   │   ├── mmo/                 # MMO game server (syncs deploy/k8s from azskylab/videogame)
 │   │   ├── swgemu/              # SWGEmu Core3 (Star Wars Galaxies emulator) + MariaDB
-│   │   ├── traefik-public/      # Second Traefik, internet-facing, game only (10.0.20.83)
+│   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
+│   │   ├── traefik-public/      # Second Traefik, internet-facing: the game and the file share only (10.0.20.83)
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
 │   └── manifests/
 │       ├── ingress/              # Traefik Ingress resources for infra services
@@ -70,7 +71,7 @@ homelab/
 | Service | IP | DNS |
 |---------|-----|-----|
 | Traefik LB | 10.0.20.80 | `*.home.lab` ingress (internal only; never port-forward this) |
-| Traefik public LB | 10.0.20.83 | `jankmmo.duckdns.org` (internet-facing, MMO game only) |
+| Traefik public LB | 10.0.20.83 | `jankmmo.duckdns.org`, `charknox.duckdns.org` (internet-facing: the game and the file share only) |
 | CoreDNS LB | 10.0.20.53 | Internal DNS |
 | PostgreSQL | 10.0.30.10 | `postgres.home.lab` |
 | Ollama (VM) | 10.0.20.30 | `ollama.home.lab` |
@@ -238,6 +239,7 @@ spec:
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
 | MMO game server | mmo | GitHub azskylab/videogame, private (deploy/k8s/) | `wss://jankmmo.duckdns.org` (public) |
 | SWGEmu Core3 | swgemu | homelab (kubernetes/manifests/swgemu/), image from images/swgemu-core3 | UDP `10.0.20.84:44453` |
+| File share | fileshare | homelab (kubernetes/manifests/fileshare/) | `https://charknox.duckdns.org` (public, password) |
 
 ## External PostgreSQL
 
@@ -340,7 +342,8 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/password-hash` | wireguard-secrets | wireguard | Bcrypt hash for wg-easy web UI login |
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
-| `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomain (`malliefivpn`) |
+| `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomains kept on the home IP (`malliefivpn,charknox`) |
+| `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `friend`, SHA-512 hash) | fileshare | Download page password |
 | `homelab/mmo/db-password` | mmo-server (`DATABASE_URL`), mmo-backup (`PGPASSWORD`) | mmo | PostgreSQL password for the `mmo` database |
 | `homelab/mmo/signup-code` | mmo-server (`MMO_SIGNUP_CODE`) | mmo | Invite code players type to create an account |
 | `homelab/mmo/argocd-deploy-key` | videogame-repo | argocd | Read-only GitHub deploy key so ArgoCD can read the private videogame repo |
@@ -469,8 +472,8 @@ Local image and 3D generation on the workstation RTX 5090 for the game's art pip
 
 ## MMO Game Server (Public)
 
-The game server from `azskylab/videogame` is the only thing in the lab that faces the internet over TCP. It has its own
-door: a second Traefik on its own MetalLB address, so the router never forwards to the lab-wide Traefik.
+The game server from `azskylab/videogame` and the file share (next section) are the only things in the lab that face
+the internet over TCP. They have their own door: a second Traefik on its own MetalLB address, so the router never forwards to the lab-wide Traefik.
 
 ### Architecture
 
@@ -735,6 +738,39 @@ kubectl -n swgemu create secret generic swgemu-secrets \
 kubectl -n corpocache get secret ghcr-pull-secret -o json \
   | jq '{apiVersion,kind,type,data,metadata:{name:"ghcr-pull-secret",namespace:"swgemu"}}' | kubectl apply -f -
 kubectl -n swgemu patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
+```
+
+## File Share (Public Downloads)
+
+A password-protected download page for handing big files (tens of GB) to a friend: `https://charknox.duckdns.org`,
+user `friend`, password `pass homelab/fileshare/password`. Pull only: the friend downloads in a browser, nothing uploads.
+
+```
+Browser → USG TCP 443 → traefik-public 10.0.20.83 → Ingress fileshare (class traefik-public) → nginx :8080
+nginx → NFS 10.0.10.11:/mnt/media/fileshare (read-only: the k8s VLAN's export of /mnt/media is ro)
+```
+
+- **Files:** copy them from the workstation (the management VLAN has the rw export), then they show up in the listing:
+  `rsync -ah --progress --partial <files> root@10.0.10.11:/mnt/media/fileshare/`. Make sure they're world-readable
+  (nginx runs as uid 101). Dot files (rsync's partial uploads) are never listed or served.
+- **Not on local disks:** the agents have about 50 GB free each, so a 50 GB file would put a node under disk pressure.
+  The NFS share had 502 GB free (2026-10-24), shared with Jellyfin's media.
+- **Downloads resume** (nginx answers Range requests); every file downloads as `application/octet-stream`.
+- **Limits:** 4 connections and 5 requests/s (burst 20) per client address, so password guessing gets 429. No bandwidth
+  cap; add `limit_rate` in the ConfigMap if downloads crowd out the game.
+- **DNS:** DuckDNS updater in `wireguard` keeps `charknox` on the home IP (subdomain list in `duckdns-secrets`).
+  Split DNS like the game's: `charknox.duckdns.org` zone in `kubernetes/apps/coredns/coredns.yml`, and key
+  `charknox.server` in `coredns-custom` in `kube-system` (manual, not in git; needed for cert-manager's self-check).
+- **Certificate:** `fileshare-tls`, ClusterIssuer `letsencrypt-prod` (HTTP-01).
+- **Switch it off** when not in use: `kubectl -n fileshare scale deploy/fileshare --replicas=0` is reverted by
+  self-heal, so set `replicas: 0` in the manifest (or delete `kubernetes/apps/fileshare/`) and push.
+
+```bash
+# Recreate the secret
+kubectl create namespace fileshare
+kubectl -n fileshare create secret generic fileshare-auth --from-literal=htpasswd="friend:$(openssl passwd -6 "$(pass homelab/fileshare/password)")"
+# Test from the LAN (by address: the public IP answers with the USG login page from inside)
+curl -s -o /dev/null -w "%{http_code}\n" -u "friend:$(pass homelab/fileshare/password)" --resolve charknox.duckdns.org:443:10.0.20.83 https://charknox.duckdns.org/
 ```
 
 ## GitHub Actions CI/CD (ARC)

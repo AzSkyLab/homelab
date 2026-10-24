@@ -1,0 +1,131 @@
+# Download page for a friend: https://charknox.duckdns.org/ lists /mnt/media/fileshare on pve-identity behind basic auth.
+# nginx (unprivileged, read-only root) serves the NFS folder read-only: the k8s VLAN's export of /mnt/media is ro, so
+# nothing here can change the files. Load them from the workstation (management VLAN has the rw export):
+#   rsync -ah --progress --partial <files> root@10.0.10.11:/mnt/media/fileshare/
+# Needs the Secret `fileshare-auth` (key `htpasswd`), made by hand from `pass homelab/fileshare/password`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fileshare
+  namespace: fileshare
+data:
+  default.conf: |
+    # 4 connections per client address (a download manager may split a file), requests limited per address so a
+    # password guesser gets nowhere. The client address comes from Traefik's X-Forwarded-For. No bandwidth cap:
+    # add `limit_rate 5m;` to `location /` if downloads crowd out the game on the home uplink.
+    limit_conn_zone $binary_remote_addr zone=share_per_ip:1m;
+    limit_req_zone $binary_remote_addr zone=share_req:1m rate=5r/s;
+    limit_conn_status 429;
+    limit_req_status 429;
+    server {
+      listen 8080;
+      set_real_ip_from 10.0.0.0/8;
+      set_real_ip_from 172.16.0.0/12;
+      real_ip_header X-Forwarded-For;
+      real_ip_recursive on;
+      server_name _;
+      server_tokens off;
+      # Redirects say only the path: nginx would otherwise name its own port 8080, which the internet can't reach.
+      absolute_redirect off;
+      add_header X-Content-Type-Options nosniff always;
+      location = /healthz { access_log off; default_type text/plain; return 200 "ok\n"; }
+      location / {
+        auth_basic "Files";
+        auth_basic_user_file /etc/nginx/auth/htpasswd;
+        limit_conn share_per_ip 4;
+        limit_req zone=share_req burst=20 nodelay;
+        root /data;
+        # Dot files (rsync's partial uploads, .DS_Store) are never listed or served.
+        location ~ /\. { return 404; }
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+        sendfile on;
+        # Everything downloads as a file (resumable: nginx answers Range requests), nothing renders in the browser.
+        types { }
+        default_type application/octet-stream;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options nosniff always;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fileshare
+  namespace: fileshare
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: fileshare }
+  template:
+    metadata:
+      labels: { app: fileshare }
+    spec:
+      automountServiceAccountToken: false # nothing here talks to the Kubernetes API
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # nginx-unprivileged's user
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - { name: data, mountPath: /data, readOnly: true }
+            - { name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+            - { name: auth, mountPath: /etc/nginx/auth, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: data
+          nfs: { server: 10.0.10.11, path: /mnt/media/fileshare, readOnly: true }
+        - { name: conf, configMap: { name: fileshare, items: [{ key: default.conf, path: default.conf }] } }
+        - name: auth
+          secret: { secretName: fileshare-auth, defaultMode: 0444, items: [{ key: htpasswd, path: htpasswd }] }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fileshare
+  namespace: fileshare
+spec:
+  selector: { app: fileshare }
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fileshare
+  namespace: fileshare
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik-public
+  tls:
+    - hosts: ["charknox.duckdns.org"]
+      secretName: fileshare-tls
+  rules:
+    - host: "charknox.duckdns.org"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fileshare
+                port: { number: 8080 }

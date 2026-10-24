@@ -1,5 +1,5 @@
 ---
-# A second, small Traefik that only the game (mmo) uses, on its own MetalLB address.
+# A second, small Traefik for the internet-facing hosts only (the game and the file share), on its own MetalLB address.
 # The router forwards TCP 80/443 to THIS address only, so the lab's other web UIs
 # (served by the existing Traefik at 10.0.20.80) never face the internet.
 apiVersion: argoproj.io/v1alpha1

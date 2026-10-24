@@ -50,10 +50,13 @@ spec:
               - name: loop
               - name: reload
               - name: loadbalance
-          # Split DNS for the game: from inside the LAN the public IP answers with the USG login page (no hairpin),
-          # so LAN clients get the public Traefik directly. The cluster's own CoreDNS has the same override.
+          # Split DNS for the public door (the game and the file share): from inside the LAN the public IP answers with
+          # the USG login page (no hairpin), so LAN clients get the public Traefik directly. The cluster's own CoreDNS
+          # has the same override.
           - zones:
               - zone: jankmmo.duckdns.org.
+                use_tcp: true
+              - zone: charknox.duckdns.org.
                 use_tcp: true
             port: 53
             plugins:
@@ -61,6 +64,7 @@ spec:
               - name: hosts
                 configBlock: |-
                   10.0.20.83 jankmmo.duckdns.org
+                  10.0.20.83 charknox.duckdns.org
               - name: cache
                 parameters: 30
         zoneFiles:

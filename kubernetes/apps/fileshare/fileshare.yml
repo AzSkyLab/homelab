@@ -1,0 +1,25 @@
+---
+# Password-protected download page for sharing big files with a friend over the internet, through the public Traefik.
+# Files live on the NFS share on pve-identity (/mnt/media/fileshare), mounted read-only; load them from the workstation.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fileshare
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: applications
+  source:
+    repoURL: https://github.com/azskylab/homelab.git
+    targetRevision: main
+    path: kubernetes/manifests/fileshare/
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: fileshare
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
