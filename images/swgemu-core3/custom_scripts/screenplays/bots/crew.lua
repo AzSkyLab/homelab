@@ -2667,16 +2667,16 @@ function BotCrew:situation(pBot, oid)
 	end
 
 	local doing = {}
-	local creature = CreatureObject(pBot)
 	local g = self:group(pBot)
 
-	if creature:isRidingMount() then
+	-- (CreatureObject(p) calls inline: the wrapper may be shared, and group() made others)
+	if CreatureObject(pBot):isRidingMount() then
 		table.insert(doing, "riding your swoop")
 	end
 
 	local pTarget = getSceneObject(readData(ckey(oid, "target")))
 
-	if pTarget ~= nil and creature:isInCombat() then
+	if pTarget ~= nil and CreatureObject(pBot):isInCombat() then
 		table.insert(doing, "in a fight with " .. SceneObject(pTarget):getDisplayedName())
 	elseif g ~= nil and self:activeCamp(g, g.leader and g.leader.p) ~= nil then
 		table.insert(doing, "resting at the ranger's camp")
