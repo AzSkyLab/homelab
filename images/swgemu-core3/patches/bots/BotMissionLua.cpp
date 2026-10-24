@@ -122,7 +122,8 @@ void BotMissionLua::registerFunctions(Lua* lua) {
 
 // botMissionTerminals(pBot, range)
 int BotMissionLua::botMissionTerminals(lua_State* L) {
-	CreatureObject* bot = toOnlineBot(L, 1);
+	// Any creature: it only reads where the terminals are (the crew looks around its leader too)
+	CreatureObject* bot = toCreature(L, 1);
 	Vector<Reference<BotMissionTerminal*>> found;
 
 	if (bot == nullptr || !BotMission::findTerminals(bot, (float) toNumber(L, 2, 30), found))

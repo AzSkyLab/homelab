@@ -2730,6 +2730,24 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
+	-- "Hand it over" by tell or out loud to this bot (group chat goes through groupAddressed, crew_loot.lua)
+	if channel ~= "group" and text ~= nil and self:handoverWanted(text) then
+		local g = self:group(pBot)
+
+		if g ~= nil and g.byOid[SceneObject(pSpeaker):getObjectID()] ~= nil then
+			local _, count = self:goodsOf(pBot, oid)
+
+			if count == 0 then
+				self:say(pBot, oid, SceneObject(pSpeaker):getObjectID(), channel, "handoverNone", self:firstName(pSpeaker))
+				return true
+			end
+
+			if self:handoverSpoken(pBot, oid, pSpeaker, channel, text, g) then
+				return true
+			end
+		end
+	end
+
 	-- Missions (crew_missions.lua) are the crew's own business: the language model isn't asked
 	if channel == "group" and self:missionHeard(pBot, oid, pSpeaker, channel, text) then
 		return true

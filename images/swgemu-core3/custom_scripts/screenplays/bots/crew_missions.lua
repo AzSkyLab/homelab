@@ -295,6 +295,15 @@ function BotCrew:missionStart(pBot, oid, request, name)
 
 	local terminals = bot("botMissionTerminals", pBot, self.missionCfg.range)
 
+	-- None by the bot (still catching up): the ones by the leader, who asked at a terminal
+	if terminals == nil or #terminals == 0 then
+		local gl = self:group(pBot)
+
+		if gl ~= nil and gl.leader ~= nil and gl.leader.oid ~= oid then
+			terminals = bot("botMissionTerminals", gl.leader.p, self.missionCfg.range)
+		end
+	end
+
 	if terminals == nil or #terminals == 0 then
 		self:groupSay(pBot, oid, "missionNoTerminal", name)
 		return
