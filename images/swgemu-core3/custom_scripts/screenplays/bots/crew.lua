@@ -2922,6 +2922,19 @@ function BotCrew:requestFields(pBot, oid, playerOid)
 		return fields
 	end
 
+	-- What it holds (the brain must not claim missions it doesn't have): "none" or "2: a womp rat lair east, ..."
+	local held = bot("botMissions", pBot)
+
+	if held ~= nil then
+		local parts = {}
+
+		for _, m in ipairs(held) do
+			table.insert(parts, ((tostring(m.target or "lair") .. " " .. tostring(m.direction or "")):gsub("%s+$", "")))
+		end
+
+		fields.missions = #parts == 0 and "none" or (#parts .. ": " .. table.concat(parts, ", "))
+	end
+
 	-- What the speaker has targeted that this bot may attack, for "attack my target": its name, or "none"
 	local pPlayer = playerOid ~= nil and getSceneObject(playerOid) or nil
 	local g = pPlayer ~= nil and self:group(pBot) or nil
@@ -3275,7 +3288,7 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 	end
 
 	-- Missions (crew_missions.lua) are the crew's own business: the language model isn't asked
-	if channel == "group" and self:missionHeard(pBot, oid, pSpeaker, channel, text) then
+	if self:missionHeard(pBot, oid, pSpeaker, channel, text) then
 		return true
 	end
 

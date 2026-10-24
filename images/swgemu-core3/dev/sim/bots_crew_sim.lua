@@ -1986,6 +1986,137 @@ return function(ctx)
 			fail("crewmissions: the tank left with its waypoints? tank " .. waypointsOf(tank) .. ", rifleman " .. waypointsOf(rifleman))
 		end
 
+		-- 9b. Nothing within 45 degrees of east in five lists, but some within 90: the best two of those, and it says so
+		medic.missions = {}
+		mw.refreshes, mw.accepts = {}, {}
+		mw.lists[medic.first] = {{{degrees = 170, reward = 5000}, {degrees = 10, reward = 4000}, {degrees = 300, reward = 9000},
+			{degrees = 200, reward = 8000}, {degrees = 15, reward = 1000}}}
+		t = nowMs()
+		groupSay(cameren, medic.first .. ", get two missions east")
+		sim.run(25)
+		if rewards(medic) ~= "5000,4000" or mw.refreshes[medic.oid] ~= 5 then
+			fail("crewmissions: east, with only wider ones on offer, the medic took '" .. rewards(medic) .. "' after " ..
+				tostring(mw.refreshes[medic.oid]) .. " lists")
+		end
+		if not anyLine(lines(medic, t), "medic", "missionWide") or not lines(medic, t)[1].text:find("east", 1, true) or
+			not lines(medic, t)[1].text:find("5,000", 1, true) then
+			fail("crewmissions: the medic should say it took wider ones: " .. tostring(lines(medic, t)[1] and lines(medic, t)[1].text))
+		end
+		-- ...and with nothing within 90 degrees either, it takes none and says so as before
+		medic.missions = {}
+		mw.refreshes = {}
+		mw.lists[medic.first] = {{{degrees = 250, reward = 5000}, {degrees = 300, reward = 4000}}}
+		t = nowMs()
+		groupSay(cameren, medic.first .. ", get two missions east")
+		sim.run(25)
+		if rewards(medic) ~= "" or not anyLine(lines(medic, t), "medic", "missionNone") then
+			fail("crewmissions: nothing within 90 degrees of east should take none and say so")
+		end
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+
+		-- 9c. Retrying: after "nothing east" the crew is told to search again (spoken, to one bot), and later to take any
+		-- direction or the nearest, without saying the word "mission"
+		for _, b in ipairs({rifleman, medic, ranger}) do b.missions = {} end
+		mw.refreshes, mw.accepts = {}, {}
+		mw.lists[ranger.first] = {{{degrees = 250, reward = 5000, distance = 900}, {degrees = 300, reward = 4000, distance = 1500}}}
+		t = nowMs()
+		groupSay(cameren, ranger.first .. ", get two missions east")
+		sim.run(25)
+		if rewards(ranger) ~= "" or not anyLine(lines(ranger, t), "ranger", "missionNone") then
+			fail("crewmissions: nothing east should take none and say so (retry setup)")
+		end
+		mw.lists[ranger.first] = {{{degrees = 100, reward = 3000, distance = 700}, {degrees = 80, reward = 2000, distance = 1900}}}
+		mw.refreshes = {}
+		t = nowMs()
+		speak(ranger, cameren, "search again " .. ranger.first, "spatial")
+		sim.run(25)
+		if rewards(ranger) ~= "3000,2000" or not anyLine(lines(ranger, t), "ranger", "missionTook") then
+			fail("crewmissions: 'search again' (spoken, to the ranger) took '" .. rewards(ranger) .. "' and said " ..
+				tostring(lines(ranger, t)[1] and lines(ranger, t)[1].text))
+		end
+		if mw.refreshes[rifleman.oid] ~= nil or mw.refreshes[medic.oid] ~= nil then
+			fail("crewmissions: 'search again' to the ranger sent the others to the terminal")
+		end
+		-- "get missions" with no direction: asked where; then "i dont care which direction" sends everyone, any direction
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+		for _, b in ipairs({rifleman, medic, ranger}) do
+			b.missions = {}
+			mw.lists[b.first] = {{{degrees = 200, reward = 5000, distance = 900}, {degrees = 300, reward = 4000, distance = 1500},
+				{degrees = 10, reward = 3000, distance = 300}}}
+		end
+		mw.refreshes, mw.accepts = {}, {}
+		local function forget()
+			for _, b in ipairs({rifleman, medic, ranger}) do writeStringData("bot:" .. b.oid .. ":crew:mLastName", "") end
+		end
+		forget()
+		t = nowMs()
+		groupSay(cameren, "get missions")
+		sim.run(4)
+		if not anyLine(entries(log.group, nil, t), rifleman.job or "rifleman", "missionWhere") and
+			not anyLine(entries(log.group, nil, t), "tank", "missionWhere") and
+			not anyLine(entries(log.group, nil, t), "medic", "missionWhere") and
+			not anyLine(entries(log.group, nil, t), "ranger", "missionWhere") then
+			fail("crewmissions: 'get missions' with no direction wasn't asked where")
+		end
+		t = nowMs()
+		groupSay(cameren, "i dont care which direction")
+		sim.run(40)
+		for _, b in ipairs({rifleman, medic, ranger}) do
+			if rewards(b) ~= "5000,4000" then
+				fail("crewmissions: any direction, " .. b.first .. " took '" .. rewards(b) .. "' (5000,4000 are the best)")
+			end
+			if not anyLine(lines(b, t), b.role, "missionTookAny") then
+				fail("crewmissions: " .. b.first .. " should say it took any direction: " .. tostring(lines(b, t)[1] and lines(b, t)[1].text))
+			end
+		end
+		-- The nearest first, said to the group with no mission word: "just pick two semi close"
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+		for _, b in ipairs({rifleman, medic, ranger}) do b.missions = {} end
+		mw.refreshes, mw.accepts = {}, {}
+		forget()
+		t = nowMs()
+		groupSay(cameren, "get missions")
+		sim.run(3)
+		groupSay(cameren, "just pick two semi close")
+		sim.run(40)
+		for _, b in ipairs({rifleman, medic, ranger}) do
+			if rewards(b) ~= "3000,5000" then
+				fail("crewmissions: nearby, " .. b.first .. " took '" .. rewards(b) .. "' (3000,5000 are the nearest)")
+			end
+		end
+		-- A bare "take two missions" (a typo and all) goes the way it was last asked
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+		for _, b in ipairs({rifleman, medic, ranger}) do b.missions = {} end
+		mw.lists[ranger.first] = {{{degrees = 100, reward = 3000, distance = 700}, {degrees = 80, reward = 2000, distance = 1900}}}
+		mw.refreshes = {}
+		groupSay(cameren, ranger.first .. ", get two missions east")
+		sim.run(25)
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+		mw.refreshes = {}
+		t = nowMs()
+		groupSay(cameren, ranger.first .. ", take two fucking missiongs")
+		sim.run(25)
+		if rewards(ranger) ~= "3000,2000" or not anyLine(lines(ranger, t), "ranger", "missionTook") then
+			fail("crewmissions: 'take two missions' with no direction should reuse east, took '" .. rewards(ranger) .. "'")
+		end
+		-- A question about the missions isn't an order
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+		mw.refreshes, mw.accepts = {}, {}
+		t = nowMs()
+		groupSay(cameren, "well did you get two?")
+		sim.run(10)
+		if next(mw.refreshes) ~= nil then
+			fail("crewmissions: 'did you get two?' sent the crew to the terminal")
+		end
+		groupSay(cameren, "scrap the missions")
+		sim.run(10)
+
 		-- 10. No terminal near
 		mw.terminals = {}
 		for _, b in ipairs({rifleman, medic, ranger}) do b.missions = {} end

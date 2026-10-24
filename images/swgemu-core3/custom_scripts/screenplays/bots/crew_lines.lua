@@ -190,6 +190,23 @@ BotLines.crew = {
 		"Got {count} to the {dir}: {list}.",
 		"{Count} {lairs} {dir}. {list}.",
 	},
+	-- Short of the asked direction after the last list, it took the best within 90 degrees: {dir} the asked direction,
+	-- {where} where the lairs lie ("northeast", "north and east"), {count}, {Count} and {list} as for missionTook
+	missionWide = {
+		"Nothing due {dir}. Took {count}, {where}: {list}.",
+		"Not much {dir} on that terminal; {count} {where} instead: {list}.",
+		"Couldn't fill {dir}, so {Count} {where}: {list}.",
+	},
+	-- ...asked for any direction or the nearest ({dir} is "any direction" or "nearby")
+	missionTookAny = {
+		"Took {count} ({dir}): {list}.",
+		"{Count} {lairs}, {dir}: {list}.",
+		"Got {count}, {dir}: {list}.",
+	},
+	missionNoneAny = {
+		"That terminal has no destroy missions for me, {name}. Tried {tries} lists.",
+		"Nothing on offer at all after {tries} refreshes, {name}.",
+	},
 	missionNone = {
 		"Nothing worth taking {dir} on that terminal. Tried {tries} lists.",
 		"No lair {dir} on offer after {tries} refreshes, {name}.",
@@ -200,7 +217,7 @@ BotLines.crew = {
 		"My hands are full, {name}: {list}.",
 	},
 	missionWhere = {
-		"Which way, {name}? North, south, east, west, or in between.",
+		"Which way, {name}? North, south, east, west, in between, or any.",
 		"Missions in what direction, {name}?",
 	},
 	missionNoTerminal = {

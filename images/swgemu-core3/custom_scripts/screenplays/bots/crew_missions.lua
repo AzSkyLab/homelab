@@ -48,6 +48,21 @@ local function num(s)
 	return tonumber(s or "")
 end
 
+local function hasAny(text, list)
+	for _, words in ipairs(list) do
+		if text:find(words, 1, true) ~= nil then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- " words like this " (lowercase letters, digits and apostrophes)
+local function wordsOf(text)
+	return " " .. (tostring(text or ""):lower():gsub("[^%w']", " "):gsub("%s+", " ")) .. " "
+end
+
 local function mkey(missionOid, field)
 	return "crew:mission:" .. missionOid .. ":" .. field
 end
@@ -75,6 +90,7 @@ BotCrew.missionCfg = {
 	range = 30,       -- the terminal is within this of the bot (the leader is beside it)
 	refreshes = 5,    -- lists it reads before it takes what it has
 	arc = 45,         -- degrees either side of the asked direction
+	wideArc = 90,     -- ...and, after the last list, when that left it short
 	max = 2,          -- Core3's limit
 	stepMs = 1600,    -- between steps: the list's refresh cooldown is 1.4 s
 	timeout = 120,    -- seconds for the whole errand
@@ -84,15 +100,55 @@ BotCrew.missionCfg = {
 
 -- Mission talk
 
--- What a group chat line asks of the missions: nil, {kind = "drop"} or {kind = "take", dir = <degrees or nil>, name =
--- <direction name>, count = 1 or 2}. A take with no direction only counts when it says to take (grab, get, ...)
-function BotCrew:missionRequest(text)
+-- No direction asked: any (the best paying), or the nearest. Stored as the mission's direction
+local ANY, NEAR = -1, -2
+local ANY_NAME, NEAR_NAME = "any direction", "nearby"
+local ANY_PHRASES = {"any direction", "dont care", "whatever direction", "doesnt matter", "anywhere", "whichever",
+	"no preference", "any way", "dont mind"}
+local NEAR_PHRASES = {"closest", "nearest", "close by", "closeby", "nearby", "near by", "semi close", "pretty close", "not far"}
+-- A retry, in a few words ("search again", "get them", "pick two"): only counts soon after the crew was asked for missions
+local RETRY_PHRASES = {" again", "get them", "take them", "grab them", "pick them", "pick two", "pick one", "pick some",
+	"grab some", "grab two", "get two", "take two", "get some", "take some", " any ", "whatever", "anything", "anywhere"}
+local QUESTION_WORDS = {did = true, ["do"] = true, does = true, have = true, has = true, what = true, why = true, how = true,
+	are = true, is = true, was = true, were = true, who = true, where = true, when = true}
+local LEAD_WORDS = {well = true, so = true, ok = true, okay = true, hey = true, but = true, ["and"] = true, ["then"] = true,
+	just = true, please = true, now = true, yo = true, oh = true}
+BotCrew.missionAsked = 180   -- seconds after a request for missions that a retry still counts
+
+-- The line without its lead-in words, as wordsOf gives it (" did you get two ")
+local function leadless(text)
+	local t = wordsOf(text)
+
+	while true do
+		local first, rest = t:match("^ (%S+)( .*)$")
+
+		if first == nil or not LEAD_WORDS[first] then
+			break
+		end
+
+		t = rest
+	end
+
+	return t
+end
+
+-- "did you get two?", "what missions do you have": a question, not an order
+local function questionLike(text)
+	local first = leadless(text):match("^ (%S+)")
+
+	return first ~= nil and QUESTION_WORDS[first] == true
+end
+
+-- What a group chat line asks of the missions: nil, {kind = "drop"} or {kind = "take", dir = <degrees, ANY or NEAR, or
+-- nil>, name = <direction name>, count = 1 or 2}. A take with no direction only counts when it says to take (grab, get,
+-- ...). With loose, no word "mission" is needed (a retry), and only a direction, "any" or "nearby" makes a take.
+function BotCrew:missionRequest(text, loose)
 	local t = tostring(text or ""):lower():gsub("'", "")
 
 	t = t:gsub("north[%s%-]+east", "northeast"):gsub("north[%s%-]+west", "northwest"):gsub("south[%s%-]+east", "southeast")
 		:gsub("south[%s%-]+west", "southwest")
 
-	local words, mission, drop, take, direction = {}, false, false, false, nil
+	local mission, drop, take, direction = false, false, false, nil
 
 	for word in t:gmatch("%a+") do
 		if word:find("^mission") then
@@ -110,12 +166,12 @@ function BotCrew:missionRequest(text)
 		end
 	end
 
-	if not mission then
+	if not mission and not loose then
 		return nil
 	end
 
 	if drop then
-		return {kind = "drop"}
+		return mission and {kind = "drop"} or nil
 	end
 
 	local count = (t:find("%f[%a]one%f[%A]") or t:find("%f[%d]1%f[%D]")) and 1 or 2
@@ -124,19 +180,78 @@ function BotCrew:missionRequest(text)
 		return {kind = "take", dir = DIRECTIONS[direction], name = direction, count = count}
 	end
 
-	if take then
+	if hasAny(t, NEAR_PHRASES) or t:find("%f[%a]close%f[%A]") then
+		return {kind = "take", dir = NEAR, name = NEAR_NAME, count = count}
+	end
+
+	if hasAny(t, ANY_PHRASES) then
+		return {kind = "take", dir = ANY, name = ANY_NAME, count = count}
+	end
+
+	if take and mission then
 		return {kind = "take", count = count}
 	end
 
 	return nil
 end
 
--- The destroy missions within arc degrees of dir (compass degrees), best paying first, at most need of them
+-- A short line that retries ("search again", "get them", "pick two semi close", "i dont care which direction", "east"):
+-- a take, with a direction only if it gave one. nil for a question or a longer line.
+function BotCrew:missionRetry(text)
+	if questionLike(text) then
+		return nil
+	end
+
+	local t = leadless(text)
+	local words = 0
+
+	for _ in t:gmatch("%S+") do
+		words = words + 1
+	end
+
+	if words > 8 then
+		return nil
+	end
+
+	local request = self:missionRequest(text, true)
+
+	-- A direction, "any" or "nearby" (a bare direction only when it is nearly all the line says)
+	if request ~= nil and request.kind == "take" and request.dir ~= nil and (request.dir < 0 or words <= 4) then
+		return request
+	end
+
+	local plain = t:gsub("'", "")
+
+	if hasAny(plain, RETRY_PHRASES) then
+		local count = plain:find("%f[%a]one%f[%A]") and 1 or 2
+
+		if plain:find(" any ", 1, true) or plain:find("whatever", 1, true) or plain:find("anything", 1, true) then
+			return {kind = "take", dir = ANY, name = ANY_NAME, count = count}
+		end
+
+		return {kind = "take", count = count}
+	end
+
+	return nil
+end
+
+function BotCrew:missionDirOf(name)
+	if name == ANY_NAME then
+		return ANY
+	elseif name == NEAR_NAME then
+		return NEAR
+	end
+
+	return DIRECTIONS[name or ""]
+end
+
+-- The destroy missions within arc degrees of dir (compass degrees; any direction when dir is below 0), best paying first
+-- (the nearest first for NEAR), at most need of them
 function BotCrew:missionPick(missions, dir, need, arc)
 	local picks = {}
 
 	for _, m in ipairs(missions or {}) do
-		local off = math.abs((((m.degrees or 0) - dir + 180) % 360) - 180)
+		local off = dir < 0 and 0 or math.abs((((m.degrees or 0) - dir + 180) % 360) - 180)
 
 		if off <= arc then
 			table.insert(picks, m)
@@ -144,6 +259,10 @@ function BotCrew:missionPick(missions, dir, need, arc)
 	end
 
 	table.sort(picks, function(a, b)
+		if dir == NEAR and (a.distance or 0) ~= (b.distance or 0) then
+			return (a.distance or 0) < (b.distance or 0)
+		end
+
 		if a.reward ~= b.reward then
 			return a.reward > b.reward
 		end
@@ -194,12 +313,6 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 		return false
 	end
 
-	local request = self:missionRequest(text)
-
-	if request == nil then
-		return false
-	end
-
 	local g = self:group(pBot)
 	local speaker = g ~= nil and g.byOid[SceneObject(pSpeaker):getObjectID()] or nil
 
@@ -207,17 +320,44 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 		return false
 	end
 
-	local name = self:firstName(pSpeaker)
+	local now = os.time()
 	local forGroup = readData(ckey(oid, "forGroup")) == 1
+	local request = self:missionRequest(text)
+
+	-- Not about missions, but soon after the crew was asked for some and is short: "search again", "get them", "any"
+	if request == nil then
+		if not self:missionRetryable(g, oid, forGroup, now) then
+			return false
+		end
+
+		request = self:missionRetry(text)
+
+		if request == nil then
+			return false
+		end
+	end
+
+	local name = self:firstName(pSpeaker)
 
 	put(ckey(oid, "forGroup"), 0)
 
-	if request.kind == "take" and request.dir == nil then
-		if forGroup then
-			self:groupSay(pBot, oid, "missionWhere", name)
-		end
+	if request.kind == "take" then
+		put(ckey(oid, "mAskAt"), now)
 
-		return true
+		if request.dir == nil then
+			-- A question about missions is the brain's; an order with no direction takes the last one asked
+			local last = not questionLike(text) and self:missionLastName(g, oid, forGroup, now) or nil
+
+			if last ~= nil then
+				request.name, request.dir = last, self:missionDirOf(last)
+			elseif questionLike(text) then
+				return false
+			else
+				self:groupSay(pBot, oid, "missionWhere", name)
+
+				return true
+			end
+		end
 	end
 
 	self:missionOrder(pBot, oid, request, name)
@@ -235,6 +375,39 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 	return true
 end
 
+-- Was this bot (said to it alone) or the crew (said to the group) asked for missions lately, and is it short of two?
+function BotCrew:missionRetryable(g, oid, forGroup, now)
+	for _, m in ipairs(g.crew) do
+		if (forGroup or m.oid == oid) and now - readData(ckey(m.oid, "mAskAt")) <= self.missionAsked and
+			#(bot("botMissions", m.p) or {}) < self.missionCfg.max then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- The direction last asked of this bot (or, said to the group, of a crew mate), if that was lately
+function BotCrew:missionLastName(g, oid, forGroup, now)
+	local own = readStringData(ckey(oid, "mLastName"))
+
+	if own ~= "" and now - readData(ckey(oid, "mAskAt")) <= self.missionAsked then
+		return own
+	end
+
+	if forGroup then
+		for _, m in ipairs(g.crew) do
+			local last = readStringData(ckey(m.oid, "mLastName"))
+
+			if last ~= "" and now - readData(ckey(m.oid, "mAskAt")) <= self.missionAsked then
+				return last
+			end
+		end
+	end
+
+	return nil
+end
+
 function BotCrew:missionGroup(pBot, args)
 	local a = unpackArgs(args)
 
@@ -246,7 +419,7 @@ function BotCrew:missionGroup(pBot, args)
 	local g = self:group(pBot)
 	local pLeader = g ~= nil and g.humans[1] ~= nil and g.humans[1].p or nil
 
-	self:missionOrder(pBot, oid, {kind = a[2], name = a[3] ~= "-" and a[3] or nil, dir = DIRECTIONS[a[3] or ""],
+	self:missionOrder(pBot, oid, {kind = a[2], name = a[3] ~= "-" and a[3] or nil, dir = self:missionDirOf(a[3]),
 		count = num(a[4]) or 2}, pLeader ~= nil and self:firstName(pLeader) or "friend")
 end
 
@@ -254,6 +427,7 @@ function BotCrew:missionOrder(pBot, oid, request, name)
 	if request.kind == "drop" then
 		self:missionDrop(pBot, oid, name)
 	elseif request.dir ~= nil then
+		put(ckey(oid, "mAskAt"), os.time())
 		self:missionStart(pBot, oid, request, name)
 	end
 end
@@ -277,6 +451,8 @@ function BotCrew:missionClear(oid)
 	deleteData(ckey(oid, "mHeldN"))
 	deleteStringData(ckey(oid, "mName"))
 	deleteStringData(ckey(oid, "mDirName"))
+	deleteStringData(ckey(oid, "mLastName"))
+	deleteData(ckey(oid, "mAskAt"))
 end
 
 function BotCrew:missionStart(pBot, oid, request, name)
@@ -332,6 +508,7 @@ function BotCrew:missionStart(pBot, oid, request, name)
 	writeStringData(ckey(oid, "mState"), "walking")
 	writeStringData(ckey(oid, "mName"), (tostring(name or "friend"):gsub("%%", "")))
 	writeStringData(ckey(oid, "mDirName"), request.name)
+	writeStringData(ckey(oid, "mLastName"), request.name)
 	put(ckey(oid, "mStartAt"), os.time())
 	put(ckey(oid, "mDir"), request.dir)
 	put(ckey(oid, "mNeed"), need)
@@ -430,19 +607,33 @@ function BotCrew:missionStep(pBot, args)
 
 	local tries = readData(ckey(oid, "mTries")) + 1
 	local need = readData(ckey(oid, "mNeed"))
-	local picks = self:missionPick(missions, readData(ckey(oid, "mDir")), need, cfg.arc)
+	local dir = readData(ckey(oid, "mDir"))
+	local picks = self:missionPick(missions, dir, need, cfg.arc)
 
 	put(ckey(oid, "mTries"), tries)
 
-	if #picks >= need or tries >= cfg.refreshes then
+	-- One line a list, for the log: what the terminal offered, and how much of it lies the way it was asked
+	print("BotJobs: " .. self:name(oid) .. " reads list " .. tries .. ": " .. #missions .. " destroy, " ..
+		#self:missionPick(missions, dir, #missions, cfg.arc) .. " " .. readStringData(ckey(oid, "mDirName")) ..
+		" (" .. #self:missionPick(missions, dir, #missions, cfg.wideArc) .. " within " .. cfg.wideArc .. " degrees)")
+
+	if #picks >= need then
 		self:missionTake(pBot, oid, terminal, picks, now)
+		return
+	end
+
+	if tries >= cfg.refreshes then
+		-- Short after the last list: the best within the wider arc (the ones in the narrow arc are among them)
+		local wide = self:missionPick(missions, dir, need, cfg.wideArc)
+
+		self:missionTake(pBot, oid, terminal, wide, now, #wide > #picks)
 		return
 	end
 
 	again()
 end
 
-function BotCrew:missionTake(pBot, oid, terminal, picks, now)
+function BotCrew:missionTake(pBot, oid, terminal, picks, now, widened)
 	local taken = {}
 	local name = readStringData(ckey(oid, "mName"))
 	local dirName = readStringData(ckey(oid, "mDirName"))
@@ -468,8 +659,10 @@ function BotCrew:missionTake(pBot, oid, terminal, picks, now)
 		bot("botMissionSync", pBot, pLeader)
 	end
 
+	local anyDirection = readData(ckey(oid, "mDir")) < 0
+
 	if #taken == 0 then
-		self:groupSay(pBot, oid, "missionNone", name, {dir = dirName, tries = tostring(tries)})
+		self:groupSay(pBot, oid, anyDirection and "missionNoneAny" or "missionNone", name, {dir = dirName, tries = tostring(tries)})
 		return
 	end
 
@@ -481,6 +674,24 @@ function BotCrew:missionTake(pBot, oid, terminal, picks, now)
 
 	local word = COUNT_WORDS[#taken + 1] or tostring(#taken)
 
+	-- Wider than asked: where the lairs lie ("northeast and north")
+	local where, seen = {}, {}
+
+	for _, m in ipairs(taken) do
+		local d = tostring(m.direction or "")
+
+		if d ~= "" and not seen[d] then
+			seen[d] = true
+			table.insert(where, d)
+		end
+	end
+
+	local whereText = table.concat(where, " and ")
+
+	if widened then
+		dirName = dirName .. " (took " .. whereText .. ")"
+	end
+
 	print("BotJobs: " .. self:name(oid) .. " took " .. #taken .. " mission(s) " .. dirName .. ": " .. table.concat(parts, "; "))
 
 	-- Remembered for the hunt: what each is (so its completion can be told), and that the bot holds them now
@@ -491,7 +702,13 @@ function BotCrew:missionTake(pBot, oid, terminal, picks, now)
 	self:missionHeldSet(pBot, oid)
 	self:huntEvent(pBot, self:firstName(pBot) .. " took " .. #taken .. " destroy mission" .. (#taken == 1 and "" or "s") .. " " ..
 		dirName .. ": " .. table.concat(parts, "; "))
-	self:groupSay(pBot, oid, "missionTook", name, {dir = dirName, count = word, Count = word:sub(1, 1):upper() .. word:sub(2),
+	if widened then
+		self:groupSay(pBot, oid, "missionWide", name, {dir = readStringData(ckey(oid, "mDirName")), count = word,
+			Count = word:sub(1, 1):upper() .. word:sub(2), where = whereText, list = table.concat(parts, "; ")})
+		return
+	end
+
+	self:groupSay(pBot, oid, anyDirection and "missionTookAny" or "missionTook", name, {dir = dirName, count = word, Count = word:sub(1, 1):upper() .. word:sub(2),
 		lairs = #taken == 1 and "lair" or "lairs", list = table.concat(parts, "; ")})
 end
 

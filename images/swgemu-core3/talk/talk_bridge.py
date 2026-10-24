@@ -641,6 +641,13 @@ class Bridge:
             if r.get("situation"):
                 who += (f" Right now you're {r.get('situation')}. That's where you are, whatever was said before; "
                         "don't talk as if you were anywhere else.")
+            # Destroy missions: only the crew's own errand takes them, so the brain must not claim any
+            held = r.get("missions")
+            if held:
+                who += (f" The destroy missions you hold right now: {held}. You only take missions through the crew's own "
+                        "errand, when the player says in group chat which direction they want (\"get two missions east\", "
+                        "or \"any direction\"): never say you have taken, queued or will take missions you don't hold, and "
+                        "if they ask you to take some, tell them to say the direction (or \"any\") in group chat.")
             # What the speaker has targeted (the Lua reads it): the brain says so when asked to attack with nothing
             target = r.get("attackTarget")
             if target == "none":
