@@ -1015,6 +1015,45 @@ function BotCityJobs:cloneIfDead(pBot, oid, now)
 	return true
 end
 
+-- Under attack, not in a fight it chose: in combat, or losing health (a creature hitting a dancer or a sitter doesn't
+-- put it in combat)
+function BotCityJobs:attacked(pBot, oid)
+	if BotFight ~= nil and BotFight:busy(oid) then
+		return false
+	end
+
+	local creature = CreatureObject(pBot)
+
+	return creature:isInCombat() or creature:getHAM(0) < creature:getMaxHAM(0) - botGetWounds(pBot, 0)
+end
+
+-- A city bot that isn't a citizen (the mayor, the dancer, musician and doctor) attacked outdoors: indoors like a
+-- citizen (BotCitizen:shelter), and it stays in while sheltered. True while it is.
+function BotCityJobs:shelterIfAttacked(pBot, oid, now)
+	if BotCitizen == nil then
+		return false
+	end
+
+	local creature = CreatureObject(pBot)
+
+	if creature:isDead() or creature:isIncapacitated() then
+		return false
+	end
+
+	if SceneObject(pBot):getParentID() == 0 and self:attacked(pBot, oid) then
+		BotCitizen:shelter(pBot, oid, now, "attacked")
+		return true
+	end
+
+	-- Back from the cloner with heavy wounds: in to be tended first
+	if SceneObject(pBot):getParentID() == 0 and botGetWounds(pBot, 0) * 2 > creature:getMaxHAM(0) then
+		BotCitizen:shelter(pBot, oid, now, "wounded")
+		return true
+	end
+
+	return now < readData(bk(oid, "cityLingerUntil"))
+end
+
 function BotCityJobs:cloneNow(pBot, gen)
 	if BotJobs:current(pBot, gen) and CreatureObject(pBot):isDead() and botClone ~= nil then
 		botClone(pBot)
@@ -1702,7 +1741,7 @@ function BotCityJobs:wrap(job)
 	end
 
 	proxy.tick = function(self, pBot, oid, now)
-		if BotCityJobs:isCityBot(oid) and BotCityJobs:cloneIfDead(pBot, oid, now) then
+		if BotCityJobs:isCityBot(oid) and (BotCityJobs:cloneIfDead(pBot, oid, now) or BotCityJobs:shelterIfAttacked(pBot, oid, now)) then
 			return
 		end
 

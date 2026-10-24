@@ -11,6 +11,7 @@
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "server/zone/objects/player/PlayerObject.h"
 #include "server/zone/objects/cell/CellObject.h"
+#include "server/zone/CloseObjectsVector.h"
 #include "server/zone/managers/player/PlayerManager.h"
 #include "server/zone/managers/skill/SkillModManager.h"
 #include "server/zone/managers/collision/CollisionManager.h"
@@ -36,6 +37,29 @@ public:
 			reschedule(BotManager::TICK_MS);
 	}
 };
+
+// pre: creature locked. Entering a cell, Core3 sends the creature to the players already in the building before it
+// has its zone (BuildingObject::notifyObjectInsertedToZone), so its baselines are skipped and their clients never draw
+// it. Send it again now that it's in the world.
+void showToNearbyPlayers(CreatureObject* creature) {
+	if (creature->getZone() == nullptr || creature->getParent().get() == nullptr)
+		return;
+
+	CloseObjectsVector* closeObjects = creature->getCloseObjects();
+
+	if (closeObjects == nullptr)
+		return;
+
+	Vector<TreeEntry*> players;
+	closeObjects->safeCopyReceiversTo(players, CloseObjectsVector::PLAYERTYPE);
+
+	for (int i = 0; i < players.size(); ++i) {
+		SceneObject* player = static_cast<SceneObject*>(players.get(i));
+
+		if (player != nullptr && player != creature && player->getClient() != nullptr)
+			creature->sendTo(player, true, false);
+	}
+}
 
 }
 
@@ -686,6 +710,7 @@ void BotManager::sceneReady(CreatureObject* creature) {
 	}
 
 	ghost->notifySceneReady();
+	showToNearbyPlayers(creature);
 
 	// Standing still: a bot saved mid-walk (a restart while it moved) keeps its speed, and Core3 won't start a
 	// dance or a song while it's "running"
@@ -911,6 +936,7 @@ void BotManager::checkOnlineBot(BotRuntime* bot) {
 		if (ghost->isOnLoadScreen()) {
 			// A zone switch: the client would send CmdSceneReady when the new planet is loaded
 			ghost->notifySceneReady();
+			showToNearbyPlayers(ref);
 			info(true) << "BotManager: " << ref->getDisplayedName() << " scene-ready after a zone switch";
 		} else if (ghost->isTeleporting()) {
 			// A teleport within the zone: the client would send TeleportAck

@@ -42,20 +42,28 @@ BotLines.musician = {
 BotLines.smuggler = {
 	-- Asked the price (by keyword, when the model can't answer)
 	price = {
-		"Armor's {armor} credits a piece, weapons {weapon}. Drag it onto me, credits in the window, and I do the rest.",
+		"Armor's {armor} credits a piece, weapons {weapon}. Bring the whole suit, credits in the window, I do the rest.",
 		"{armor} for armor, {weapon} for a weapon. Cash in the trade window and I'll make it sing.",
 		"Five-percent jobs are for amateurs. Drag it over, {armor} for armor, {weapon} for weapons, and I'll make it sing.",
 	},
+	-- The customer named a slice type ({choice}: "encumbrance on armor")
+	chosen = {
+		"Got it: {choice}. Every piece you bring me gets that.",
+		"Alright, {choice} it is. Drag it over when you're ready.",
+	},
+	chosenRandom = {
+		"Luck of the draw, then. Whatever the cut gives.",
+	},
 	-- Asked how slicing works
 	howto = {
-		"Drag your armor or weapon onto me and I'll open a trade. Put the piece and the credits in, {armor} for armor, {weapon} for weapons. Accept, and it's back in your pack sliced before you blink.",
+		"Drag your gear onto me and I'll open a trade. Pieces and credits in, {armor} each for armor, {weapon} a weapon. Loose in your pack, not worn. Accept, and it's back sliced.",
 		"Easy. Drag it onto me, put it in the window with the credits, hit accept. {armor} for armor, {weapon} for a weapon. I use a clamp, so it never fails.",
 	},
 	-- A trade window opened
 	open = {
-		"Let's see it. Armor's {armor}, weapons {weapon}. One piece at a time, and stay close or the deal's off.",
+		"Let's see it. Armor's {armor} a piece, weapons {weapon}. Put in as many as you like, and stay close or the deal's off.",
 		"Alright, put it in the window. {armor} for armor, {weapon} for a weapon. Don't wander off mid-deal.",
-		"Business. Put the piece in with the credits, {armor} for armor, {weapon} for weapons. Stay within arm's reach.",
+		"Business. Put the pieces in with the credits, {armor} a piece for armor, {weapon} a weapon. Stay within arm's reach.",
 	},
 	-- The same customer again within a few minutes
 	openAgain = {
@@ -64,12 +72,13 @@ BotLines.smuggler = {
 	},
 	-- What's wrong with the offer
 	noItem = {
-		"I don't see a piece in the window. Armor or a weapon, one at a time.",
+		"I don't see a piece in the window. Armor or weapons, as many as you've got.",
 		"Nothing in the window yet. Put the piece in.",
 	},
-	tooMany = {
-		"One piece at a time, friend. Take the rest back out.",
-		"Whoa, one item. Pull the others out.",
+	-- Worn, or in a bag: Core3 would call the trade off at their verify
+	notLoose = {
+		"Take that {item} off and out of any bag first. It has to be loose in your pack or the trade falls through.",
+		"That {item}'s still on you or in a bag. Loose in your pack, then put it in.",
 	},
 	wrongKind = {
 		"I only slice armor and weapons. That {item} is neither.",
@@ -103,6 +112,11 @@ BotLines.smuggler = {
 		"There. Your {item}, {result}. Check your pack.",
 		"Clean cut on your {item}: {result}. It's back in your pack.",
 	},
+	-- Several pieces; {result} is e.g. "Composite Armor Boots -28% encumbrance, T21 Rifle -26% attack speed"
+	resultLot = {
+		"Done. {result}. All of it's back in your pack.",
+		"There you go: {result}. Check your pack.",
+	},
 	-- After the result
 	thanksJob = {
 		"Pleasure doing business.",
@@ -120,9 +134,18 @@ BotLines.smuggler = {
 		"There, it's yours again.",
 		"All yours.",
 	},
+	-- Too far away to trade (Core3 calls it off at 15 m)
+	tooFar = {
+		"Come closer before you accept, or the trade falls through.",
+		"Step in, friend. Too far and the deal won't go through.",
+	},
 	-- Core3 turned the trade down (too far apart, no room)
 	tradeFailed = {
 		"That didn't go through. Stay close, make some room in your pack, and try again.",
+	},
+	-- Some pieces couldn't be done (those pieces and their price go back)
+	partFailed = {
+		"The rest wouldn't take. Those pieces are back with you, and {credits} credits with them.",
 	},
 	-- The slice couldn't be done (the item and the credits go back)
 	failed = {

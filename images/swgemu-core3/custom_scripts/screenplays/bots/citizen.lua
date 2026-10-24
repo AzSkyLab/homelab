@@ -596,9 +596,7 @@ function BotCitizen:danger(pBot, oid, now, attackOnly)
 		return false
 	end
 
-	local creature = CreatureObject(pBot)
-
-	if creature:isInCombat() and not (BotFight ~= nil and BotFight:busy(oid)) then
+	if BotCityJobs:attacked(pBot, oid) then
 		self:shelter(pBot, oid, now, "attacked")
 		return true
 	end
@@ -696,7 +694,22 @@ function BotCitizen:shelter(pBot, oid, now, why)
 	SceneObject(pBot):teleport(point.x, point.z, point.y, point.cell)
 	writeStringData(bk(oid, "cityAt"), at)
 	writeData(bk(oid, "cityLingerUntil"), now + between(self.shelterStay))
+	self:tended(pBot)
 	print("BotCity: " .. BotJobs:name(oid) .. " sheltered (" .. why .. ")")
+end
+
+-- Indoors, the town's doctor and dancer see to it (as players did for each other): its wounds and battle fatigue are
+-- healed. Without this, deaths pile up wounds until one hit drops it.
+function BotCitizen:tended(pBot)
+	local creature = CreatureObject(pBot)
+
+	for pool = 0, 8 do
+		if botGetWounds(pBot, pool) > 0 then
+			creature:setWounds(pool, 0)
+		end
+	end
+
+	creature:setShockWounds(0)
 end
 
 -- Knocked down: whatever it was doing is over; once it is up it goes in

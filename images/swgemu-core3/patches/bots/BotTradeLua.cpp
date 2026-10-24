@@ -479,7 +479,8 @@ int BotTradeLua::botItemInfo(lua_State* L) {
 	return 1;
 }
 
-// botSlice(pBot, itemOid, pOwner): {ok, kind, stat, percent, error, returned}
+// botSlice(pBot, itemOid, pOwner[, want]): {ok, kind, stat, percent, error, returned}; want: the type the customer
+// named ("effectiveness", "encumbrance", "damage", "speed")
 int BotTradeLua::botSlice(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 	CreatureObject* owner = toCreature(L, 3);
@@ -488,7 +489,8 @@ int BotTradeLua::botSlice(lua_State* L) {
 	if (bot == nullptr)
 		result.error = "no bot";
 	else
-		BotSlice::slice(bot, toInteger(L, 2), owner != bot ? owner : nullptr, result);
+		BotSlice::slice(bot, toInteger(L, 2), owner != bot ? owner : nullptr, result,
+			lua_gettop(L) >= 4 && lua_isstring(L, 4) ? String(lua_tostring(L, 4)) : String(""));
 
 	pushSliceResult(L, result);
 

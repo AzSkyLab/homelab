@@ -305,6 +305,10 @@ bool transferToOwner(CreatureObject* bot, SceneObject* item, CreatureObject* own
 
 	item->sendDestroyTo(bot);
 
+	// The trade that brought it destroyed the owner's copy (PlayerManager::handleVerifyTradeMessage); the move's link
+	// alone shows the client nothing, so send the item itself
+	item->sendTo(owner, true);
+
 	owner->sendSystemMessage(bot->getFirstName() + " hands " + item->getDisplayedName() + " back to you.");
 
 	return true;
@@ -1196,6 +1200,33 @@ bool BotTrade::devVerify(CreatureObject* from) {
 		return false;
 
 	Locker locker(from);
+
+	// Why Core3 would refuse it (checkTradeItems' tests on this side's items), for the log
+	ManagedReference<TradeSession*> session = getTradeSession(from);
+	ManagedReference<CreatureObject*> target = session != nullptr ? from->getZoneServer()->getObject(session->getTradeTargetPlayer()).castTo<CreatureObject*>() : nullptr;
+
+	if (session != nullptr && target != nullptr) {
+		Locker clocker(target, from);
+		SceneObject* targetInventory = target->getInventory();
+		SceneObject* fromInventory = from->getInventory();
+
+		for (int i = 0; i < session->getTradeSize(); ++i) {
+			ManagedReference<SceneObject*> item = session->getTradeItem(i);
+			String err;
+			int add = targetInventory != nullptr ? targetInventory->canAddObject(item, -1, err) : -99;
+
+			tradeLog().info(true) << "dev: offered " << item->getObjectID() << " " << item->getDisplayedName() << ": noTrade " << item->isNoTrade()
+				<< ", canAdd " << add << " " << err << ", in the giver's inventory " << (fromInventory != nullptr && fromInventory->hasObjectInContainer(item->getObjectID()));
+		}
+
+		SceneObject* fromDatapad = from->getSlottedObject("datapad");
+		SceneObject* targetDatapad = target->getSlottedObject("datapad");
+		auto fill = [](SceneObject* c) { StringBuffer b; if (c == nullptr) b << "none"; else b << c->getContainerObjectsSize() << "/" << c->getContainerVolumeLimit(); return b.toString(); };
+
+		tradeLog().info(true) << "dev: checkTradeItems " << playerManager->checkTradeItems(from, target) << ", the bot accepted " << getTradeSession(target)->getAcceptedTrade()
+			<< "; inventories " << fill(fromInventory) << " / " << fill(targetInventory) << ", datapads " << fill(fromDatapad) << " / " << fill(targetDatapad)
+			<< ", the bot's offer " << getTradeSession(target)->getTradeSize();
+	}
 
 	playerManager->handleVerifyTradeMessage(from);
 

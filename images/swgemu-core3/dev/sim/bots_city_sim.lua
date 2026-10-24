@@ -1152,11 +1152,12 @@ return function(ctx)
 		if c.mayor ~= human.oid then
 			fail("cityelection: the human candidate lost")
 		end
-		-- The bot mayor no longer governs and doesn't run against the human mayor; the treasury stays paid
+		-- The bot mayor no longer governs, doesn't run against the human mayor, and doesn't pay the upkeep (the human
+		-- mayor does: fundWhenHumanMayor is off; the sim's human keeps the treasury full)
 		local candidacies = W.candidacies
 		local before = #W.commands
 		local deposits = W.deposits
-		c.treasury = 1000
+		c.treasury = 10000000
 		sim.run(2 * 3600)
 		if W.candidacies ~= candidacies then
 			fail("cityelection: the bot ran against the human mayor")
@@ -1167,8 +1168,8 @@ return function(ctx)
 				break
 			end
 		end
-		if W.deposits == deposits then
-			fail("cityelection: nobody paid the treasury under the human mayor")
+		if W.deposits ~= deposits then
+			fail("cityelection: the bot mayor paid the treasury under the human mayor")
 		end
 		-- The human runs again: the bots vote for them; the human mayor leaves the city: the bot runs again
 		c.candidates[human.oid] = true

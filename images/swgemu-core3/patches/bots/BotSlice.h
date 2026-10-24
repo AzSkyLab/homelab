@@ -4,8 +4,9 @@
  * The slice is Core3's own SlicingSession, driven in one task as a client would answer its window: open it on the
  * item (which must sit in the bot's own inventory), use a molecular clamp (which reveals the right cable), read the
  * right cable from the session's JSON, cut it, then the other. Core3 rolls the result for the bot's skill (master:
- * armor +11-35% effectiveness or -20-45% encumbrance, weapons +20-35% damage or -20-35% attack speed); the bot
- * takes what it rolls. The result is read back from the item's JSON. Then the item goes straight into its owner's
+ * armor +11-35% effectiveness or -20-45% encumbrance, weapons +20-35% damage or -20-35% attack speed). The customer
+ * may name the type (the creator's call, 2026-10-24): when Core3 rolled the other one, it's swapped for the named
+ * type, rolled in Core3's own range for a master. The result is read back from the item's JSON. Then the item goes straight into its owner's
  * inventory in the same step, or through a give-back trade if that inventory is full (BotTrade::returnItem).
  */
 
@@ -65,9 +66,10 @@ public:
 
 	static bool getItemInfo(uint64 itemOid, BotItemInfo& out);
 
-	// Slices the item (in the bot's inventory) and hands it to owner (null: it stays with the bot). Locks the bot
+	// Slices the item (in the bot's inventory) and hands it to owner (null: it stays with the bot). want: the type
+	// the customer named ("effectiveness", "encumbrance", "damage", "speed"), empty for Core3's roll. Locks the bot
 	static void slice(server::zone::objects::creature::CreatureObject* bot, uint64 itemOid,
-			server::zone::objects::creature::CreatureObject* owner, BotSliceResult& result);
+			server::zone::objects::creature::CreatureObject* owner, BotSliceResult& result, const String& want = "");
 };
 
 } // namespace bot

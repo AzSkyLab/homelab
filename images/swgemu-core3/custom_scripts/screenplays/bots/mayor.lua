@@ -99,7 +99,7 @@ function BotMayor:busy(oid)
 end
 
 function BotMayor:tick(pBot, oid, now)
-	if BotCityJobs:cloneIfDead(pBot, oid, now) then
+	if BotCityJobs:cloneIfDead(pBot, oid, now) or BotCityJobs:shelterIfAttacked(pBot, oid, now) then
 		return
 	end
 

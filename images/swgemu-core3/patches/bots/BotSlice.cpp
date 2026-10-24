@@ -133,7 +133,55 @@ float jsonFloat(const JSONSerializationType& j, const char* object, const char* 
 
 // Core3's slicing window, answered as a client would: clamp, the right cable, the other. Pre: bot locked; the item is
 // in its inventory and passed checkSlice
-String runSlice(CreatureObject* bot, TangibleObject* item, BotSliceResult& result) {
+// Core3's roll for a master slicer (SlicingSessionImplementation::handleArmorSlice, handleWeaponSlice, skill 5)
+int masterPercent(const String& stat) {
+	int min = 20, max = 35;	// weapons, either type
+
+	if (stat == "effectiveness") {
+		min = 11;
+		max = 35;
+	} else if (stat == "encumbrance") {
+		min = 20;
+		max = 45;
+	}
+
+	return System::random(max - min) + min;
+}
+
+// Core3 rolled one type; the customer named the other: undo the roll and put the named type on, in its range.
+// Pre: item locked
+void swapSlice(TangibleObject* item, const String& kind, const String& want, BotSliceResult& result) {
+	int percent = masterPercent(want);
+
+	if (kind == "armor" && item->isArmorObject()) {
+		ArmorObject* armor = cast<ArmorObject*>(item);
+
+		armor->setEffectivenessSlice(0);
+		armor->setEncumbranceSlice(0);
+
+		if (want == "effectiveness")
+			armor->setEffectivenessSlice(percent / 100.f);
+		else
+			armor->setEncumbranceSlice(percent / 100.f);
+	} else if (kind == "weapon" && item->isWeaponObject()) {
+		WeaponObject* weapon = cast<WeaponObject*>(item);
+
+		weapon->setDamageSlice(0);
+		weapon->setSpeedSlice(0);
+
+		if (want == "damage")
+			weapon->setDamageSlice(percent / 100.f);
+		else
+			weapon->setSpeedSlice(percent / 100.f);
+	} else {
+		return;
+	}
+
+	result.stat = want;
+	result.percent = percent;
+}
+
+String runSlice(CreatureObject* bot, TangibleObject* item, BotSliceResult& result, const String& want) {
 	PlayerObject* ghost = bot->getPlayerObject();
 
 	if (ghost == nullptr)
@@ -211,6 +259,12 @@ String runSlice(CreatureObject* bot, TangibleObject* item, BotSliceResult& resul
 
 	if (!item->isSliced() || result.percent <= 0)
 		return "failed";
+
+	bool wantFits = result.kind == "armor" ? (want == "effectiveness" || want == "encumbrance")
+		: (want == "damage" || want == "speed");
+
+	if (wantFits && want != result.stat)
+		swapSlice(item, result.kind, want, result);
 
 	result.ok = true;
 
@@ -307,7 +361,7 @@ bool BotSlice::getItemInfo(uint64 itemOid, BotItemInfo& out) {
 	return true;
 }
 
-void BotSlice::slice(CreatureObject* bot, uint64 itemOid, CreatureObject* owner, BotSliceResult& result) {
+void BotSlice::slice(CreatureObject* bot, uint64 itemOid, CreatureObject* owner, BotSliceResult& result, const String& want) {
 	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot)) {
 		result.error = "no bot";
 		return;
@@ -337,7 +391,7 @@ void BotSlice::slice(CreatureObject* bot, uint64 itemOid, CreatureObject* owner,
 
 	if (error.isEmpty()) {
 		try {
-			error = runSlice(bot, item, result);
+			error = runSlice(bot, item, result, want);
 		} catch (const Exception& e) {
 			error = "exception";
 			sliceLog().error() << "slicing " << itemOid << ": " << e.getMessage();

@@ -503,7 +503,7 @@ return function(ctx)
 	end
 
 	-- Sliced or not, the item goes back to the owner in the same step (a give-back trade when their inventory is full)
-	function api.botSlice(bot, itemOid, owner)
+	function api.botSlice(bot, itemOid, owner, want)
 		called("botSlice", bot, itemOid, owner and owner.oid)
 		local it = ctx.objects[itemOid]
 		if bot == nil or it == nil or not bot.inventory[itemOid] then
@@ -522,6 +522,12 @@ return function(ctx)
 				if math.random() < 0.5 then result.stat, result.percent = "effectiveness", math.random(11, 35) else result.stat, result.percent = "encumbrance", math.random(20, 45) end
 			else
 				if math.random() < 0.5 then result.stat, result.percent = "damage", math.random(20, 35) else result.stat, result.percent = "speed", math.random(20, 35) end
+			end
+			-- The type the customer named, in its range (as the body swaps it)
+			local ranges = {effectiveness = {11, 35}, encumbrance = {20, 45}, damage = {20, 35}, speed = {20, 35}}
+			local fits = (it.kind == "armor") == (want == "effectiveness" or want == "encumbrance")
+			if want ~= nil and ranges[want] ~= nil and fits then
+				result.stat, result.percent = want, math.random(ranges[want][1], ranges[want][2])
 			end
 			it.sliced, it.powerup, it.stat, it.percent = true, false, result.stat, result.percent
 			result.ok = true
@@ -1179,10 +1185,36 @@ return function(ctx)
 			fail("botslice: the wrong-kind line doesn't name the item")
 		end
 		local helmet, gloves = makeItem(player, "armor", "Helmet"), makeItem(player, "armor", "Gloves")
-		refused("two items", {helmet, gloves}, 8000, "tooMany")
+		refused("two pieces for one price", {helmet, gloves}, 4000, "short")
 		if readData("bot:" .. smug.oid .. ":trade:step") ~= 0 then
 			fail("botslice: the trade state wasn't cleared after an abort")
 		end
+
+		-- The customer names the type: encumbrance on armor, speed on weapons; then several pieces at once, each at its
+		-- price: all sliced with those types and back in the one trade
+		local tChoose = nowMs()
+		speak(smug, player, "encumbrance and speed please")
+		sim.run(2)
+		if not anyLine(linesOf(smug, tChoose), "smuggler", "chosen") then
+			fail("botslice: naming the slice type wasn't confirmed")
+		end
+		local rifle = makeItem(player, "weapon", "T21 Rifle")
+		local nLot = #log.trades
+		local _, lotBefore = deal("botslice lot", {helmet, gloves, rifle}, 14000)
+		if not lotBefore.verified or #log.trades ~= nLot + 1 then
+			fail("botslice: the smuggler didn't take two armor pieces and a weapon for 14,000")
+		end
+		for _, it in ipairs({helmet, gloves, rifle}) do
+			if not it.sliced or not player.inventory[it.oid] or smug.inventory[it.oid] then
+				fail("botslice: the lot's " .. it.itemName .. " wasn't sliced and returned")
+			end
+			if it.stat ~= (it.kind == "armor" and "encumbrance" or "speed") then
+				fail("botslice: the lot's " .. it.itemName .. " got " .. tostring(it.stat) .. ", not the type named")
+			end
+		end
+		speak(smug, player, "random")
+		sim.run(2)
+		sim.run(10)
 
 		-- A weapon with a powerup: the warning, and no accept until a few seconds after it; then the slice
 		local pistol = makeItem(player, "weapon", "DL-44 Pistol", {powerup = true})

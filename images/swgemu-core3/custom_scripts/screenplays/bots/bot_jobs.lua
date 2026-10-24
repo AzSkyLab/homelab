@@ -32,7 +32,8 @@
 -- A module provides start(pBot, oid), clear(oid), tick(pBot, oid, now), state(pBot, oid) -> string,
 -- intent(text) -> an intent or nil (keywords, used without the brain), isAction(intent) -> bool,
 -- allowed(action) -> the action or nil (checks the brain's line 4), act(pBot, pPlayer, action, channel, brainLine),
--- and optionally onSpoken(pBot, oid, pSpeaker, channel), groupAddressed(pBot, pSpeaker, text) -> bool,
+-- and optionally onSpoken(pBot, oid, pSpeaker, channel, text) -> true when the job answered it itself (nothing goes
+-- to the brain), groupAddressed(pBot, pSpeaker, text) -> bool,
 -- and the fields kit and place (what the brain knows the job as). Missing functions are skipped.
 -- BotFight (fight.lua) isn't a job: it runs for every bot (provoked fights, duels).
 includeFile("../custom_scripts/screenplays/bots/lines.lua")
@@ -486,8 +487,8 @@ function BotJobs:heard(pBot, pSpeaker, text, channel, dev)
 	print("BotJobs: " .. self:name(oid) .. " hears " .. playerName .. " (" .. channel .. "): " .. short(text, self.logChars))
 
 	-- The job may react to being spoken to (the doctor turns to whoever talks to it in the room)
-	if module ~= nil and module.onSpoken ~= nil then
-		module:onSpoken(pBot, oid, pSpeaker, channel)
+	if module ~= nil and module.onSpoken ~= nil and module:onSpoken(pBot, oid, pSpeaker, channel, text) == true then
+		return
 	end
 
 	local result = self:ask(pBot, oid, playerOid, playerName, text, channel, intent)
