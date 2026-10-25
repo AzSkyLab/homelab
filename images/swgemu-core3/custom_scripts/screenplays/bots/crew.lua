@@ -362,8 +362,16 @@ BotCrew = ScreenPlay:new {
 			"play music", "play a tune", "play us a tune", "play for us", "play for me"},
 		dance = {"dance for us", "dance for me", "start dancing", "back to dancing", "go back to dancing", "dance again", "dance please",
 			"do a dance", "dance something"},
-		call = {"crew come to me", "crew to me", "crew come here", "crew get over here", "i need the crew", "need the crew",
-			"crew on me", "crew over here", "crew join me"},
+		-- The phrases that call the crew by themselves; and a word for the crew with a word for coming (callWanted)
+		call = {" come to me ", " meet me ", " meet up with me ", " come meet me ", " get over here ", " come and meet me ",
+			" come over to me ", " i need the crew ", " need the crew "},
+		callWho = {" crew ", " team ", " guys ", " gang ", " everyone ", " everybody ", " all of you ", " the boys ", " boys ",
+			" squad ", " you all ", " y'all ", " yall ", " you lot ", " the others ", " the rest ", " you guys "},
+		callWhat = {" come to me ", " come over ", " come here ", " come meet ", " meet me ", " meet up ", " meet us ", " get over ",
+			" get here ", " get together ", " together ", " assemble ", " gather ", " rally ", " to me ", " join me ", " report to me ",
+			" head over ", " head to me "},
+		callVerb = {" bring ", " gather ", " assemble ", " summon ", " round up "},
+		callNot = {" don't ", " dont ", " do not ", " never ", " stop ", " no need ", " not "},
 		perfstop = {"stop playing", "stop dancing", "stop the music", "enough music", "stop the dance"},
 		fatigue = {"battle fatigue", "fatigue", "shock wound"},
 		-- Phase 8: the commando gives up its place for the other human
@@ -715,6 +723,12 @@ function BotCrew:leaderOf(pBot, oid, g, now)
 		return nil
 	end
 
+	-- The bot that invited a caller (the first of a called crew to arrive) invites the others of the crew who are waiting before
+	-- it hands the lead over
+	if g.leader.oid == oid and self:calledInvites(pBot, oid, human, now) then
+		return human.p
+	end
+
 	if g.leader.oid == oid and now - readData(ckey(oid, "handedAt")) > 5 then
 		put(ckey(oid, "handedAt"), now)
 		print("BotJobs: " .. self:name(oid) .. " hands the group's lead to " .. self:firstName(human.p))
@@ -779,7 +793,7 @@ function BotCrew:clear(oid)
 		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "backSince", "backBlock",
 		"stepAt", "kneelAt", "bandNear", "bandFar", "bandMax", "bandOk", "lairsAt", "dotReady", "dotOid", "pT", "dT", "pA", "dA",
 		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
-		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "capAt"}) do
+		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt"}) do
 		deleteData(ckey(oid, field))
 	end
 
@@ -963,7 +977,7 @@ function BotCrew:tick(pBot, oid, now)
 
 	local fighting = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) ~= 0
 
-	if (creature:isGrouped() or creature:isInCombat() or creature:isDead() or fighting or mode == "group") and
+	if (creature:isGrouped() or creature:isInCombat() or creature:isDead() or fighting or mode == "group" or mode == "called") and
 		now - readData(ckey(oid, "loopAt")) > self.loopStale then
 		self:startLoop(pBot, oid, 100)
 	end
@@ -1166,6 +1180,11 @@ function BotCrew:step(pBot, oid, now)
 	local pLeader = nil
 	local mode = readStringData(ckey(oid, "mode"))
 
+	-- Called and waiting for an invite: follow the caller
+	if g == nil and mode == "called" then
+		return self:calledStep(pBot, oid, now)
+	end
+
 	if g ~= nil then
 		-- Just told to go home: the group lets go of it in a moment
 		if mode == "leaving" and now - readData(ckey(oid, "leavingAt")) < 15 then
@@ -1337,7 +1356,11 @@ function BotCrew:invited(pBot, oid, pInviter, now)
 
 	local creature = CreatureObject(pBot)
 
-	if creature:isGrouped() or creature:isDead() or not self:human(pInviter) then
+	-- (a called bot also takes an invite from the crew bot that invited its caller: that bot leads until it hands the lead over)
+	local fromCrew = readStringData(ckey(oid, "mode")) == "called" and SceneObject(pInviter):isPlayerCreature() and
+		CREW[BotJobs:job(inviterOid)] == true
+
+	if creature:isGrouped() or creature:isDead() or not (self:human(pInviter) or fromCrew) then
 		print("BotJobs: " .. self:name(oid) .. " declines " .. tostring(self:firstName(pInviter)) .. "'s invite")
 		botEnqueue(pBot, "decline", 0, "")
 		return
@@ -2220,8 +2243,18 @@ end
 -- Calling the crew (Phase 8). The call comes in a tell to any crew bot, or in group chat; whichever bot heard it works out who
 -- is free and sets each one's arrival. The leap itself is BotMover's callTo (any planet, from any distance).
 
+-- "crew, come to me", "get the crew together and meet me at the terminal", "everyone meet me at the starport", "meet me", "come
+-- to me": the crew asked to come to the player (the model's judgment covers the wordings missed here: the bridge's "call"
+-- action). Not "come with me", "follow me" or "wanna hunt?"
 function BotCrew:callWanted(text)
-	return hasAny(wordsOf(text), self.words.call)
+	local t = wordsOf(text)
+
+	if hasAny(t, self.words.callNot) then
+		return false
+	end
+
+	return hasAny(t, self.words.call) or (hasAny(t, self.words.callWho) and
+		(hasAny(t, self.words.callWhat) or hasAny(t, self.words.callVerb)))
 end
 
 -- Is this crew bot free to come to the caller? "free" (at home, called, or on its way home), "with" (in the caller's group),
@@ -2249,10 +2282,13 @@ function BotCrew:callState(pBot, pCaller)
 	return "busy", pLeader ~= nil and self:firstName(pLeader) or nil
 end
 
+-- Returns true when it set anything going. In group chat a call that nobody needs to leap for (the group is near its leader) is no
+-- call at all, and the caller's words go on to the ordinary commands ("everyone come here" is a follow)
 function BotCrew:crewCall(pBot, oid, pCaller, channel)
 	local callerOid = SceneObject(pCaller):getObjectID()
 	local name = self:firstName(pCaller)
-	local coming = 0
+	local chat = channel == "group" and "group" or "tell"
+	local targets, needed = {}, 0
 
 	for _, entry in ipairs(bot("botList") or {}) do
 		if entry.online and CREW[entry.job] and entry.oid ~= 0 then
@@ -2263,24 +2299,49 @@ function BotCrew:crewCall(pBot, oid, pCaller, channel)
 
 				if state == "busy" then
 					-- (the bot that was asked says why; the rest keep quiet)
-					if entry.oid == oid and leaderName ~= nil then
-						self:say(pBot, oid, callerOid, channel == "group" and "group" or "tell", "callBusy", name, {leader = leaderName})
+					if entry.oid == oid and leaderName ~= nil and channel ~= "group" then
+						self:say(pBot, oid, callerOid, chat, "callBusy", name, {leader = leaderName})
 					end
 				else
-					local delay = between(self.callDelay) * 1000
+					local dist = BotJobs:distance(pOther, pCaller)
 
-					createEvent(delay, "BotCrew", "callArrive", pOther, packArgs(readData(key(entry.oid, "gen")), callerOid, state))
-					coming = coming + 1
+					table.insert(targets, {p = pOther, oid = entry.oid, state = state})
+
+					if state == "free" or dist == nil or dist > self.callNear then
+						needed = needed + 1
+					end
 				end
 			end
 		end
 	end
 
-	print("BotJobs: " .. self:name(oid) .. " hears " .. name .. " call the crew: " .. coming .. " coming")
-
-	if coming > 0 then
-		self:say(pBot, oid, callerOid, channel == "group" and "group" or "tell", "callOn", name)
+	if channel == "group" and needed == 0 then
+		return false
 	end
+
+	-- Who is called and not grouped, for the first one to arrive to invite (callArrive, leaderOf)
+	local waiting = {}
+
+	for _, target in ipairs(targets) do
+		createEvent(between(self.callDelay) * 1000, "BotCrew", "callArrive", target.p,
+			packArgs(readData(key(target.oid, "gen")), callerOid, target.state))
+
+		if target.state == "free" then
+			table.insert(waiting, target.oid)
+		end
+	end
+
+	putString("crew:call:" .. callerOid .. ":list", table.concat(waiting, ","))
+	put("crew:call:" .. callerOid .. ":until", 0)
+	put("crew:call:" .. callerOid .. ":bot", 0)
+	put("crew:call:" .. callerOid .. ":inviting", 0)
+	print("BotJobs: " .. self:name(oid) .. " hears " .. name .. " call the crew: " .. #targets .. " coming")
+
+	if #targets > 0 then
+		self:say(pBot, oid, callerOid, chat, "callOn", name)
+	end
+
+	return #targets > 0
 end
 
 function BotCrew:callArrive(pBot, args)
@@ -2321,24 +2382,86 @@ function BotCrew:callArrive(pBot, args)
 		return
 	end
 
-	-- Not grouped: it waits for an invite; the first to arrive sends one (a bot never leads), the rest ask for one
+	-- Not grouped: it waits for an invite, following the caller (and mounting when they ride) until it comes or calledWait is over.
+	-- With the caller on their own, the first to arrive invites them and, once they accept, invites the others waiting (they
+	-- accept themselves) before handing the lead over (leaderOf); the rest wait quietly. With the caller already in a group (a
+	-- human leads it) they ask the caller for an invite.
 	putString(ckey(oid, "mode"), "called")
 	putString(ckey(oid, "order"), "follow")
 	put(ckey(oid, "calledUntil"), now + self.calledWait)
-	self:stopMoving(pBot)
+	put(ckey(oid, "calledBy"), SceneObject(pCaller):getObjectID())
+	deleteData(ckey(oid, "followAt"))
+	self:ensureFollow(pBot, oid, pCaller, now)
+	self:startLoop(pBot, oid, 1500)
 
 	local callerOid = SceneObject(pCaller):getObjectID()
 	local marker = "crew:call:" .. callerOid
 
-	if CreatureObject(pCaller):isGrouped() or (now < readData(marker .. ":until") and readData(marker .. ":bot") ~= oid) then
+	if CreatureObject(pCaller):isGrouped() then
 		local kind = (self:role(oid) == "commando" and self:noRoom(oid, pCaller)) and "sitOut" or "askInvite"
 
 		self:say(pBot, oid, callerOid, "spatial", kind, self:firstName(pCaller))
-	else
+	elseif not (now < readData(marker .. ":until") and readData(marker .. ":bot") ~= oid) then
 		put(marker .. ":until", now + self.callInviteWindow)
 		put(marker .. ":bot", oid)
 		self:join(pBot, oid, pCaller, "spatial", nil)
 	end
+end
+
+-- The called bot waiting for an invite (its loop): it follows the caller, swoops and all, and goes home when calledWait is over
+function BotCrew:calledStep(pBot, oid, now)
+	local pCaller = getSceneObject(readData(ckey(oid, "calledBy")))
+
+	if pCaller == nil or SceneObject(pCaller):getZoneName() == "" or now > readData(ckey(oid, "calledUntil")) then
+		print("BotJobs: " .. self:name(oid) .. " wasn't invited, going home")
+		self:leaveForHome(pBot, oid, now)
+
+		return nil
+	end
+
+	if not CreatureObject(pBot):isInCombat() then
+		self:ensureFollow(pBot, oid, pCaller, now)
+		BotCrewSwoop:tick(pBot, oid, pCaller, now, nil)
+	end
+
+	return self.groupMs
+end
+
+-- The bot that invited the caller leads for the moment (a bot never keeps the lead): while others of the crew are waiting
+-- to be invited it invites them, one a step, before it hands the lead over. true while it holds the lead for that.
+function BotCrew:calledInvites(pBot, oid, human, now)
+	local marker = "crew:call:" .. human.oid
+	local first = readData(marker .. ":bot")
+
+	if first ~= oid then
+		return false
+	end
+
+	if readData(marker .. ":inviting") == 0 then
+		put(marker .. ":inviting", now)
+	end
+
+	if now - readData(marker .. ":inviting") > self.callInviteWindow then
+		return false
+	end
+
+	for _, otherOid in ipairs(oidList(readStringData(marker .. ":list"))) do
+		local pOther = otherOid ~= oid and getSceneObject(otherOid) or nil
+
+		if pOther ~= nil and not CreatureObject(pOther):isGrouped() and not CreatureObject(pOther):isDead() and
+			readStringData(ckey(otherOid, "mode")) == "called" then
+			-- (an invite not taken within a few seconds is sent again)
+			if now - readData(ckey(otherOid, "invitedByAt")) >= 6 then
+				put(ckey(otherOid, "invitedByAt"), now)
+				botEnqueue(pBot, "invite", otherOid, "")
+				print("BotJobs: " .. self:name(oid) .. " invites " .. self:name(otherOid) .. " into " .. self:firstName(human.p) .. "'s group")
+			end
+
+			return true
+		end
+	end
+
+	return false
 end
 
 -- The entertainer (Phase 8). In a camp it dances for the group (Core3 heals mind wounds of the patrons watching, and the
@@ -5063,6 +5186,10 @@ function BotCrew:allowed(action)
 		return action
 	end
 
+	if action == "call" then
+		return action
+	end
+
 	if action == "backoff" or action == "peace" then
 		action = "follow"
 	elseif action == "wound" then
@@ -5091,6 +5218,9 @@ function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 
 	if action == "join" then
 		self:join(pBot, oid, pPlayer, channel, brainLine)
+	elseif action == "call" then
+		-- (the model's reading of "meet me at the terminal", "bring the boys over", ...)
+		self:crewCall(pBot, oid, pPlayer, channel)
 	elseif ORDERS[action] then
 		self:order(pBot, oid, pPlayer, action, channel, brainLine)
 	elseif action == "camp" and self:role(oid) == "ranger" then
@@ -5525,9 +5655,8 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 	end
 
 	-- "Crew, come to me" (Phase 8): by tell, or in group chat from a human far from some of the crew; every free crew bot comes
-	if text ~= nil and (channel == "tell" or channel == "group") and self:human(pSpeaker) and self:callWanted(text) then
-		self:crewCall(pBot, oid, pSpeaker, channel)
-
+	if text ~= nil and (channel == "tell" or channel == "group") and self:human(pSpeaker) and self:callWanted(text) and
+		self:crewCall(pBot, oid, pSpeaker, channel) then
 		return true
 	end
 

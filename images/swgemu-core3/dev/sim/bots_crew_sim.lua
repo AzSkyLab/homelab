@@ -5683,29 +5683,52 @@ return function(ctx)
 		end
 		sim.run(3)
 		if crew.ranger.posture == "sitting" then fail("crewcall: the called ranger is still sitting") end
-		-- one invite from the first to arrive; the others ask for one
-		local invites, asks = 0, 0
+		-- one invite from the first to arrive; the others wait quietly, following the caller
+		local invites, asks, inviter = 0, 0, nil
 		for _, role in ipairs(SEVEN) do
-			invites = invites + #okCommands(crew[role], "invite", t)
+			local sent = #okCommands(crew[role], "invite", t)
+			invites = invites + sent
+			if sent > 0 then inviter = crew[role] end
 			for _, text in ipairs(allSays(crew[role], t)) do
 				if isLine(text, role, "askInvite") then asks = asks + 1 end
 			end
 		end
 		if invites ~= 1 then fail("crewcall: " .. invites .. " invites sent, expected 1") end
-		if asks ~= 6 then fail("crewcall: " .. asks .. " 'send me an invite' lines, expected 6") end
+		if asks ~= 0 then fail("crewcall: " .. asks .. " 'send me an invite' lines for a caller on their own, expected none") end
+		for _, role in ipairs(SEVEN) do
+			if moveState(crew[role]) ~= "follow" then fail("crewcall: the waiting " .. role .. " isn't following the caller (" .. moveState(crew[role]) .. ")") end
+		end
 		-- "On my way" once
 		local ons = 0
 		for _, text in ipairs(allSays(crew.tank, t)) do if isLine(text, "tank", "callOn") then ons = ons + 1 end end
 		if ons ~= 1 then fail("crewcall: the tank said 'on my way' " .. ons .. " times") end
 
-		-- 2. They join on invite, and a dismissal sends one home (to the station, on Tatooine)
-		for _, role in ipairs(SEVEN) do
-			crew[role].inviter = nil
-			invite(cameren, crew[role], true)
-			sim.run(3)
-		end
-		sim.run(8)
-		if members(cameren) ~= 8 then fail("crewcall: " .. members(cameren) .. " in the group after the invites") end
+		-- The caller mounts a swoop before accepting: the waiting bots mount too
+		cameren.riding = true
+		sim.run(15)
+		local mounted = 0
+		for _, role in ipairs(SEVEN) do if crew[role].riding then mounted = mounted + 1 end end
+		if mounted < 5 then fail("crewcall: " .. mounted .. " of the waiting seven mounted when the caller did") end
+		cameren.riding = false
+		sim.run(10)
+
+		-- 2. ONE accept gets the whole crew: the inviter invites the other six, then hands the lead to the caller
+		local before = nowMs()
+		joinGroup(cameren, inviter)
+		cameren.inviter = nil
+		sim.run(45)
+		if members(cameren) ~= 8 then fail("crewcall: " .. members(cameren) .. " in the group after one accept, expected 8") end
+		if leaderOf(cameren) ~= cameren then fail("crewcall: the caller doesn't lead (" .. tostring(leaderOf(cameren) and leaderOf(cameren).first) .. ")") end
+		local invitesFromInviter = #okCommands(inviter, "invite", before)
+		if invitesFromInviter ~= 6 then fail("crewcall: the first to arrive invited " .. invitesFromInviter .. " more, expected 6") end
+		-- ...then the caller rides off and all seven go with them
+		cameren.riding = true
+		sim.run(15)
+		mounted = 0
+		for _, role in ipairs(SEVEN) do if crew[role].riding then mounted = mounted + 1 end end
+		if mounted < 5 then fail("crewcall: " .. mounted .. " of the grouped seven mounted when the caller rode off") end
+		cameren.riding = false
+		sim.run(10)
 		groupSay(cameren, "go home")
 		sim.run(30)
 		for _, role in ipairs(SEVEN) do
@@ -5789,6 +5812,50 @@ return function(ctx)
 		teardown()
 	end
 
+
+	-- The words that call the crew (Lua fast path): the creator's three lines and more; and what must not
+	function scenarios.crewcallwords()
+		setup("/nonexistent/sim-talk")
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local cameren = makeHuman("Cameren", 800, 800)
+		cameren.planet = "naboo"
+		local function callsSince(t)
+			local n = 0
+			for _, c in ipairs(log.calls) do if c.t >= t then n = n + 1 end end
+			return n
+		end
+		local function home()
+			for _, role in ipairs(SEVEN) do
+				local b = crew[role]
+				b.planet, b.x, b.y, b.cell = "tatooine", 1 + _, 1, 1082877
+				writeStringData("bot:" .. b.oid .. ":crew:mode", "home")
+				b.move = nil
+				if b.groupId ~= nil then leaveGroup(b) end
+			end
+			sim.run(3)
+		end
+		for _, line in ipairs({"get the crew together and meet me at mission terminal", "come to me", "crew to me", "crew, come to me",
+			"everyone meet me at the starport", "I need the crew at the bank", "guys, get over here", "all of you come to me",
+			"team, assemble at the terminal", "meet me outside the cantina", "gather the crew, I'm at Anchorhead",
+			"can you all come meet me?", "bring the boys over to the shuttleport"}) do
+			home()
+			local t = nowMs()
+			speak(crew.tank, cameren, line, "tell")
+			sim.run(13)
+			if callsSince(t) ~= 7 then fail("crewcallwords: '" .. line .. "' called " .. callsSince(t) .. " of the seven") end
+		end
+		for _, line in ipairs({"follow me", "wanna hunt?", "come with me to the cantina", "lfg? need a tank", "stay here",
+			"don't come to me, I'll find you", "nice shooting everyone", "you can go home", "everyone follow me"}) do
+			home()
+			local t = nowMs()
+			speak(crew.tank, cameren, line, "tell")
+			sim.run(13)
+			if callsSince(t) ~= 0 then fail("crewcallwords: '" .. line .. "' called the crew") end
+		end
+		realPrint("crewcallwords ok")
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -5806,4 +5873,5 @@ return function(ctx)
 	table.insert(order, "crewcamp")
 	table.insert(order, "crewarea")
 	table.insert(order, "crewcall")
+	table.insert(order, "crewcallwords")
 end
