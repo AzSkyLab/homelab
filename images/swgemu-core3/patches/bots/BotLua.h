@@ -54,6 +54,8 @@ private:
 	static int botEmote(lua_State* L);
 	static int botFace(lua_State* L);
 	static int botStockPack(lua_State* L);
+	static int botStockItem(lua_State* L);
+	static int botFindItem(lua_State* L);
 	static int botGetWounds(lua_State* L);
 	static int botGetShockWounds(lua_State* L);
 	static int botGetBuffs(lua_State* L);

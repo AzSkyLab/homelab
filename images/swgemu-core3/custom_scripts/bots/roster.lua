@@ -1,6 +1,7 @@
 -- Bot players: the characters the server runs itself. Phase 3: a master doctor and a master dancer in each of Mos Eisley,
 -- Coronet and Theed. Phase 4: a master musician beside each dancer and a master smuggler in each cantina. Phase 5: the
--- hunting crew in the Mos Eisley cantina. Phase 6: the ten people of Varenhal, the player city on Naboo. Specs:
+-- hunting crew in the Mos Eisley cantina. Phase 6: the ten people of Varenhal, the player city on Naboo. Phase 8: a squad
+-- leader, an entertainer and a commando join the crew. Specs:
 -- ~/github/swgemu/specs/2026-10-23-bot-players/ (interfaces.md has the contract), 2026-10-23-musicians-smugglers/,
 -- 2026-10-23-bot-group-mates/ and 2026-10-23-player-city/.
 --
@@ -37,8 +38,8 @@
 --   hair       a hair template the character creator offers for that species and sex (available at creation in
 --              datatables/customization/hair_assets_skill_mods.iff); "" for none (Mon Calamari and Wookiees may be
 --              bald; Ithorians have no hair)
---   job        "doctor", "dancer", "musician" or "smuggler" (town bots); "tank", "rifleman", "medic" or "ranger" (the
---              crew); "mayor" or "citizen" (the city)
+--   job        "doctor", "dancer", "musician" or "smuggler" (town bots); "tank", "rifleman", "medic", "ranger",
+--              "squadleader", "entertainer" or "commando" (the crew); "mayor" or "citizen" (the city)
 --   city       the Living Cities city key, or "varenhal" for the player city
 --   online     optional. "planet": online only while a human is on the station's planet, or was within logoutDelay
 --              (the city's bots)
@@ -49,7 +50,8 @@
 --              a model for the sex, and no two share a slot. A weapon or a hand-held instrument equips to hold_r (rifles
 --              and carbines to hold_r and hold_l): one held item each, and every weapon is one the bot is certified for
 --   carry      optional. Templates the job keeps in the bot's pack: the rifleman's spare carbine (botEquip swaps it
---              in), the ranger's camp kit
+--              in), the ranger's camp kit, the entertainer's instrument, the commando's acid rifle (its grenades and
+--              packs are stocked by the crew job)
 --   station    where the bot stands while online. With a cell, x, z, y are cell-local (the building's frame, as
 --              spawnMobile takes them) and z is the floor height of the cell's floor mesh. Outdoors (cell 0), z 0 means
 --              the ground height there (BotManager asks the world floor). heading is degrees clockwise from north in
@@ -428,6 +430,85 @@ BotRoster = {
 			},
 			carry = {"object/tangible/scout/camp/camp_luxury.iff"},
 			station = {planet = "tatooine", x = 20.6, z = -0.895, y = 1.9, cell = 1082877, heading = 225},
+		},
+
+		-- Phase 8: three more for the crew, standing with the four (the same 2.1 m grid: on the floor mesh, clear of the
+		-- crowd's slots and furniture, facing the middle of the group)
+
+		-- Squad leader: Master Squad Leader, Master Carbineer and Master Marksman (246 points; the squad leader boxes
+		-- give steady aim, rally, volley, form up, boost morale and retreat, and the group's aura). It calls them in a
+		-- group we lead. RIS armor (a piece weighs 1 in encumbrance), a DXR-6 carbine
+		{
+			name = "Tavik Drennor",
+			account = "bot_tavik",
+			species = "zabrak",
+			sex = "male",
+			hair = "object/tangible/hair/zabrak/hair_zabrak_male_s02.iff",
+			job = "squadleader",
+			city = "mos_eisley",
+			skills = {"outdoors_squadleader_master", "combat_carbine_master", "combat_marksman_master"},
+			outfit = {
+				"object/tangible/wearables/armor/ris/armor_ris_chest_plate.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_leggings.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_bicep_l.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_bicep_r.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_bracer_l.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_bracer_r.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_boots.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_gloves.iff",
+				"object/tangible/wearables/armor/ris/armor_ris_helmet.iff",
+				"object/weapon/ranged/carbine/carbine_dxr6.iff",		-- DXR-6 (held)
+			},
+			station = {planet = "tatooine", x = 22.7, z = -0.895, y = -0.2, cell = 1082877, heading = 288},
+		},
+		-- Entertainer: Master Dancer, Master Musician, Marksman pistol 1-4, Pistoleer accuracy 1-4, speed 1-2 and ability 1
+		-- (246 points). In camp she dances or plays (the group heals mind wounds and gets the buff); in a fight she shoots a
+		-- DH-17 pistol. Her instrument waits in the pack
+		{
+			name = "Ilsi Nuura",
+			account = "bot_ilsi",
+			species = "twilek",
+			sex = "female",
+			hair = "object/tangible/hair/twilek/hair_twilek_female_s06.iff",
+			job = "entertainer",
+			city = "mos_eisley",
+			skills = {"social_dancer_master", "social_musician_master", "combat_marksman_pistol_04", "combat_pistol_accuracy_04",
+				"combat_pistol_speed_02", "combat_pistol_ability_01"},
+			outfit = {
+				"object/tangible/wearables/shirt/shirt_s28.iff",
+				"object/tangible/wearables/pants/pants_s11.iff",
+				"object/tangible/wearables/vest/vest_s05.iff",
+				"object/tangible/wearables/boots/boots_s15.iff",
+				"object/tangible/wearables/belt/belt_s09.iff",
+				"object/weapon/ranged/pistol/pistol_dh17.iff",		-- DH-17 (held)
+			},
+			carry = {"object/tangible/instrument/flute_droopy.iff"},
+			station = {planet = "tatooine", x = 22.7, z = -0.895, y = 1.9, cell = 1082877, heading = 251},
+		},
+		-- Commando: Master Commando, Master Carbineer and Novice Medic (247 points; Marksman and Brawler come with the
+		-- commando boxes). Flame thrower in hand (single shots and cones), acid rifle and grenades in the pack; Ubese
+		-- armor
+		{
+			name = "Brask Tor'vel",
+			account = "bot_brask",
+			species = "bothan",
+			sex = "male",
+			hair = "object/tangible/hair/bothan/hair_bothan_male_s03.iff",
+			job = "commando",
+			city = "mos_eisley",
+			skills = {"combat_commando_master", "combat_carbine_master", "science_medic_novice"},
+			outfit = {
+				"object/tangible/wearables/armor/ubese/armor_ubese_jacket.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_pants.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_bracer_l.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_bracer_r.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_boots.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_gloves.iff",
+				"object/tangible/wearables/armor/ubese/armor_ubese_helmet.iff",
+				"object/weapon/ranged/rifle/rifle_flame_thrower.iff",		-- Flame thrower (held)
+			},
+			carry = {"object/weapon/ranged/rifle/rifle_acid_beam.iff"},
+			station = {planet = "tatooine", x = 16.4, z = -0.895, y = 0.85, cell = 1082877, heading = 90},
 		},
 
 		-- Phase 6: the people of Varenhal, the player city east of Theed (custom_scripts/bots/city.lua has its plan). Online

@@ -363,7 +363,7 @@ return function(ctx)
 	local function checkRoster(label)
 		local seen, jobs = {}, {}
 		local knownJobs = {doctor = true, dancer = true, musician = true, smuggler = true, tank = true, rifleman = true,
-			medic = true, ranger = true, mayor = true, citizen = true}
+			medic = true, ranger = true, squadleader = true, entertainer = true, commando = true, mayor = true, citizen = true}
 		-- The player city (Phase 6) isn't a Living Cities city
 		local extraCities = {varenhal = "naboo"}
 		if #BotRoster.bots < 6 then

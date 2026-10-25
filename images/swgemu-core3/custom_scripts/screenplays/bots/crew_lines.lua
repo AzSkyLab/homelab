@@ -14,6 +14,20 @@ BotLines.crew = {
 		"Let's go get some.",
 		"Here. Lead on.",
 	},
+	-- The commando when its place would leave none for the other player (an invite, or "make room"): Phase 8
+	sitOut = {
+		"Sitting this one out.",
+	},
+	-- "Crew, come to me": the bot that heard it says the crew is coming, or that it is out with another group
+	callOn = {
+		"On my way, {name}.",
+		"Coming to you, {name}. Give us a few seconds.",
+		"Hold tight, {name}. We're coming.",
+	},
+	callBusy = {
+		"I'm out with {leader}'s group right now, {name}.",
+		"Hunting with {leader} at the moment. Maybe later.",
+	},
 	-- Asked to come along by someone not in a group: the bot sends the invite (and hands them the lead after)
 	inviteSent = {
 		"Sure, sent you an invite.",
@@ -354,6 +368,106 @@ BotLines.tank = {
 }
 
 BotLines.rifleman = {
+	fallback = BotLines.crew.fallback,
+}
+
+-- Phase 8: the squad leader, the entertainer and the commando
+BotLines.squadleader = {
+	lfg = {
+		"Squad leader looking for a squad. Anyone heading out?",
+		"Anyone need a squad leader out there? I call the shots, you lead.",
+		"LFG. Master squad leader, carbine in hand.",
+	},
+	-- The calls (group chat), at most one every 20 s. {creature} is the bare name of the tank's target
+	steadyAim = {
+		"Steady, aim.",
+		"Steady. Aim for the vitals.",
+		"Steady aim, everyone.",
+	},
+	rally = {
+		"Rally on me!",
+		"Rally! Tighten up!",
+		"Rally to me, weapons up!",
+	},
+	volley = {
+		"Volley on the {creature}!",
+		"All guns on the {creature}!",
+		"Volley! Fire on the {creature}!",
+	},
+	formUp = {
+		"Form up!",
+		"Form up on me, shake it off!",
+		"Form up, clear your heads!",
+	},
+	boostMorale = {
+		"Boosting morale. Hold it together.",
+		"Morale's up. Share the load.",
+		"Take a breath. Morale boost.",
+	},
+	retreat = {
+		"Fall back!",
+		"Fall back! Fall back!",
+		"Retreat! Run for it!",
+	},
+	fallback = BotLines.crew.fallback,
+}
+
+BotLines.entertainer = {
+	lfg = {
+		"Entertainer looking for a group. I dance, I play, I shoot.",
+		"Anyone want an entertainer along? Camp's no fun without music.",
+		"LFG. Dancer, musician, and I can hold a pistol.",
+	},
+	-- In a camp, asked for music or a dance, or to stop
+	danceOn = {
+		"Dancing for the camp. Watch me a minute and you'll feel it.",
+		"Sure thing, {name}. Come watch.",
+		"Back to dancing. Watch me for a minute or more.",
+	},
+	musicOn = {
+		"Playing something. Listen a minute and it'll stick.",
+		"A tune for the camp, {name}. Come listen.",
+		"Music it is. Sit and listen a while.",
+	},
+	perfStop = {
+		"Done for now.",
+		"Alright, that's enough for the camp.",
+	},
+	-- Asked to play or dance with no camp up
+	noCamp = {
+		"Get the ranger to put a camp up first, {name}, and I'll play for you.",
+		"Not out here in the open. Camp first, then I'll dance.",
+	},
+	-- Battle fatigue: a camp can't heal it (the cantina or a theater can); {town} is the nearest city
+	fatigueNo = {
+		"A camp won't heal battle fatigue, {name}. You want a cantina: {town}'s is the closest.",
+		"Not out here. Battle fatigue wants a cantina, and {town} has the nearest one.",
+		"Can't do that at a camp, {name}. Head for the cantina in {town}.",
+	},
+	fatigueHere = {
+		"Watch me a while, {name}. This place will do it.",
+		"Stand and watch, {name}. It takes a few minutes.",
+	},
+	fallback = BotLines.crew.fallback,
+}
+
+BotLines.commando = {
+	lfg = {
+		"Commando looking for a group. I bring the fire.",
+		"Anyone need heavy weapons? Flame thrower, ready to go.",
+		"LFG. Got a flame thrower and grenades, need something to burn.",
+	},
+	-- Cones and grenades on a clump (group chat, now and then, as callouts)
+	flame = {
+		"Burning them.",
+		"Fire in the cone!",
+		"Roasting the lot.",
+	},
+	grenade = {
+		"Grenade out!",
+		"Fire in the hole!",
+		"Frag out, heads down!",
+	},
 	fallback = BotLines.crew.fallback,
 }
 

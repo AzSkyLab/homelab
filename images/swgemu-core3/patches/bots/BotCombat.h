@@ -15,6 +15,8 @@
  *   ranges and their accuracies) and threatOn (who a creature is on, its taunt state and lockout), read from Core3's
  *   own data so the crew's Lua doesn't guess.
  *
+ * - Phase 8: resists (a creature's armor resistances, to choose between the flame thrower and the acid rifle).
+ *
  * Events, through BotLua::callEvent in the bot's ordered task queue with the bot locked:
  *   "incapacitated"  pOther = the bot's main defender (or nil)
  *   "died"           pOther = the killer (or nil)
@@ -87,6 +89,31 @@ public:
 	Vector<Reference<BotThreatEntry*>> entries;
 };
 
+// A creature's resistances in percent (AiAgent::getHeat() etc.): -1 is vulnerable (its armor doesn't mitigate this kind
+// at all, and armor piercing doesn't matter)
+class BotResists {
+public:
+	float kinetic = 0;
+	float energy = 0;
+	float blast = 0;
+	float heat = 0;
+	float cold = 0;
+	float electricity = 0;
+	float acid = 0;
+	float stun = 0;
+	float lightsaber = 0;
+};
+
+// A live creature near a bot that the bot may attack, for the commando's area attacks (Phase 8)
+class BotCreatureInfo : public Object {
+public:
+	uint64 oid = 0;
+	float x = 0;
+	float y = 0;
+	float radius = 0;		// its template radius (Core3 takes it off the range of an area attack)
+	uint64 target = 0;		// who it is fighting now (its main defender), 0 for nobody
+};
+
 // A lair near a bot (a creature spawner a hunting group should not walk into)
 class BotLairInfo : public Object {
 public:
@@ -152,6 +179,13 @@ public:
 	// What the creature (an AiAgent; anything else gives false) is on and how it can be taunted. Reads its threat map under
 	// its lock, so call it from an event on the bot (the bot is locked, as the crew's Lua is)
 	static bool threatOn(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* creature, BotThreat& out);
+
+	// The creature's resistances (an AiAgent; anything else gives false). Lock-free reads, as Core3's own damage code does
+	static bool resists(server::zone::objects::creature::CreatureObject* creature, BotResists& out);
+
+	// The live creatures (never players or pets) within `range` metres of the bot that it may attack, nearest first, at most
+	// 40. A scan of the bot's neighbourhood: call it when an area attack is being weighed, not every step
+	static void creaturesNear(server::zone::objects::creature::CreatureObject* bot, float range, Vector<Reference<BotCreatureInfo*>>& out);
 
 	// The lairs within `range` metres of the bot (its zone): objects with a lair observer, as the camp kit's scan finds them.
 	// A scan of the bot's neighbourhood: call it now and then, not every step

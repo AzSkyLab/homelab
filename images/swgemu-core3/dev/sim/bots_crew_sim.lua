@@ -51,8 +51,21 @@ return function(ctx)
 		"scattershot1", "scattershot2", "legshot1", "legshot2"}) do
 		SPECIAL[cmd] = "carbine"
 	end
-	local WEAPON_RANGE = {unarmed = 5, rifle = 64, carbine = 64, pistol = 64}
-	local ROLE_WEAPON = {tank = "unarmed", rifleman = "rifle", ranger = "carbine", medic = "rifle"}
+	-- Phase 8: the entertainer's pistol shots and the commando's flame (single shots reach 16 m, as flameSingle1/2 do)
+	for _, cmd in ipairs({"bodyshot1", "bodyshot2", "bodyshot3", "healthshot1", "healthshot2"}) do
+		SPECIAL[cmd] = "pistol"
+	end
+	for _, cmd in ipairs({"flamesingle1", "flamesingle2"}) do
+		SPECIAL[cmd] = "flame"
+	end
+	for _, cmd in ipairs({"fireacidsingle1", "fireacidsingle2"}) do
+		SPECIAL[cmd] = "acid"
+	end
+	-- (the flame thrower's and the acid rifle's plain shots reach 64 m; their specials, single or cone, 16)
+	local WEAPON_RANGE = {unarmed = 5, rifle = 64, carbine = 64, pistol = 64, flame = 64, acid = 48}
+	local HEAVY_REACH = 16
+	local ROLE_WEAPON = {tank = "unarmed", rifleman = "rifle", ranger = "carbine", medic = "rifle", squadleader = "carbine",
+		entertainer = "pistol", commando = "flame"}
 	-- Skill boxes by role, as prefixes (the roster's skills bring every box they require)
 	local ROLE_SKILLS = {
 		tank = {"combat_unarmed_", "combat_brawler_", "science_medic_"},
@@ -60,6 +73,10 @@ return function(ctx)
 		medic = {"science_combatmedic_", "science_doctor_", "science_medic_", "combat_marksman_rifle_"},
 		ranger = {"outdoors_ranger_", "outdoors_scout_", "combat_marksman_", "combat_carbine_novice", "combat_carbine_ability_",
 			"combat_carbine_accuracy_01", "combat_carbine_accuracy_02"},
+		squadleader = {"outdoors_squadleader_", "outdoors_scout_", "combat_marksman_", "combat_carbine_"},
+		entertainer = {"social_dancer_", "social_musician_", "social_entertainer_", "combat_marksman_pistol_",
+			"combat_pistol_novice", "combat_pistol_accuracy_", "combat_pistol_speed_01", "combat_pistol_speed_02", "combat_pistol_ability_01"},
+		commando = {"combat_commando_", "combat_carbine_", "combat_marksman_", "combat_brawler_", "science_medic_novice"},
 	}
 	local ROLE_MODS = {
 		tank = {healing_injury_speed = 75, healing_ability = 50},
@@ -67,6 +84,9 @@ return function(ctx)
 			healing_ability = 100, combat_healing_ability = 100},
 		rifleman = {},
 		ranger = {},
+		squadleader = {steadyaim = 10, volley = 10, group_burst_run = 10},
+		entertainer = {},
+		commando = {healing_injury_speed = 20},
 	}
 	local ENHANCE = {health = 0, action = 3, strength = 1, constitution = 2, quickness = 4, stamina = 5}
 
@@ -74,7 +94,7 @@ return function(ctx)
 	local function resetLog()
 		log = {taunts = {}, debuffs = {}, rescues = {}, dots = {}, loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
 			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
-			tracks = {}, events = {}, mounts = {}, dismounts = {}}
+			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}}
 	end
 	resetLog()
 
@@ -140,6 +160,7 @@ return function(ctx)
 	function methods.getWorldPositionX(self) return self:getPositionX() end
 	function methods.getWorldPositionY(self) return self:getPositionY() end
 	function methods.getCurrentSpeed(self) return self.speed or 0 end
+	function methods.isPlayingMusic(self) return self.music ~= nil end
 	function methods.isRidingMount(self) return self.riding == true end
 	function methods.isCreatureObject(self) return self.isPlayer == true or self.isMob == true end
 	-- A creature (as opposed to a humanoid) has something to harvest
@@ -369,7 +390,9 @@ return function(ctx)
 		elseif SPECIAL[cmd] ~= nil then
 			if t == nil or t.dead or t.incap then return false, "bad target" end
 			if b.weapon ~= SPECIAL[cmd] then return false, "wrong weapon for " .. cmd end
-			if dist(b, t) > (cmd == "unarmedlunge2" and 20 or WEAPON_RANGE[b.weapon]) then return false, "out of range" end
+			if dist(b, t) > (cmd == "unarmedlunge2" and 20 or ((b.weapon == "flame" or b.weapon == "acid") and HEAVY_REACH or WEAPON_RANGE[b.weapon])) then
+				return false, "out of range"
+			end
 			for _, pool in ipairs({HEALTH, ACTION, MIND}) do
 				if b:getHAM(pool) <= 80 then return false, "too tired" end
 			end
@@ -379,6 +402,106 @@ return function(ctx)
 			startCombat(b, t)
 			damage(t, 150)
 			b.queueUntil = nowMs() + 2000
+			return true
+		elseif cmd == "flamecone1" or cmd == "flamecone2" or cmd == "fireacidcone1" or cmd == "fireacidcone2" then
+			-- Core3's cone: the held flame thrower or acid rifle, a target within 16 m, and every attackable creature within 16 m
+			-- in the 45 degree cone (22.5 to each side of the line to the target) is hit, pulled or not
+			local kind = cmd:find("acid", 1, true) and "acid" or "flame"
+			if b.weapon ~= kind then return false, "wrong weapon for " .. cmd end
+			if t == nil or t.dead or not t.isMob then return false, "bad target" end
+			if dist(b, t) > HEAVY_REACH then return false, "out of range" end
+			for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+				if b:getHAM(pool) <= 80 then return false, "too tired" end
+			end
+			local hit = {}
+			for _, o in pairs(ctx.objects) do
+				if o.isMob and not o.dead and o.inWorld and dist(b, o) <= HEAVY_REACH then
+					local a = math.abs(math.atan(o.y - b.y, o.x - b.x) - math.atan(t.y - b.y, t.x - b.x))
+					if a > math.pi then a = 2 * math.pi - a end
+					if o == t or math.deg(a) <= 22.5 then table.insert(hit, o) end
+				end
+			end
+			for _, o in ipairs(hit) do
+				startCombat(b, o)
+				damage(o, 300)
+			end
+			local oids = {}
+			for _, o in ipairs(hit) do table.insert(oids, o.oid) end
+			table.insert(log.areas, {bot = b.oid, t = nowMs(), cmd = cmd, target = t.oid, hit = oids})
+			b.queueUntil = nowMs() + 3000
+			return true
+		elseif cmd == "throwgrenade" then
+			-- Core3's grenade: a target within 64 m and a grenade of the bot's (its oid in the arguments); a 10 m blast
+			local item
+			for _, it in pairs(b.items or {}) do if tostring(it.oid) == args then item = it end end
+			if item == nil or item.uses <= 0 then return false, "no grenade " .. tostring(args) end
+			if t == nil or t.dead or not t.isMob then return false, "bad target" end
+			if dist(b, t) > 64 then return false, "out of range" end
+			item.uses = item.uses - 1
+			local oids = {}
+			for _, o in pairs(ctx.objects) do
+				if o.isMob and not o.dead and o.inWorld and dist(o, t) <= 10 then
+					startCombat(b, o)
+					damage(o, 250)
+					table.insert(oids, o.oid)
+				end
+			end
+			table.insert(log.areas, {bot = b.oid, t = nowMs(), cmd = cmd, target = t.oid, hit = oids})
+			b.queueUntil = nowMs() + 4000
+			return true
+		elseif cmd == "steadyaim" or cmd == "rally" or cmd == "volleyfire" or cmd == "formup" or cmd == "boostmorale" or cmd == "retreat" then
+			-- Core3's squad leader commands, as patch 0009 has them: the group's leader, or a bot with Novice Squad Leader in it,
+			-- calls them; each costs about 130 of health, action and mind
+			local g = b.groupId and groups[b.groupId]
+			if g == nil then return false, "not grouped" end
+			if g.members[1] ~= b.oid and not (b.isBotFlag and b:hasSkill("outdoors_squadleader_novice")) then return false, "not the group leader" end
+			for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+				if b:getHAM(pool) <= 130 then return false, "too tired" end
+			end
+			for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+				b:pool(pool).cur = b:getHAM(pool) - 130
+			end
+			b.queueUntil = nowMs() + 1500
+			local reached = {}
+			for _, m in ipairs(g.members) do
+				local o = ctx.objects[m]
+				if not o.dead and not o.incap then
+					table.insert(reached, o.oid)
+					if cmd == "formup" then o.states = (o.states or 0) & ~(STATE.dizzy | STATE.stunned) end
+					if cmd == "retreat" and (b.oid ~= g.members[1] or m ~= g.members[1]) then o.retreatUntil = nowMs() + 30000 end
+					if cmd == "rally" then o.rallyUntil = nowMs() + 30000 end
+					if cmd == "steadyaim" then o.aimUntil = nowMs() + 300000 end
+				end
+			end
+			if cmd == "boostmorale" then
+				local total, n = 0, 0
+				for _, oid in ipairs(reached) do
+					local o = ctx.objects[oid]
+					for pool = 0, 8 do total = total + ((o.wounds or {})[pool] or 0) end
+					n = n + 1
+				end
+				for _, oid in ipairs(reached) do
+					local o = ctx.objects[oid]
+					o.wounds = {}
+					for pool = 0, 8 do o.wounds[pool] = math.ceil(total / n / 9) end
+				end
+			end
+			table.insert(log.sl, {bot = b.oid, t = nowMs(), cmd = cmd, target = target, reached = reached})
+			return true
+		elseif cmd == "startdance" or cmd == "startmusic" then
+			-- Core3: one performance at a time, upright, out of a fight; music needs an instrument in hand
+			if b.dancing ~= nil or b.music ~= nil then return false, "already performing" end
+			if b.posture == "sitting" or b.inCombat then return false, "can't perform now" end
+			if cmd == "startmusic" and b.weapon ~= "instrument" then return false, "no instrument" end
+			if cmd == "startdance" then b.dancing = args else b.music = args end
+			return true
+		elseif cmd == "stopdance" or cmd == "stopmusic" then
+			b.dancing, b.music = nil, nil
+			return true
+		elseif cmd == "flourish" then
+			if b.dancing == nil and b.music == nil then return false, "not performing" end
+			b.flourishes = (b.flourishes or 0) + 1
+			table.insert(log.sl, {bot = b.oid, t = nowMs(), cmd = "flourish"})
 			return true
 		elseif cmd == "peace" then
 			for _, oid in ipairs(b.defenders or {}) do
@@ -472,6 +595,12 @@ return function(ctx)
 			if dist(b, t) > 44 then return false, "too far" end
 			local template = "object/tangible/medicine/crafted/" .. (cmd == "applypoison" and "medpack_poison_health_c" or "medpack_disease_health_c") .. ".iff"
 			local pack = (b.packs or {})[template]
+			-- (Phase 8: "health|<pack oid>" names the pack, a single or an area one)
+			local packOid = tonumber((args or ""):match("|(%d+)"))
+			if packOid ~= nil then
+				pack = packOf(b, packOid)
+				if pack ~= nil and not pack.template:find(cmd == "applypoison" and "poison" or "disease", 1, true) then return false, "wrong kind of pack" end
+			end
 			if pack == nil or pack.uses <= 0 then return false, "no pack" end
 			if nowMs() < (b.dotReady or 0) then return false, "must wait" end
 			if b:getHAM(MIND) < 150 then return false, "not enough mind" end
@@ -489,7 +618,19 @@ return function(ctx)
 					t[cmd == "applypoison" and "poisonUntil" or "diseaseUntil"] = nowMs() + 240000
 				end
 			end
-			table.insert(log.dots, {bot = b.oid, t = nowMs(), cmd = cmd, creature = t.oid, landed = landed})
+			table.insert(log.dots, {bot = b.oid, t = nowMs(), cmd = cmd, creature = t.oid, landed = landed, pack = pack.template, oid = pack.oid})
+			-- An area pack (Core3's DotPackCommand::handleArea) hits every attackable creature within 10 m of the target too, pulled or not
+			if pack.template:find("_area_", 1, true) then
+				local extra = {}
+				for _, o in pairs(ctx.objects) do
+					if o.isMob and o ~= t and not o.dead and o.inWorld and dist(o, t) <= 10 then
+						startCombat(b, o)
+						o[cmd == "applypoison" and "poisonUntil" or "diseaseUntil"] = nowMs() + 240000
+						table.insert(extra, o.oid)
+					end
+				end
+				table.insert(log.areas, {bot = b.oid, t = nowMs(), cmd = "pack:" .. cmd, target = t.oid, hit = extra})
+			end
 			return true
 		end
 		return false, "unknown command " .. cmd
@@ -561,6 +702,40 @@ return function(ctx)
 		table.insert(log.stocks, {bot = b.oid, template = template, uses = uses, power = power})
 		return true
 	end
+	-- Phase 8: grenades in the bot's pack, a creature's armor, the creatures around
+	function api.botStockItem(b, template, uses)
+		assert(type(template) == "string" and template:match("^object/weapon/ranged/grenade/[%w_]+%.iff$"), "botStockItem: bad template " .. tostring(template))
+		assert(math.type(uses) == "integer" and uses > 0, "botStockItem: uses")
+		b.items = b.items or {}
+		local item = b.items[template]
+		if item == nil then
+			item = ctx.newObject({isItem = true, template = template, uses = 0})
+			b.items[template] = item
+		end
+		item.uses = math.max(item.uses, uses)
+		return item.oid
+	end
+	function api.botFindItem(b, template)
+		local item = b ~= nil and b.items ~= nil and b.items[template] or nil
+		return (item ~= nil and item.uses > 0) and item.oid or 0
+	end
+	function api.botResists(c)
+		if c == nil or not c.isMob then return nil end
+		local r = c.armor or {}
+		return {kinetic = 0, energy = 0, blast = 0, heat = r.heat or 0, cold = 0, electricity = 0, acid = r.acid or 0, stun = 0, lightsaber = 0}
+	end
+	function api.botCreaturesNear(b, range)
+		table.insert(log.scans, {bot = b.oid, range = range})
+		local out = {}
+		for _, o in pairs(ctx.objects) do
+			if o.isMob and not o.dead and not o.incap and o.inWorld and dist(b, o) <= range then
+				local victim = ctx.objects[o.aggro or 0]
+				table.insert(out, {oid = o.oid, x = o.x, y = o.y, radius = 1, target = (o.inCombat and victim ~= nil and not victim.dead) and victim.oid or 0})
+			end
+		end
+		table.sort(out, function(a, c) return dist(b, ctx.objects[a.oid]) < dist(b, ctx.objects[c.oid]) end)
+		return out
+	end
 	function api.botFindPack(b, template)
 		local pack = b ~= nil and b.packs ~= nil and b.packs[template] or nil
 		return (pack ~= nil and pack.uses > 0) and pack.oid or 0
@@ -577,6 +752,14 @@ return function(ctx)
 		return out
 	end
 	-- mover
+	-- Phase 8: the leap to a player, any planet, about 10 m behind them (and the bot stays as it was: sitting, say)
+	function api.botCallTo(b, p)
+		if b == nil or p == nil or not b.online or b.dead or b.incap or not p.inWorld then return false end
+		table.insert(log.calls, {bot = b.oid, t = nowMs(), to = p.oid, planet = p.planet})
+		b.planet, b.x, b.y, b.z, b.cell = p.planet, p.x - 10, p.y, p.z, p.cell
+		b.move = nil
+		return true
+	end
 	function api.botFollow(b, leader)
 		assert(leader ~= nil and leader.oid ~= nil, "botFollow: no leader")
 		if b == nil or not b.online or b.dead then return false end
@@ -635,8 +818,12 @@ return function(ctx)
 		return true
 	end
 	function api.botEquip(b, template)
-		assert(type(template) == "string" and template:match("^object/weapon/"), "botEquip: bad template " .. tostring(template))
+		assert(type(template) == "string" and (template:match("^object/weapon/") or template:match("^object/tangible/instrument/")), "botEquip: bad template " .. tostring(template))
 		table.insert(log.equips, {bot = b.oid, t = nowMs(), template = template})
+		if template:find("/instrument/", 1, true) then b.weapon = "instrument" end
+		if template:find("/pistol/", 1, true) then b.weapon = "pistol" end
+		if template:find("rifle_flame_thrower", 1, true) then b.weapon = "flame" end
+		if template:find("rifle_acid_beam", 1, true) then b.weapon = "acid" end
 		return 1
 	end
 	function api.botRepairGear(b)
@@ -824,6 +1011,23 @@ return function(ctx)
 	end
 	-- tradegroup
 	function api.botGetGroupInviter(b) return b ~= nil and b.inviter or 0 end
+	-- A creature's group without locking it (Phase 8): the sim's getGroupSize/getGroupMember of other creatures are not to be used
+	function api.botGroupInfo(p)
+		local g = p ~= nil and p.groupId and groups[p.groupId]
+		if not g then return nil end
+		local members = {}
+		for i, oid in ipairs(g.members) do members[i] = oid end
+		return {id = g.id, leader = members[1] or 0, members = members}
+	end
+	-- The players online with a client (Phase 8's group cap): the humans a scenario made
+	function api.botHumansOnline()
+		local out = {}
+		for _, o in pairs(ctx.objects) do
+			if o.isPlayer and not o.isBotFlag and o.inWorld and not o.pretend then table.insert(out, o.oid) end
+		end
+		table.sort(out)
+		return out
+	end
 	function api.botPlaceCamp(b, kit)
 		assert(type(kit) == "string" and kit:match("^object/tangible/scout/camp/[%w_]+%.iff$"), "botPlaceCamp: bad kit " .. tostring(kit))
 		if b == nil or b.cell ~= 0 or b.inTown then
@@ -862,7 +1066,8 @@ return function(ctx)
 	end
 	-- The held weapon's ranges (Phase 7c): Core3's templates (T21 and E-11 50 m, EE-3 27 m, fists 5 m)
 	local RANGES = {rifle = {ranged = true, idealRange = 50, maxRange = 64}, carbine = {ranged = true, idealRange = 27, maxRange = 64},
-		pistol = {ranged = true, idealRange = 15, maxRange = 64}, unarmed = {ranged = false, idealRange = 5, maxRange = 5}}
+		flame = {ranged = true, idealRange = 50, maxRange = 64},
+		pistol = {ranged = true, idealRange = 15, maxRange = 64}, acid = {ranged = true, idealRange = 16, maxRange = 48}, unarmed = {ranged = false, idealRange = 5, maxRange = 5}}
 	function api.botWeaponRange(b)
 		local r = b ~= nil and RANGES[b.weapon or "unarmed"] or nil
 		if r == nil then return nil end
@@ -1135,7 +1340,7 @@ return function(ctx)
 					end
 				end
 				-- A creature closes on whoever it's after and hits every 2 s
-				if o.isMob and o.inCombat then
+				if o.isMob and o.inCombat and not o.rooted then
 					local victim = ctx.objects[o.aggro or 0]
 					if victim ~= nil and not victim.dead and not victim.incap then
 						if dist(o, victim) > 3 then
@@ -4736,6 +4941,854 @@ return function(ctx)
 		teardown()
 	end
 
+
+	-- Scenario: Phase 8 group 1, the full crew of seven and the group cap
+
+	function scenarios.crewfull()
+		setup("/nonexistent/sim-talk")
+		local seven = {"tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando"}
+		for _, role in ipairs(seven) do
+			if crew[role] == nil then
+				fail("crewfull: no " .. role .. " in the roster")
+				teardown()
+				return
+			end
+		end
+		local function can(b, ability)
+			return readStringData("bot:" .. b.oid .. ":crew:can"):find("," .. ability .. ",", 1, true) ~= nil
+		end
+		local function specials(b) return readStringData("bot:" .. b.oid .. ":crew:specialsList") end
+		local function groupLines(b, text, since)
+			for _, l in ipairs(entries(log.group, b, since)) do
+				if l.text == text then return true end
+			end
+			return false
+		end
+		for _, role in ipairs(seven) do login(crew[role]) end
+
+		-- 1. What the three new ones can do, from their skills
+		local sl, ent, com = crew.squadleader, crew.entertainer, crew.commando
+		for _, ability in ipairs({"steadyAim", "volley", "formUp", "boostMorale", "rally", "retreat"}) do
+			if not can(sl, ability) then fail("crewfull: the squad leader can't " .. ability) end
+			if can(ent, ability) or can(com, ability) then fail("crewfull: " .. ability .. " on someone with no squad leader skills") end
+		end
+		if not specials(sl):find("fullautosingle2", 1, true) or not specials(sl):find("burstshot2", 1, true) then
+			fail("crewfull: the squad leader's specials " .. specials(sl))
+		end
+		if not specials(ent):find("bodyshot3", 1, true) or not specials(ent):find("healthshot2", 1, true) or specials(ent):find("fullauto", 1, true) then
+			fail("crewfull: the entertainer's specials " .. specials(ent))
+		end
+		if not specials(com):find("flamesingle2", 1, true) then
+			fail("crewfull: the commando's specials " .. specials(com))
+		end
+		if not can(com, "flameCone") or not can(com, "acidCone") or not can(com, "grenade") or not can(com, "stims") then
+			fail("crewfull: the commando's abilities " .. readStringData("bot:" .. com.oid .. ":crew:can"))
+		end
+		if can(sl, "stims") or can(ent, "stims") then fail("crewfull: stims without the medic box") end
+
+		-- 2. One human: all seven join (eight in the group)
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		for _, role in ipairs(seven) do
+			invite(cameren, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(8)
+		if members(cameren) ~= 8 then
+			fail("crewfull: " .. members(cameren) .. " in the group, expected Cameren and the seven")
+		end
+		for _, role in ipairs(seven) do
+			if mode(crew[role]) ~= "group" then fail("crewfull: the " .. role .. " is in mode " .. mode(crew[role])) end
+		end
+		-- "Make room" with nobody to make it for still works as asked: the commando leaves
+		local t = nowMs()
+		groupSay(cameren, "make room")
+		sim.run(4)
+		if not groupLines(com, "Sitting this one out.", t) then fail("crewfull: the commando didn't say it sits out") end
+		if members(cameren) ~= 7 or com.groupId ~= nil then fail("crewfull: the commando is still in the group after make room") end
+		for _, role in ipairs({"tank", "rifleman", "medic", "ranger", "squadleader", "entertainer"}) do
+			for _, l in ipairs(entries(log.group, crew[role], t)) do
+				if l.text == "Sitting this one out." then fail("crewfull: the " .. role .. " answered make room") end
+			end
+		end
+		sim.run(10)
+
+		-- 3. Another human online and not in the group: at six crew the commando sits out; the other six don't
+		local dex = makeHuman("Dex", cameren.x + 5, cameren.y)
+		t = nowMs()
+		invite(cameren, com, true)
+		sim.run(4)
+		-- (Cameren + 6 crew = 7, one more and Dex has no place)
+		if com.groupId ~= nil then fail("crewfull: the commando joined with no slot left for Dex") end
+		local sits = 0
+		for _, tell in ipairs(entries(log.tells, com, t)) do if tell.text == "Sitting this one out." then sits = sits + 1 end end
+		for _, say in ipairs(entries(log.says, com, t)) do if say.text == "Sitting this one out." then sits = sits + 1 end end
+		if sits ~= 1 then fail("crewfull: the commando said 'Sitting this one out.' " .. sits .. " times for the invite") end
+		if #commands(com, "decline", t) ~= 1 then fail("crewfull: the commando didn't decline the invite") end
+
+		-- 4. Dex joins the group; the commando still sits out (Cameren, Dex and six crew are eight)
+		invite(cameren, dex, false)
+		dex.inviter = cameren.oid
+		joinGroup(dex, cameren)
+		t = nowMs()
+		invite(cameren, com, true)
+		sim.run(4)
+		if com.groupId ~= nil then fail("crewfull: the commando joined a full group of eight") end
+		-- ...and a player in a group who asks it to come along gets the same answer
+		t = nowMs()
+		speak(com, cameren, "wanna hunt?", "spatial")
+		sim.run(4)
+		if #commands(com, "invite", t) ~= 0 then fail("crewfull: the commando invited a player whose group has no place for it") end
+
+		-- 5. Dex leaves: the commando joins on the next invite
+		leaveGroup(dex)
+		sim.run(2)
+		t = nowMs()
+		-- (Dex is still online and not in the group: Cameren + 6 crew + the commando + Dex = 9)
+		invite(cameren, com, true)
+		sim.run(4)
+		if com.groupId ~= nil then fail("crewfull: the commando joined while Dex waited outside a group of seven") end
+		dex.pretend = true -- Dex logs out
+		dex.inWorld = false
+		invite(cameren, com, true)
+		sim.run(4)
+		if com.groupId == nil then fail("crewfull: the commando didn't join with the other player offline") end
+
+		-- 6. It came in while Dex was away; Dex logs in and isn't in the group: the group is full, so the commando leaves by itself
+		local joined = members(cameren)
+		t = nowMs()
+		dex.pretend, dex.inWorld = nil, true
+		sim.run(25)
+		if com.groupId ~= nil then fail("crewfull: the commando kept its place with Dex waiting outside a full group") end
+		if not groupLines(com, "Sitting this one out.", t) then fail("crewfull: the commando didn't say it sits out") end
+		if members(cameren) ~= joined - 1 then fail("crewfull: " .. members(cameren) .. " in the group after the commando left, expected " .. (joined - 1)) end
+
+		realPrint(string.format("crewfull %d in the group", joined))
+		teardown()
+	end
+
+
+	-- The seven crew in a group with a human, outdoors (the setup the Phase 8 scenarios share)
+	local SEVEN = {"tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando"}
+	local function sevenGroup(label)
+		setup("/nonexistent/sim-talk")
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		for _, role in ipairs(SEVEN) do
+			invite(cameren, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(10)
+		if members(cameren) ~= 8 then
+			fail(label .. ": " .. members(cameren) .. " in the group, expected Cameren and the seven")
+		end
+		for _, role in ipairs(SEVEN) do crew[role].cell = 0 end
+		cameren.cell = 0
+		sim.run(10)
+		return cameren
+	end
+
+	local function makeCreature(cameren, name, dx, dy, victim, hp, rooted)
+		local m = makeMob(name, cameren.x + dx, cameren.y + (dy or 0), hp or 1e7)
+		m.hits = 0
+		m.rooted = rooted ~= false -- (it stays where it is: the area geometry is the test)
+		if victim ~= nil then
+			startCombat(m, victim)
+			m.aggro = victim.oid
+		end
+		return m
+	end
+
+	-- Scenario: Phase 8 group 3, the squad leader
+
+	function scenarios.crewsquad()
+		local cameren = sevenGroup("crewsquad")
+		local savedChance = BotCrew.calloutChance
+		local tank, sl = crew.tank, crew.squadleader
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function slLines(since)
+			return entries(log.group, sl, since)
+		end
+		local function slKinds(kind)
+			local n = 0
+			for _, l in ipairs(slLines(0)) do
+				if isLine(l.text, "squadleader", kind) then n = n + 1 end
+			end
+			return n
+		end
+		local function cmds(name, since) return okCommands(sl, name, since or 0) end
+
+		-- 1. Steady aim on the way out (outdoors), once; again only when its five minutes are over
+		sim.run(10)
+		if #cmds("steadyaim") ~= 1 then fail("crewsquad: steady aim " .. #cmds("steadyaim") .. " times on the way out, expected 1") end
+		if slKinds("steadyAim") ~= 1 then fail("crewsquad: no 'steady aim' call in group chat") end
+		sim.run(200)
+		if #cmds("steadyaim") ~= 1 then fail("crewsquad: steady aim again within its five minutes") end
+		sim.run(120)
+		if #cmds("steadyaim") ~= 2 then fail("crewsquad: steady aim not renewed when it ran out (" .. #cmds("steadyaim") .. ")") end
+		-- ...and not indoors
+		local savedCell = sl.cell
+		sim.run(400)
+		local before = #cmds("steadyaim")
+		cameren.cell = 77
+		sim.run(60)
+		if #cmds("steadyaim") ~= before then fail("crewsquad: steady aim cast with the leader indoors") end
+		cameren.cell = 0
+		sim.run(15)
+		-- ...and not standing in town (Mos Eisley's centre), however long it has been
+		local ox, oy = cameren.x, cameren.y
+		cameren.x, cameren.y = 3500, -4800
+		sim.run(60)
+		before = #cmds("steadyaim")
+		sim.run(400)
+		if #cmds("steadyaim") ~= before then fail("crewsquad: steady aim cast with the group standing in town") end
+		cameren.x, cameren.y = ox, oy
+		sim.run(60)
+		if #cmds("steadyaim") ~= before + 1 then fail("crewsquad: steady aim not cast once out of town") end
+
+		-- 2. Rally at the start of a fight with two creatures, volley on the tank's target once three fight it; one call per 20 s
+		local m1 = makeCreature(cameren, "a kreetle", 40, 0, nil, nil, false)
+		local m2 = makeCreature(cameren, "a kreetle", 40, 3, tank, nil, false)
+		local t = nowMs()
+		attack(cameren, m1)
+		sim.run(14)
+		if #cmds("rally", t) ~= 1 then fail("crewsquad: rally " .. #cmds("rally", t) .. " times at the start of a two-creature fight") end
+		if #cmds("volleyfire", t) < 1 then fail("crewsquad: no volley fire with the group on the tank's target") end
+		local v = cmds("volleyfire", t)[1]
+		if v ~= nil and v.target ~= m1.oid and v.target ~= m2.oid then fail("crewsquad: volley fire at something that isn't the fight") end
+		local last
+		for _, l in ipairs(slLines(t)) do
+			if last ~= nil and l.t - last < 19000 then
+				fail(string.format("crewsquad: two calls %.1f s apart", (l.t - last) / 1000))
+			end
+			last = l.t
+		end
+		if slKinds("rally") + slKinds("volley") < 1 then fail("crewsquad: no rally or volley call") end
+		slays(m1, m2)
+		cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+		sim.run(25)
+		-- (a lone creature: no rally)
+		local m3 = makeCreature(cameren, "a kreetle", 40, 0, nil)
+		t = nowMs()
+		attack(cameren, m3)
+		sim.run(12)
+		if #cmds("rally", t) ~= 0 then fail("crewsquad: rally for a single creature") end
+		slays(m3)
+		cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+		sim.run(20)
+
+		-- 3. Form up when a member is stunned or dizzy
+		t = nowMs()
+		crew.medic.stateReady = nowMs() + 20000 -- (the medic would cure it first: its state treatment is on its wait)
+		cameren.states = (cameren.states or 0) | STATE.dizzy
+		sim.run(5)
+		if #cmds("formup", t) ~= 1 then fail("crewsquad: form up " .. #cmds("formup", t) .. " times for a dizzy member") end
+		if (cameren.states & STATE.dizzy) ~= 0 then fail("crewsquad: the leader is still dizzy after form up") end
+
+		-- 4. Boost morale after a fight when one member carries most of the wounds
+		t = nowMs()
+		cameren.wounds = {[0] = 200, [1] = 200, [3] = 100}
+		sim.run(8)
+		if #cmds("boostmorale", t) ~= 1 then fail("crewsquad: boost morale " .. #cmds("boostmorale", t) .. " times with the leader carrying the wounds") end
+		local sum = 0
+		for pool = 0, 8 do sum = sum + ((cameren.wounds or {})[pool] or 0) end
+		if sum > 300 then fail("crewsquad: the leader still carries " .. sum .. " wounds after boost morale") end
+		-- ...not for a group with spread wounds
+		t = nowMs()
+		sim.run(100)
+		if #cmds("boostmorale", t) ~= 0 then fail("crewsquad: boost morale for evenly spread wounds") end
+
+		-- 5. Retreat when the fight is lost: the tank down and two members under 30%. The crew breaks off and follows; after 30 s
+		-- it fights again
+		local m5 = makeCreature(cameren, "a kreetle", 30, 0, nil)
+		m5.hits = 5
+		attack(cameren, m5)
+		sim.run(6)
+		t = nowMs()
+		if #cmds("retreat", t) ~= 0 then fail("crewsquad: retreat in a fight that isn't lost") end
+		tank.dead = true
+		-- (nobody heals in this: the medic and the rifleman's stims are on their waits)
+		crew.medic.injuryReady, crew.rifleman.injuryReady = nowMs() + 40000, nowMs() + 40000
+		for _, role in ipairs({"rifleman", "ranger"}) do
+			local b = crew[role]
+			b.noRegen = true
+			b:pool(HEALTH).cur = math.floor(b:getMaxHAM(HEALTH) * 0.2)
+		end
+		-- (the creature goes for the leader)
+		m5.aggro = cameren.oid
+		startCombat(m5, cameren)
+		sim.run(5)
+		local r = cmds("retreat", t)[1]
+		if r == nil then
+			fail("crewsquad: no retreat with the tank down and two members under 30%")
+			teardown()
+			return
+		end
+		if slKinds("retreat") < 1 then fail("crewsquad: no 'fall back' call") end
+		local effect
+		for _, e in ipairs(log.sl) do if e.cmd == "retreat" and e.t >= t then effect = e end end
+		for _, oid in ipairs({cameren.oid, crew.medic.oid, crew.commando.oid}) do
+			local reached = false
+			for _, x in ipairs(effect.reached) do if x == oid then reached = true end end
+			if not reached then fail("crewsquad: the retreat didn't reach " .. ctx.objects[oid].first) end
+		end
+		local retreatAt = r.t
+		-- The crew follows the leader and opens no fight for the 30 s
+		sim.run(6)
+		for _, role in ipairs({"medic", "ranger", "rifleman", "squadleader", "entertainer", "commando"}) do
+			local b = crew[role]
+			if moveState(b) ~= "follow" then fail("crewsquad: the " .. role .. " isn't following during the retreat (" .. moveState(b) .. ")") end
+			for _, e in ipairs(entries(log.targets, b, retreatAt + 2500)) do
+				if e.target ~= 0 and e.engage then fail("crewsquad: the " .. role .. " attacked during the retreat") end
+			end
+		end
+		sim.run(24)
+		local resumed = false
+		for _, role in ipairs({"medic", "ranger", "rifleman", "squadleader", "entertainer", "commando"}) do
+			for _, e in ipairs(entries(log.targets, crew[role], retreatAt + 30000)) do
+				if e.target == m5.oid and e.engage then resumed = true end
+			end
+		end
+		if resumed then fail("crewsquad: the crew fought again before the retreat was over") end
+		sim.run(14)
+		for _, role in ipairs({"rifleman", "ranger"}) do crew[role].noRegen = false end
+		slays(m5)
+		tank.dead = false
+		-- (one retreat per minute: no second call while the first holds)
+		if #cmds("retreat", t) ~= 1 then fail("crewsquad: " .. #cmds("retreat", t) .. " retreats for one lost fight") end
+
+		-- 6. Three members down is lost too
+		sim.run(70)
+		local m6 = makeCreature(cameren, "a kreetle", 30, 0, cameren, 1e7)
+		m6.hits = 0
+		t = nowMs()
+		attack(cameren, m6)
+		sim.run(4)
+		for _, role in ipairs({"rifleman", "ranger", "entertainer"}) do crew[role].incap = true end
+		sim.run(6)
+		if #cmds("retreat", t) ~= 1 then fail("crewsquad: " .. #cmds("retreat", t) .. " retreats with three members down") end
+
+		-- 7. The leader itself down (with three members down as well): no retreat to call, nobody to run with
+		for _, role in ipairs({"rifleman", "ranger", "entertainer"}) do crew[role].incap = false end
+		slays(m6)
+		sim.run(70)
+		local m7 = makeCreature(cameren, "a kreetle", 30, 0, cameren, 1e7)
+		m7.hits = 0
+		t = nowMs()
+		attack(cameren, m7)
+		sim.run(4)
+		cameren.incap = true
+		for _, role in ipairs({"rifleman", "ranger", "entertainer"}) do crew[role].incap = true end
+		sim.run(8)
+		if #cmds("retreat", t) ~= 0 then fail("crewsquad: a retreat called with the leader down") end
+		cameren.incap = false
+		for _, role in ipairs({"rifleman", "ranger", "entertainer"}) do crew[role].incap = false end
+		slays(m7)
+
+		realPrint(string.format("crewsquad %d squad leader commands, %d calls", #log.sl, #slLines(0)))
+		BotCrew.calloutChance = savedChance
+		teardown()
+	end
+
+	-- Scenario: Phase 8 group 3, the commando
+
+	function scenarios.crewcommando()
+		local cameren = sevenGroup("crewcommando")
+		local savedChance = BotCrew.calloutChance
+		BotCrew.calloutChance = 100
+		local tank, com = crew.tank, crew.commando
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function calm()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(30)
+		end
+		local function areas(cmd, since)
+			local out = {}
+			for _, a in ipairs(log.areas) do
+				if a.bot == com.oid and a.t >= (since or 0) and (cmd == nil or a.cmd:find(cmd, 1, true)) then table.insert(out, a) end
+			end
+			return out
+		end
+		-- Every creature an area attack hit fights the group
+		local function allPulled(a, since)
+			for _, oid in ipairs(a.hit) do
+				local o = ctx.objects[oid]
+				if o.unpulled then return false, o end
+			end
+			return true
+		end
+
+		if com.weapon ~= "flame" then fail("crewcommando: the commando doesn't hold the flame thrower") end
+		local f = readStringData("bot:" .. com.oid .. ":crew:flameCone")
+		if f ~= "flamecone2" then fail("crewcommando: its flame cone is '" .. f .. "'") end
+
+		-- 1. One creature on the tank: the commando stands 12-15 m off and fires single shots, none out of range
+		local m1 = makeCreature(cameren, "a kreetle", 40, 0, nil)
+		local t = nowMs()
+		attack(cameren, m1)
+		sim.run(30)
+		local d = dist(com, m1)
+		if d < 11 or d > 16 then fail(string.format("crewcommando: the commando stands %.1f m from the creature, expected 12-15", d)) end
+		local singles = 0
+		for _, c in ipairs(okCommands(com, nil, t)) do
+			if c.cmd == "flamesingle2" then singles = singles + 1 end
+		end
+		if singles == 0 then fail("crewcommando: no single flame shots on a lone creature") end
+		if #areas("cone", t) ~= 0 then fail("crewcommando: a cone on a lone creature") end
+		if #refused(com, t, {peace = true, attack = true}) ~= 0 then fail("crewcommando: refused commands " .. table.concat(refused(com, t, {peace = true, attack = true}), "; ")) end
+		slays(m1)
+		calm()
+
+		-- 2. A clump of three on the tank: a cone with more than one creature in it, a grenade at the clump (once per 15 s), and
+		-- every creature hit fights the group
+		local m2a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local m2b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+		local m2c = makeCreature(cameren, "a kreetle", 41, 0.6, tank)
+		t = nowMs()
+		attack(cameren, m2a)
+		sim.run(20)
+		local cones, grenades = areas("cone", t), areas("grenade", t)
+		if #cones == 0 or #cones[1].hit < 2 then fail("crewcommando: no cone on the clump (" .. #cones .. ")") end
+		if #grenades == 0 then fail("crewcommando: no grenade on the clump") end
+		if #grenades >= 2 and grenades[2].t - grenades[1].t < 15000 then fail("crewcommando: two grenades less than 15 s apart") end
+		if #okCommands(com, "throwgrenade", t) ~= #grenades then fail("crewcommando: a grenade was refused") end
+		if not (anyLine(entries(log.group, com, t), "commando", "flame") or anyLine(entries(log.group, com, t), "commando", "grenade")) then
+			fail("crewcommando: no cone or grenade callout")
+		end
+		slays(m2a, m2b, m2c)
+		calm()
+
+		-- 3. An unpulled creature (idle, not fighting the group) near the clump: no cone, no grenade
+		local m3a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local m3b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+		local m3c = makeCreature(cameren, "a kreetle", 41, 0.6, tank)
+		local idle = makeCreature(cameren, "a dewback", 43, 0.6, nil)
+		idle.neverAggro, idle.unpulled = true, true
+		t = nowMs()
+		attack(cameren, m3a)
+		sim.run(25)
+		if os.getenv("DBG") then for _, a in ipairs(areas(nil, t)) do io.stderr:write(string.format("DBG %s at %d t=%.1f hit %d: %s com(%.1f,%.1f) idle(%.1f,%.1f) a=(%.1f,%.1f)\n", a.cmd, a.target, (a.t - t) / 1000, #a.hit, table.concat(a.hit, ","), com.x, com.y, idle.x, idle.y, ctx.objects[a.target].x, ctx.objects[a.target].y)) end end
+		if #areas(nil, t) ~= 0 then
+			fail("crewcommando: an area attack with an unpulled creature standing in it (" .. #areas(nil, t) .. ")")
+		end
+		-- (single shots go on)
+		local singles3 = 0
+		for _, c in ipairs(okCommands(com, nil, t)) do if c.cmd == "flamesingle2" then singles3 = singles3 + 1 end end
+		if singles3 == 0 then fail("crewcommando: no single shots while the area was unsafe") end
+		-- ...it goes, and the area attacks come back
+		slays(idle)
+		t = nowMs()
+		sim.run(25)
+		if #areas(nil, t) == 0 then fail("crewcommando: no area attack once the unpulled creature was gone") end
+		slays(m3a, m3b, m3c)
+		calm()
+
+		-- 4. The armor: a creature that shrugs off heat gets the acid rifle (and its cones), then the flame thrower is back
+		local m4a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local m4b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+		for _, m in ipairs({m4a, m4b}) do m.armor = {heat = 95, acid = -1} end
+		t = nowMs()
+		attack(cameren, m4a)
+		sim.run(25)
+		local acidEquip = false
+		for _, e in ipairs(entries(log.equips, com, t)) do if e.template:find("acid_beam", 1, true) then acidEquip = true end end
+		if not acidEquip then fail("crewcommando: no acid rifle against a creature at 95% heat resist") end
+		local acidCones = areas("acid", t)
+		if #acidCones == 0 then fail("crewcommando: no acid cone with the acid rifle") end
+		slays(m4a, m4b)
+		t = nowMs()
+		calm()
+		local backEquip = false
+		for _, e in ipairs(entries(log.equips, com, t)) do if e.template:find("flame_thrower", 1, true) then backEquip = true end end
+		if not backEquip or com.weapon ~= "flame" then fail("crewcommando: the flame thrower isn't back after the fight") end
+
+		-- 5. Lairs: another lair near the clump holds every area attack, even while the group fights a lair; the lair being fought alone
+		-- does not
+		local m5a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local m5b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+		local m5c = makeCreature(cameren, "a kreetle", 41, 0.6, tank)
+		local other = {oid = 7001, x = m5a.x + 5, y = m5a.y + 3}
+		sim.lairs = {other}
+		t = nowMs()
+		attack(cameren, m5a)
+		sim.run(25)
+		if #areas(nil, t) ~= 0 then fail("crewcommando: an area attack with another lair beside the clump") end
+		local fought = ctx.newObject({isLair = true, planet = "tatooine", x = m5a.x + 2, y = m5a.y - 2, z = 5, cell = 0, inWorld = true, name = "a lair"})
+		sim.lairs = {other, {oid = fought.oid, x = fought.x, y = fought.y}}
+		cameren.defenders = {fought.oid}
+		cameren.inCombat = true
+		t = nowMs()
+		sim.run(25)
+		if #areas(nil, t) ~= 0 then fail("crewcommando: an area attack with a second lair beside the clump, in a lair fight") end
+		sim.lairs = {{oid = fought.oid, x = fought.x, y = fought.y}}
+		t = nowMs()
+		sim.run(25)
+		if #areas(nil, t) == 0 then fail("crewcommando: no area attack with only the lair being fought beside the clump") end
+		sim.lairs = {}
+		cameren.defenders = {}
+		slays(m5a, m5b, m5c)
+		calm()
+
+		-- 6. The scan reaches a grenade's whole blast (the target up to 40 m away, 11 m around it, and a margin)
+		local widest = 0
+		for _, r in ipairs(log.scans) do if r.bot == com.oid and r.range > widest then widest = r.range end end
+		if widest < BotCrew.grenadeRange + BotCrew.grenadeSafe then fail("crewcommando: the creature scan reaches only " .. widest .. " m") end
+
+		realPrint(string.format("crewcommando %d area attacks (%d cones, %d grenades)", #areas(nil, 0), #areas("cone", 0), #areas("grenade", 0)))
+		BotCrew.calloutChance = savedChance
+		teardown()
+	end
+
+
+	-- Scenario: Phase 8 group 4, the entertainer in camp, the battle fatigue answer, the medic's area packs
+
+	function scenarios.crewcamp()
+		local cameren = sevenGroup("crewcamp")
+		local savedChance = BotCrew.calloutChance
+		BotCrew.calloutChance = 100
+		local tank, ent, ranger = crew.tank, crew.entertainer, crew.ranger
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function lines(since) return entries(log.group, ent, since) end
+		local function said(kind, since)
+			for _, l in ipairs(lines(since)) do
+				if isLine(l.text, "entertainer", kind) then return true end
+			end
+			for _, l in ipairs(entries(log.says, ent, since)) do
+				if isLine(l.text, "entertainer", kind) then return true end
+			end
+			return false
+		end
+
+		-- 1. Asked to play with no camp up: it says so and does nothing
+		local t = nowMs()
+		groupSay(cameren, "play something")
+		sim.run(3)
+		if not said("noCamp", t) then fail("crewcamp: no 'camp first' answer to music with no camp") end
+		if ent.music ~= nil or ent.dancing ~= nil then fail("crewcamp: it performed with no camp") end
+
+		-- 2. Battle fatigue: only the entertainer answers, and it points to a cantina
+		t = nowMs()
+		groupSay(cameren, "can you heal my battle fatigue?")
+		sim.run(3)
+		if not said("fatigueNo", t) then fail("crewcamp: no battle fatigue answer") end
+		local answers = 0
+		for _, l in ipairs(entries(log.group, nil, t)) do answers = answers + 1 end
+		if answers ~= 1 then fail("crewcamp: " .. answers .. " group lines for one battle fatigue question") end
+		for _, c in ipairs(commands(ent, nil, t)) do if c.cmd ~= "sitserver" and c.cmd ~= "stand" and c.cmd ~= "groupchat" then fail("crewcamp: the entertainer did " .. c.cmd .. " about battle fatigue") end end
+
+		-- 3. The ranger's camp: the entertainer goes to the fire and dances (not sitting), flourishing now and then
+		t = nowMs()
+		groupSay(cameren, "camp?")
+		sim.run(40)
+		if #log.camps == 0 then fail("crewcamp: no camp") end
+		if ent.dancing == nil then fail("crewcamp: the entertainer isn't dancing in camp (" .. tostring(ent.posture) .. ", " .. moveState(ent) .. ")") end
+		if ent.posture == "sitting" then fail("crewcamp: the entertainer sat down in camp") end
+		sim.run(80)
+		local flourishes = 0
+		for _, e in ipairs(log.sl) do if e.cmd == "flourish" and e.bot == ent.oid then flourishes = flourishes + 1 end end
+		if flourishes < 2 then fail("crewcamp: " .. flourishes .. " flourishes in 2 minutes of dancing") end
+		if ent:getHAM(ACTION) <= 0 then fail("crewcamp: the entertainer ran out of action") end
+
+		-- 4. "Play something": the dance stops, the instrument comes into hand, the music starts; "dance" brings the dance back
+		t = nowMs()
+		groupSay(cameren, "play something")
+		sim.run(30)
+		if not said("musicOn", t) then fail("crewcamp: no answer to 'play something'") end
+		if ent.music == nil or ent.dancing ~= nil then fail("crewcamp: not playing (" .. tostring(ent.music) .. "/" .. tostring(ent.dancing) .. ")") end
+		local flute = false
+		for _, e in ipairs(entries(log.equips, ent, t)) do if e.template:find("/instrument/", 1, true) then flute = true end end
+		if not flute then fail("crewcamp: the instrument wasn't taken in hand") end
+		t = nowMs()
+		groupSay(cameren, "dance for us")
+		sim.run(30)
+		if ent.dancing == nil or ent.music ~= nil then fail("crewcamp: not dancing again after 'dance for us'") end
+		-- (one performance at a time: no command refused for that)
+		local refusedPerf = 0
+		for _, c in ipairs(commands(ent, nil, 0)) do
+			if not c.ok and (c.cmd == "startdance" or c.cmd == "startmusic") then refusedPerf = refusedPerf + 1 end
+		end
+		if refusedPerf > 0 then fail("crewcamp: " .. refusedPerf .. " performance commands refused") end
+
+		-- 4b. "stop playing" and the camp ending both put the pistol back in hand
+		groupSay(cameren, "play something")
+		sim.run(30)
+		if ent.music == nil or ent.weapon ~= "instrument" then fail("crewcamp: not playing with the flute before 'stop playing'") end
+		groupSay(cameren, "stop playing")
+		sim.run(20)
+		if ent.music ~= nil or ent.weapon ~= "pistol" then fail("crewcamp: after 'stop playing' the entertainer holds " .. tostring(ent.weapon)) end
+		groupSay(cameren, "play something")
+		sim.run(30)
+		if ent.weapon ~= "instrument" then fail("crewcamp: the flute isn't back in hand") end
+		cameren.x = cameren.x + 90
+		sim.run(60)
+		if ent.music ~= nil or ent.weapon ~= "pistol" then fail("crewcamp: after the camp the entertainer holds " .. tostring(ent.weapon) .. ", music " .. tostring(ent.music)) end
+		cameren.x = cameren.x - 90
+		sim.run(30)
+		groupSay(cameren, "camp?")
+		sim.run(60)
+
+		-- 5. Music again, then a fight: it stops, takes the pistol back and shoots at its band
+		groupSay(cameren, "play something")
+		sim.run(30)
+		if ent.music == nil then fail("crewcamp: not playing before the fight") end
+		local m = makeCreature(cameren, "a kreetle", 30, 0, nil, nil, false)
+		m.hits = 3
+		t = nowMs()
+		attack(cameren, m)
+		sim.run(20)
+		if ent.music ~= nil or ent.dancing ~= nil then fail("crewcamp: still performing in the fight") end
+		if ent.weapon ~= "pistol" then fail("crewcamp: the pistol isn't back in hand (" .. tostring(ent.weapon) .. ")") end
+		local shots = 0
+		for _, c in ipairs(okCommands(ent, nil, t)) do if c.cmd == "bodyshot3" or c.cmd == "healthshot2" then shots = shots + 1 end end
+		if shots == 0 then fail("crewcamp: the entertainer fired no pistol specials") end
+		if #refused(ent, t, {peace = true, attack = true}) ~= 0 then fail("crewcamp: refused " .. table.concat(refused(ent, t, {peace = true, attack = true}), "; ")) end
+		slays(m)
+
+		realPrint(string.format("crewcamp %d flourishes, %d pistol specials", flourishes, shots))
+		BotCrew.calloutChance = savedChance
+		teardown()
+	end
+
+	function scenarios.crewarea()
+		local cameren = sevenGroup("crewarea")
+		-- (big pools, so the specials' cost doesn't keep anyone under the heal line)
+		for _, role in ipairs(SEVEN) do
+			local b = crew[role]
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).base = b:pool(pool).base * 8 end
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).cur = b:getMaxHAM(pool) end
+		end
+		local medic, tank = crew.medic, crew.tank
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function calm()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(40)
+		end
+		local function dots(since)
+			local out = {}
+			for _, d in ipairs(log.dots) do if d.bot == medic.oid and d.t >= since then table.insert(out, d) end end
+			return out
+		end
+
+		-- 1. Three creatures on the tank, close together: the first poison and disease are area packs, named by oid; every one is hit
+		local a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local b = makeCreature(cameren, "a kreetle", 40, 2, tank)
+		local c = makeCreature(cameren, "a kreetle", 41, 1, tank)
+		local t = nowMs()
+		attack(cameren, a)
+		sim.run(30)
+		local d = dots(t)
+		if #d < 2 then fail("crewarea: " .. #d .. " packs thrown at a clump of three") end
+		for _, x in ipairs(d) do
+			if not x.pack:find("_area_", 1, true) then fail("crewarea: a single pack on a clump: " .. x.pack) end
+		end
+		for _, o in ipairs({a, b, c}) do
+			if nowMs() >= (o.poisonUntil or 0) or nowMs() >= (o.diseaseUntil or 0) then fail("crewarea: a creature of the clump isn't poisoned and diseased") end
+		end
+		local named = 0
+		for _, cmd in ipairs(commands(medic, nil, t)) do
+			if (cmd.cmd == "applypoison" or cmd.cmd == "applydisease") and cmd.args:match("^health|%d+$") then named = named + 1 end
+		end
+		if named < 2 then fail("crewarea: the throws didn't name their pack (" .. named .. ")") end
+		slays(a, b, c)
+		calm()
+
+		-- 2. An unpulled creature close to the clump: single packs only
+		local a2 = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local b2 = makeCreature(cameren, "a kreetle", 40, 2, tank)
+		local c2 = makeCreature(cameren, "a kreetle", 41, 1, tank)
+		local idle = makeCreature(cameren, "a dewback", 44, 1, nil)
+		idle.neverAggro = true
+		t = nowMs()
+		attack(cameren, a2)
+		sim.run(30)
+		d = dots(t)
+		if #d < 2 then fail("crewarea: " .. #d .. " packs with an unpulled creature near") end
+		for _, x in ipairs(d) do
+			if x.pack:find("_area_", 1, true) then fail("crewarea: an area pack with an unpulled creature in its area") end
+		end
+		if idle.poisonUntil ~= nil then fail("crewarea: the unpulled creature was poisoned") end
+		slays(a2, b2, c2, idle)
+		calm()
+
+		-- 3. Two creatures are not enough: singles
+		local a3 = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local b3 = makeCreature(cameren, "a kreetle", 40, 2, tank)
+		t = nowMs()
+		attack(cameren, a3)
+		sim.run(30)
+		for _, x in ipairs(dots(t)) do
+			if x.pack:find("_area_", 1, true) then fail("crewarea: an area pack on two creatures") end
+		end
+		if #dots(t) < 2 then fail("crewarea: no packs on two creatures") end
+		slays(a3, b3)
+
+		realPrint(string.format("crewarea %d packs", #log.dots))
+		teardown()
+	end
+
+
+	-- Scenario: Phase 8 group 5, calling the crew
+
+	function scenarios.crewcall()
+		setup("/nonexistent/sim-talk")
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local savedChance = BotCrew.calloutChance
+		local function atHome(b) return b.planet == "tatooine" and b.cell ~= 0 end
+		local function callsSince(t)
+			local out = {}
+			for _, c in ipairs(log.calls) do if c.t >= t then table.insert(out, c) end end
+			return out
+		end
+		local function allSays(b, since)
+			local out = {}
+			for _, e in ipairs(entries(log.says, b, since)) do table.insert(out, e.text) end
+			for _, e in ipairs(entries(log.tells, b, since)) do table.insert(out, e.text) end
+			return out
+		end
+
+		-- 1. A tell to one of them from Naboo: the whole crew, free at home, arrives 5-10 s later beside the caller, on Naboo
+		local cameren = makeHuman("Cameren", 800, 800)
+		cameren.planet = "naboo"
+		-- (somebody sat down at home: a called bot stands)
+		crew.ranger.posture = "sitting"
+		local t = nowMs()
+		speak(crew.tank, cameren, "crew, come to me", "tell")
+		sim.run(4.5)
+		if #callsSince(t) ~= 0 then fail("crewcall: someone came before 5 s") end
+		sim.run(8)
+		local calls = callsSince(t)
+		if #calls ~= 7 then fail("crewcall: " .. #calls .. " of the seven came") end
+		for _, c in ipairs(calls) do
+			if c.t - t < 5000 or c.t - t > 10100 then fail(string.format("crewcall: a bot arrived %.1f s after the call", (c.t - t) / 1000)) end
+		end
+		for _, role in ipairs(SEVEN) do
+			local b = crew[role]
+			if b.planet ~= "naboo" or dist(b, cameren) > 12 then fail("crewcall: the " .. role .. " isn't beside the caller") end
+			if mode(b) ~= "called" then fail("crewcall: the " .. role .. " is in mode " .. mode(b)) end
+		end
+		sim.run(3)
+		if crew.ranger.posture == "sitting" then fail("crewcall: the called ranger is still sitting") end
+		-- one invite from the first to arrive; the others ask for one
+		local invites, asks = 0, 0
+		for _, role in ipairs(SEVEN) do
+			invites = invites + #okCommands(crew[role], "invite", t)
+			for _, text in ipairs(allSays(crew[role], t)) do
+				if isLine(text, role, "askInvite") then asks = asks + 1 end
+			end
+		end
+		if invites ~= 1 then fail("crewcall: " .. invites .. " invites sent, expected 1") end
+		if asks ~= 6 then fail("crewcall: " .. asks .. " 'send me an invite' lines, expected 6") end
+		-- "On my way" once
+		local ons = 0
+		for _, text in ipairs(allSays(crew.tank, t)) do if isLine(text, "tank", "callOn") then ons = ons + 1 end end
+		if ons ~= 1 then fail("crewcall: the tank said 'on my way' " .. ons .. " times") end
+
+		-- 2. They join on invite, and a dismissal sends one home (to the station, on Tatooine)
+		for _, role in ipairs(SEVEN) do
+			crew[role].inviter = nil
+			invite(cameren, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(8)
+		if members(cameren) ~= 8 then fail("crewcall: " .. members(cameren) .. " in the group after the invites") end
+		groupSay(cameren, "go home")
+		sim.run(30)
+		for _, role in ipairs(SEVEN) do
+			if crew[role].planet ~= "tatooine" then fail("crewcall: the " .. role .. " didn't go home after the dismissal (" .. crew[role].planet .. ")") end
+		end
+
+		-- 3. Somebody else's group: Senna and Weeta are with Dex; Cameren's tell to Senna: it says so and stays, the others come
+		local dex = makeHuman("Dex", crew.tank.x + 3, crew.tank.y)
+		dex.cell = crew.tank.cell
+		for _, role in ipairs({"rifleman", "ranger"}) do
+			invite(dex, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(5)
+		cameren.planet, cameren.x, cameren.y, cameren.cell = "naboo", 800, 800, 0
+		t = nowMs()
+		speak(crew.rifleman, cameren, "crew, come to me", "tell")
+		sim.run(14)
+		local came = {}
+		for _, c in ipairs(callsSince(t)) do came[c.bot] = true end
+		if came[crew.rifleman.oid] or came[crew.ranger.oid] then fail("crewcall: a bot in someone else's group came") end
+		for _, role in ipairs({"tank", "medic", "squadleader", "entertainer", "commando"}) do
+			if not came[crew[role].oid] then fail("crewcall: the " .. role .. " didn't come") end
+		end
+		local busy = false
+		for _, text in ipairs(allSays(crew.rifleman, t)) do
+			if isLine(text, "rifleman", "callBusy") and text:find("Dex", 1, true) then busy = true end
+		end
+		if not busy then fail("crewcall: no 'out with Dex's group' answer") end
+
+		-- 4. Group chat from a human far from his group: the group comes; the ones near him stay put
+		for _, role in ipairs({"rifleman", "ranger"}) do
+			leaveGroup(crew[role])
+		end
+		for _, role in ipairs(SEVEN) do
+			if crew[role].groupId ~= nil then leaveGroup(crew[role]) end
+			crew[role].planet, crew[role].x, crew[role].y, crew[role].cell = "tatooine", 100 + 2 * _, 100, 0
+			writeStringData("bot:" .. crew[role].oid .. ":crew:mode", "home")
+		end
+		cameren.planet, cameren.x, cameren.y, cameren.cell, cameren.groupId = "tatooine", 100, 100, 0, nil
+		for _, role in ipairs({"tank", "medic", "squadleader", "commando"}) do
+			invite(cameren, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(8)
+		if members(cameren) ~= 5 then fail("crewcall: " .. members(cameren) .. " in the group, expected 5") end
+		-- the commando and the medic are on other planets (the mover catches up by itself on this one), the rest near
+		crew.commando.planet, crew.commando.x, crew.commando.y = "corellia", 700, 100
+		crew.medic.planet, crew.medic.x, crew.medic.y = "naboo", 100, 600
+		crew.commando.move, crew.medic.move = nil, nil
+		t = nowMs()
+		groupSay(cameren, "crew, come to me")
+		sim.run(14)
+		local came2 = {}
+		for _, c in ipairs(callsSince(t)) do came2[c.bot] = true end
+		if not came2[crew.commando.oid] or not came2[crew.medic.oid] then fail("crewcall: the far group members weren't called") end
+		if came2[crew.tank.oid] or came2[crew.squadleader.oid] then fail("crewcall: a near group member leapt") end
+		if dist(crew.commando, cameren) > 25 or dist(crew.medic, cameren) > 25 then fail("crewcall: the far members aren't with the leader") end
+		if moveState(crew.commando) ~= "follow" then fail("crewcall: the called commando isn't following") end
+
+		-- 5. Called and never invited: back to the station after calledWait
+		for _, role in ipairs({"ranger", "rifleman"}) do
+			crew[role].groupId = nil
+		end
+		cameren.groupId = nil
+		for _, role in ipairs(SEVEN) do
+			if crew[role].groupId ~= nil then leaveGroup(crew[role]) end
+		end
+		sim.run(5)
+		cameren.planet, cameren.x, cameren.y = "naboo", 800, 800
+		speak(crew.entertainer, cameren, "I need the crew", "tell")
+		sim.run(14)
+		if crew.entertainer.planet ~= "naboo" then fail("crewcall: 'I need the crew' brought nobody") end
+		sim.run(BotCrew.calledWait + 40)
+		if crew.entertainer.planet ~= "tatooine" or mode(crew.entertainer) ~= "home" then
+			fail("crewcall: the uninvited entertainer didn't go home (" .. crew.entertainer.planet .. ", " .. mode(crew.entertainer) .. ")")
+		end
+
+		realPrint(string.format("crewcall %d leaps", #log.calls))
+		BotCrew.calloutChance = savedChance
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -4747,4 +5800,10 @@ return function(ctx)
 	table.insert(order, "crewhandover")
 	table.insert(order, "crewtactics")
 	table.insert(order, "crewband")
+	table.insert(order, "crewfull")
+	table.insert(order, "crewsquad")
+	table.insert(order, "crewcommando")
+	table.insert(order, "crewcamp")
+	table.insert(order, "crewarea")
+	table.insert(order, "crewcall")
 end

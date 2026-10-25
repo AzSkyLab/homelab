@@ -193,7 +193,14 @@ function BotMusician:tick(pBot, oid, now)
 		return
 	end
 
-	if now >= readData(key(oid, "nextFlourish")) then
+	-- Flourishes: with the band, together with the dancer; alone, on its own timer
+	local together = nil
+
+	if BotBand ~= nil then
+		together = BotBand:flourishDue(pBot, oid, now)
+	end
+
+	if together == true or (together == nil and now >= readData(key(oid, "nextFlourish"))) then
 		botEnqueue(pBot, "flourish", 0, tostring(getRandomNumber(1, 8)))
 		writeData(key(oid, "nextFlourish"), now + between(self.flourishEvery))
 		writeData(key(oid, "flourishes"), readData(key(oid, "flourishes")) + 1)
@@ -320,6 +327,10 @@ end
 function BotMusician:act(pBot, pPlayer, action, channel, brainLine)
 	if action == "bufftarget" then
 		self:buffTarget(pBot, pPlayer, channel, brainLine)
+
+		if BotBand ~= nil then
+			BotBand:askPartner(pBot, SceneObject(pBot):getObjectID(), pPlayer)
+		end
 	end
 end
 

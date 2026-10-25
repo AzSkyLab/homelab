@@ -42,6 +42,9 @@ BOTS = {
     ("mos_eisley", "rifleman"): ("Jessa Rhyn", "human", "female"),
     ("mos_eisley", "medic"): ("Ollo Venn", "sullustan", "male"),
     ("mos_eisley", "ranger"): ("Kael Durros", "zabrak", "male"),
+    ("mos_eisley", "squadleader"): ("Rook Hadley", "zabrak", "male"),
+    ("mos_eisley", "entertainer"): ("Nyla Ferrin", "twilek", "female"),
+    ("mos_eisley", "commando"): ("Dren Kolt", "bothan", "male"),
     ("varenhal", "mayor"): ("Orrin Vale", "human", "male"),
     ("varenhal", "citizen"): ("Tessa Morrow", "human", "female"),
     ("varenhal", "dancer"): ("Lira Senn", "twilek", "female"),
@@ -53,6 +56,7 @@ INSTRUMENTS = {"mos_eisley": "object/tangible/instrument/bandfill.iff", "coronet
 CITIES = ["mos_eisley", "coronet", "theed"]
 # Where each job works (the rest go round CITIES)
 HOME_CITY = {"tank": "mos_eisley", "rifleman": "mos_eisley", "medic": "mos_eisley", "ranger": "mos_eisley",
+             "squadleader": "mos_eisley", "entertainer": "mos_eisley", "commando": "mos_eisley",
              "mayor": "varenhal", "citizen": "varenhal"}
 PLACES = {"doctor": "medical", "mayor": "cityhall", "citizen": "plaza"}
 # A player city's news, as the Lua builds it from botCityInfo (the shape is the jobs' to choose)
@@ -227,6 +231,17 @@ CASES = [
     C("medic", "group", "follow", "come on, follow me", {"follow"}, grouped=1),
     C("medic", "group", "no action", "thanks for the rez", NONE, grouped=1),
     C("medic", "spatial", "wrong job", "can you heal my battle fatigue?", NONE),
+    # Phase 8: the new crew. Their own words are answered in the Lua (crew.lua), without the model; the bridge must not turn
+    # them into another action
+    C("commando", "group", "make room", "make room for my friend", NONE, grouped=1),
+    C("commando", "tell", "make room", "make room please", NONE),
+    C("squadleader", "tell", "call", "crew, come to me", NONE),
+    C("entertainer", "group", "call", "crew, come to me", NONE, grouped=1),
+    C("entertainer", "group", "music", "play something", NONE, grouped=1),
+    C("entertainer", "group", "dance", "dance for us", NONE, grouped=1),
+    C("entertainer", "group", "fatigue", "can you heal my battle fatigue?", NONE, grouped=1),
+    C("commando", "group", "chat", "nice flame work on that pack", NONE, grouped=1),
+    C("squadleader", "group", "chat", "good call on the volley", NONE, grouped=1),
     C("medic", "group", "banter", "shit, I stood in the fire again", NONE, grouped=1),
     C("ranger", "spatial", "join", "want to come hunting with us?", {"join"}),
     C("ranger", "group", "camp", "camp?", {"camp"}, grouped=1),
@@ -357,6 +372,14 @@ CHECKS = [
     ("ranger", "harvest whatever's best", "none", "harvest:any"), ("ranger", "skin the bantha for meat", "none", "harvest:meat"),
     ("tank", "harvest hide", "none", "harvest:hide"), ("ranger", "Kael, harvest the bones", "none", "harvest:bone"),
     ("ranger", "harvest hide and bone", "none", "harvest"), ("ranger", "harvest the bantha", "none", "harvest"),
+    # Phase 8: the new crew takes the crew's orders; its own words (make room, come to me, play something, battle fatigue) are
+    # answered in the Lua before the model, and the bridge adds no action of its own to them
+    ("squadleader", "wanna hunt?", "none", "join"), ("squadleader", "follow me", "none", "follow"),
+    ("entertainer", "lfg? need an entertainer", "none", "join"), ("entertainer", "stay here", "none", "stay"),
+    ("commando", "go home", "none", "home"), ("commando", "attack my target", "none", "attack"),
+    ("commando", "make room for my friend", "none", ""), ("commando", "make room", "none", ""),
+    ("entertainer", "play something", "none", ""), ("entertainer", "dance for us", "none", ""),
+    ("entertainer", "can you heal my battle fatigue?", "none", ""), ("squadleader", "crew, come to me", "none", ""),
     ("ranger", "what are you harvesting?", "harvest", ""), ("ranger", "what are we skinning for?", "harvest", ""),
     ("ranger", "harvesting what?", "harvest", ""), ("ranger", "are you harvesting hide?", "harvest", ""),
     ("ranger", "don't harvest hide", "harvest", ""), ("ranger", "I need some hide for armor", "harvest", ""),

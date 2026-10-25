@@ -40,9 +40,19 @@ public:
 	// - Poison and disease packs (medpack_poison_*, medpack_disease_*; Phase 7c, the combat medic's DoT packs): one per
 	//   template; `power` is the DoT's strength, `duration` its seconds, and `potency` (its chance to land, against the
 	//   creature's resistance) and `range` (metres, plus 14 at healing range 100) are set when above 0 and otherwise stay
-	//   the template's. Area packs are refused.
+	//   the template's. Area packs (medpack_poison_area_*, medpack_disease_area_*; Phase 8) hit every attackable creature
+	//   within `area` metres of the target too, and make the thrower a defender of each: `area` (above 0) is set on them
+	//   (else the template's stays), and the crew throws them only where nothing unpulled stands in that area.
 	// The bot must be locked. Returns false if the pack can't be made.
-	static bool stockPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency = 0, float range = 0);
+	static bool stockPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency = 0, float range = 0, float area = 0);
+
+	// Phase 8: a thrown weapon (object/weapon/ranged/grenade/*) in the bot's inventory with at least `uses` uses: the
+	// first of that template that isn't loot, else a new one. Returns its oid (for throwgrenade's argument), or 0. The
+	// bot must be locked
+	static uint64 stockItem(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses);
+
+	// The oid of the first item of `templateName` in the bot's inventory (not loot), or 0
+	static uint64 findItem(server::zone::objects::creature::CreatureObject* bot, const String& templateName);
 
 	// The oid of the first pack of `templateName` in the bot's inventory, or 0. The bot must be locked
 	static uint64 findPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName);

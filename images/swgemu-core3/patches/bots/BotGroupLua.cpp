@@ -509,6 +509,8 @@ void BotGroupLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botTrack", botTrack);
 	lua->registerFunction("botAttackers", botAttackers);
 	lua->registerFunction("botPeopleNear", botPeopleNear);
+	lua->registerFunction("botHumansOnline", botHumansOnline);
+	lua->registerFunction("botGroupInfo", botGroupInfo);
 
 	registerDevTable(lua->getLuaState());
 }
@@ -584,6 +586,57 @@ int BotGroupLua::botGetCamp(lua_State* L) {
 }
 
 // botPeopleNear(pObject, range): array of {name, oid, kind} for the players (bots too) and people NPCs around it
+// botGroupInfo(pCreature) -> nil or {id, leader, members = {oid, ...}}
+int BotGroupLua::botGroupInfo(lua_State* L) {
+	CreatureObject* creature = nullptr;
+
+	if (lua_gettop(L) >= 1 && lua_islightuserdata(L, 1)) {
+		SceneObject* object = static_cast<SceneObject*>(lua_touserdata(L, 1));
+
+		creature = object != nullptr && object->isCreatureObject() ? object->asCreatureObject() : nullptr;
+	}
+
+	BotGroupInfo info;
+
+	if (!BotGroup::groupInfo(creature, info)) {
+		lua_pushnil(L);
+
+		return 1;
+	}
+
+	lua_newtable(L);
+	lua_pushinteger(L, (lua_Integer) info.id);
+	lua_setfield(L, -2, "id");
+	lua_pushinteger(L, (lua_Integer) info.leader);
+	lua_setfield(L, -2, "leader");
+	lua_newtable(L);
+
+	for (int i = 0; i < info.members.size(); ++i) {
+		lua_pushinteger(L, (lua_Integer) info.members.get(i));
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	lua_setfield(L, -2, "members");
+
+	return 1;
+}
+
+// botHumansOnline() -> {oid, ...}
+int BotGroupLua::botHumansOnline(lua_State* L) {
+	Vector<uint64> humans;
+
+	BotManager::instance()->getOnlineHumans(humans);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < humans.size(); ++i) {
+		lua_pushinteger(L, (lua_Integer) humans.get(i));
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
+}
+
 int BotGroupLua::botPeopleNear(lua_State* L) {
 	lua_newtable(L);
 

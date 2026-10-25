@@ -12,6 +12,13 @@
  *   botEquip(pBot, template) -> oid             create if missing, equip (a weapon to hold_r), repair; 0 on failure
  *   botRepairGear(pBot) -> count
  *   botFindPack(pBot, template) -> oid          a pack of that template in the inventory, or 0
+ *   botCreaturesNear(pBot, range) -> {{oid, x, y, radius, target}, ...}   the live creatures (never players or pets) within
+ *                                               range metres that the bot may attack, nearest first, at most 40; target is
+ *                                               who each fights (0 for nobody). For area attacks (Phase 8): scan when weighing
+ *                                               one, not every step
+ *   botResists(pCreature) -> {kinetic, energy, blast, heat, cold, electricity, acid, stun, lightsaber} or nil
+ *                                               a creature's resistances in percent (-1: vulnerable); nil for anything
+ *                                               but an AiAgent (Phase 8: the commando's weapon choice)
  *   botRecentIncaps(pCreature) -> count         incaps in the last ten minutes; at 2 the next one kills, so no fight
  *                                               (botStartFight refuses) and no duel worth accepting
  *   botDropDeadDefenders(pCreature) -> count   takes the dead from a creature's defender list (a player left in combat on
@@ -57,6 +64,8 @@ private:
 	static int botEquip(lua_State* L);
 	static int botRepairGear(lua_State* L);
 	static int botFindPack(lua_State* L);
+	static int botResists(lua_State* L);
+	static int botCreaturesNear(lua_State* L);
 	static int botRecentIncaps(lua_State* L);
 	static int botDropDeadDefenders(lua_State* L);
 	static int botWeaponRange(lua_State* L);
