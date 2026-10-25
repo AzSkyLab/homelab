@@ -67,6 +67,7 @@ public:
 	Vector<uint64> bundle;
 	uint64 bundleTo = 0;
 	bool bundleOpened = false;
+	bool bundleTouched = false;	// the owner accepted, verified or put something in the window: it was seen, so not a lost one
 	Time bundleSince;
 
 	// What the bot got in its last trade, until the jobs hand it back (botSlice): if they don't, it goes back anyway
@@ -419,9 +420,39 @@ void endBundle(CreatureObject* bot, Watched* entry, const char* detail, const ch
 	entry->bundle.removeAll();
 	entry->bundleTo = 0;
 	entry->bundleOpened = false;
+	entry->bundleTouched = false;
 	entry->reset();
 
 	fireEvent(bot, ownerOid, detail);
+}
+
+// The detail of an event for a window that closed under the bot: "bundleLost" when the owner never touched it (the 2005
+// client sometimes drops a window opened close to other activity; the jobs offer it again), else "bundleCancelled"
+const char* lostDetail(const Watched* entry) {
+	return entry->bundleTouched ? "bundleCancelled" : "bundleLost";
+}
+
+// What the owner's side looked like when the handover window vanished, for the log: who closed it? Core3 closes both
+// sessions when either client sends an AbortTradeMessage (PlayerManager::handleAbortTradeMessage, which also clears the
+// sender's trade target) or logs out; nothing in Core3 times a trade out or checks the range except on verify. So an
+// owner with no trade target and no session sent the abort (or logged out); one still in the trade was cut on the
+// bot's side
+void logLost(CreatureObject* bot, CreatureObject* owner, Watched* entry, const char* where) {
+	ManagedReference<TradeSession*> ownerSession = owner != nullptr ? getTradeSession(owner) : nullptr;
+
+	StringBuffer text;
+	text << bot->getFirstName() << "'s handover window is gone (" << where << ") " << entry->bundleSince.miliDifference() / 1000
+		<< " s after it opened: owner trade target " << (owner != nullptr ? owner->getTradeTargetID() : 0) << ", owner session "
+		<< (ownerSession != nullptr ? String("yes, with ") + String::valueOf(ownerSession->getTradeTargetPlayer()) : String("none"))
+		<< ", bot trade target " << bot->getTradeTargetID();
+
+	if (owner != nullptr) {
+		text << ", " << (int) bot->getDistanceTo(owner) << " m apart, owner " << (owner->isOnline() ? "online" : "offline") << ", grouped "
+			<< (owner->isGrouped() ? "yes" : "no") << ", in combat " << (owner->isInCombat() ? "yes" : "no") << ", mounted "
+			<< (owner->isRidingMount() ? "yes" : "no") << ", touched " << (entry->bundleTouched ? "yes" : "no");
+	}
+
+	tradeLog().info(true) << text.toString();
 }
 
 // The bot's handover, one round of the watcher. Returns true when it was the bot's business (no customer events
@@ -464,7 +495,8 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 
 	if (session == nullptr) {
 		if (entry->bundleOpened) {
-			endBundle(bot, entry, "bundleCancelled", "the owner cancelled");
+			logLost(bot, owner, entry, "the bot's session is null");
+			endBundle(bot, entry, lostDetail(entry), "the owner cancelled");
 			return true;
 		}
 
@@ -505,9 +537,14 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 	ManagedReference<TradeSession*> ownerSession = getTradeSession(owner);
 
 	if (ownerSession == nullptr || ownerSession->getTradeTargetPlayer() != bot->getObjectID()) {
-		endBundle(bot, entry, "bundleCancelled", "the owner's side is gone");
+		logLost(bot, owner, entry, "the owner's session is gone");
+		endBundle(bot, entry, lostDetail(entry), "the owner's side is gone");
 		return true;
 	}
+
+	// The owner has done something with the window: it was seen
+	if (ownerSession->getAcceptedTrade() || ownerSession->hasVerifiedTrade() || ownerSession->getTradeSize() > 0 || ownerSession->getMoneyToTrade() > 0)
+		entry->bundleTouched = true;
 
 	SortedVector<uint64> offered;
 
@@ -572,6 +609,7 @@ bool runBundle(CreatureObject* bot, Watched* entry, TradeSession* session, uint6
 		entry->bundle.removeAll();
 		entry->bundleTo = 0;
 		entry->bundleOpened = false;
+		entry->bundleTouched = false;
 		entry->reset();
 
 		noteBundleEnd(ownerOid);
@@ -858,6 +896,12 @@ void BotTrade::check(CreatureObject* bot, uint64 requester) {
 			// Half a trade: the partner dropped its side (a logout drops only its own). Close ours
 			playerManager->handleAbortTradeMessage(bot);
 			bot->setTradeTargetID(0);
+
+			// (a handover's window the owner's side of has gone: the handover sees that there is no trade now)
+			if (!entry->bundle.isEmpty() && partnerOid == entry->bundleTo) {
+				session = nullptr;
+			}
+
 			partnerOid = 0;
 		}
 	} else if (requester != 0) {
@@ -1372,6 +1416,7 @@ bool BotTrade::giveBundle(CreatureObject* bot, CreatureObject* owner, const Vect
 	entry->bundle = items;
 	entry->bundleTo = owner->getObjectID();
 	entry->bundleOpened = false;
+	entry->bundleTouched = false;
 	entry->bundleSince.updateToCurrentTime();
 
 	tradeLog().info(true) << bot->getFirstName() << " hands " << items.size() << " item(s) to " << owner->getFirstName() << ": opening a trade";

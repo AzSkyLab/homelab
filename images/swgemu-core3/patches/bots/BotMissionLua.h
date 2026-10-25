@@ -8,6 +8,9 @@
  *       level, lairUp}, ...}, or nil and why ("terminal", "far", "wait", "refused"). The bot must be within 6 m of the terminal;
  *       refresh (default true) refills the list as the terminal's refresh does, at most every 1.4 s ("wait").
  *       distance, degrees (0 north, 90 east) and direction are from the terminal
+ *       Each mission also has lair (the lair template's name) and creatures (what lives in it: lowercase names as the
+ *       client shows them)
+ *   botMissionCreatures(pBot) -> every lowercase name (lairs' and creatures') in this planet's destroy-mission lairs
  *   botMissionAccept(pBot, terminalOid, missionOid) -> true, or false and why ("terminal", "far", "gone", "full")
  *   botMissionAbort(pBot) -> how many missions it aborted, and "combat" if some stayed
  *   botMissions(pBot) -> the destroy missions it holds, as botMissionList gives them (distance and direction from the
@@ -41,6 +44,7 @@ private:
 	static int botMissionAccept(lua_State* L);
 	static int botMissionAbort(lua_State* L);
 	static int botMissions(lua_State* L);
+	static int botMissionCreatures(lua_State* L);
 	static int botPlayerMissions(lua_State* L);
 	static int botMissionDone(lua_State* L);
 	static int botMissionSync(lua_State* L);

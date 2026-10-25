@@ -18,6 +18,11 @@
 -- the crew mounts when the leader does and rides at swoop speed, gets off and stores when the leader does, gets off
 -- when attacked or when the leader fights, doesn't mount indoors or when told to stay, and gets off when it leaves
 -- the group.
+-- crewharvest (Phase 7b): the harvest type asked for and kept for the hunt, the ranger's own pick by stats and why it is said
+-- once per spawn, "what are you harvesting?", harvest talk going to the ranger, the kind ending with the hunt.
+-- crewcreature (Phase 7b): destroy missions by creature ("womp rat lairs north", "janta missions"), none on offer, follow-ups.
+-- crewhandover (Phase 7b): the handover after a disband: the wait before the offer, a lost window offered again, the ask
+-- for "trade me" and the wait, "hand it over" out of the group (out loud, or a tell to a bot that has gone home).
 
 return function(ctx)
 	local sim, Obj, fail, realPrint = ctx.sim, ctx.Obj, ctx.fail, ctx.realPrint
@@ -620,15 +625,30 @@ return function(ctx)
 			b.offered = {}
 			for _, m in ipairs(list) do
 				mw.nextOid = mw.nextOid + 1
+				local target = m.target or "womp rat lair"
+				local creatures = m.creatures
+				if creatures == nil then
+					-- (what lives in a lair of that name: the creature, here the lair's name without the word)
+					creatures = {(target:gsub(" lair$", ""):gsub(" nest$", ""):gsub(" camp$", ""))}
+				end
 				table.insert(b.offered, {oid = mw.nextOid, reward = m.reward, degrees = m.degrees, distance = m.distance or 1500,
-					target = m.target or "womp rat lair", x = 0, y = 0, planet = "tatooine", level = 20,
-					direction = directionOf(m.degrees)})
+					target = target, x = 0, y = 0, planet = "tatooine", level = 20,
+					direction = directionOf(m.degrees), lair = "sim_" .. target:gsub(" ", "_"), creatures = creatures})
 			end
 		end
 		local out = {}
 		for _, m in ipairs(b.offered or {}) do
 			table.insert(out, m)
 		end
+		return out
+	end
+	-- Every name in this planet's destroy-mission lairs (what botMissionCreatures gives): scripts can replace the list
+	local planetCreatures = {"womp rat lair", "womp rat", "dewback nest", "dewback", "dragonet lair", "dragonet", "janta camp",
+		"janta hunter", "janta warrior", "kreetle nest", "kreetle", "greater desert womp rat", "tusken raider camp", "tusken raider", "tusken raider leader", "death kreetle", "rock beetle",
+		"sand beetle", "cu pa", "tatooine mynock", "spice collective", "corellian slice hound"}
+	function api.botMissionCreatures(b)
+		local out = {}
+		for _, name in ipairs(planetCreatures) do table.insert(out, name) end
 		return out
 	end
 	function api.botMissionAccept(b, terminal, missionOid)
@@ -849,17 +869,36 @@ return function(ctx)
 		table.sort(out, function(a, c) return a.distance < c.distance end)
 		return out
 	end
-	function api.botHarvest(b, oid)
-		local r = {ok = false, kind = "", amount = 0, resource = "", error = ""}
+	-- A creature's harvest: c.harvest = {kind, amount, class[, spawn, score, lead, leadValue, stats]} or c.harvests, a list of
+	-- them (a creature with meat, hide and bone). As BotLoot::harvest picks: the asked-for kind if it has it, else the best
+	-- score, then the most yield
+	function api.botHarvest(b, oid, kind)
+		local r = {ok = false, kind = "", amount = 0, resource = "", spawn = "", score = 0, fallback = false, lead = "", leadValue = 0,
+			stats = "", altKind = "", altScore = 0, error = ""}
 		local c = ctx.objects[oid]
-		table.insert(log.harvests, {bot = b.oid, t = nowMs(), corpse = oid})
+		kind = (kind or ""):lower()
+		table.insert(log.harvests, {bot = b.oid, t = nowMs(), corpse = oid, asked = kind})
 		if c == nil or c.harvest == nil then r.error = "not a creature" return r end
 		if not c.dead then r.error = "alive" return r end
 		if dist(b, c) > 7 then r.error = "too far" return r end
 		if c.ownerGroup ~= b.groupId or (c.harvested or {})[b.oid] then r.error = "cannot harvest" return r end
+		local function better(x, y)
+			if (x.score or 0) ~= (y.score or 0) then return (x.score or 0) > (y.score or 0) end
+			return x.amount > y.amount
+		end
+		local options = c.harvests or {c.harvest}
+		local pick
+		for _, o in ipairs(options) do
+			if o.kind == kind then pick = o break end
+			if pick == nil or better(o, pick) then pick = o end
+		end
+		local runner
+		for _, o in ipairs(options) do
+			if o ~= pick and (runner == nil or better(o, runner)) then runner = o end
+		end
 		c.harvested = c.harvested or {}
 		c.harvested[b.oid] = true
-		local h = c.harvest
+		local h = pick
 		local found = false
 		for _, item in ipairs(goodsOf(b)) do
 			if item.resource and item.name == h.class then
@@ -871,6 +910,10 @@ return function(ctx)
 			table.insert(goodsOf(b), newItem(h.class, true, h.amount))
 		end
 		r.ok, r.kind, r.amount, r.resource = true, h.kind, h.amount, h.class
+		r.spawn, r.score, r.lead, r.leadValue, r.stats = h.spawn or "", h.score or 0, h.lead or "", h.leadValue or 0, h.stats or ""
+		r.fallback = kind ~= "" and kind ~= "any" and h.kind ~= kind
+		if runner ~= nil then r.altKind, r.altScore = runner.kind, runner.score or 0 end
+		log.harvests[#log.harvests].got = h.kind
 		return r
 	end
 	function api.botGoods(b)
@@ -910,7 +953,8 @@ return function(ctx)
 				decline = true
 			end
 			if decline then
-				sim.call("BotJobs", "onEvent", b, "trade", p, "bundleCancelled")
+				-- (BotTrade: a window the owner never touched is "bundleLost"; one it accepted or filled is "bundleCancelled")
+				sim.call("BotJobs", "onEvent", b, "trade", p, sim.declineTouched and "bundleCancelled" or "bundleLost")
 				return
 			end
 			for _, item in ipairs(bundle.items) do
@@ -3272,12 +3316,12 @@ return function(ctx)
 		sim.run(40)
 		held = totalGoods()
 		if held ~= 2 then fail("crewloot: " .. held .. " goods after the fourth kill (2)") end
-		sim.declineOffers = true
+		sim.declineOffers, sim.declineTouched = true, true
 		t = nowMs()
 		cameren.received = {}
 		groupSay(cameren, "hand it over")
 		sim.run(25)
-		sim.declineOffers = false
+		sim.declineOffers, sim.declineTouched = false, false
 		if totalGoods() ~= held or #cameren.received ~= 0 then
 			fail("crewloot: a cancelled trade lost goods")
 		end
@@ -3432,10 +3476,626 @@ return function(ctx)
 		teardown()
 	end
 
+
+	-- Phase 7b: the harvest type, the ranger's own pick and why, harvest talk answered by the ranger
+	function scenarios.crewharvest()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		if members(cameren) ~= 5 then
+			fail("crewharvest: " .. members(cameren) .. " in the group")
+		end
+		sim.run(10)
+		local gid = cameren.groupId
+		local gk = "crew:group:" .. cameren.oid .. ":"
+
+		-- 1. Reading the words
+		local readings = {
+			{"harvest hide", "hide"}, {"skin them for bone", "bone"}, {"meat only", "meat"}, {"just the hides", "hide"},
+			{"bone from now on", "bone"}, {"harvest anything", "any"}, {"harvest the bantha for meat", "meat"},
+			{"take the meat", "meat"}, {"Kael, harvest the bones please", "bone"}, {"skin whatever is best", "any"},
+			{"harvest them", nil}, {"harvest hide and bone", nil}, {"what are you harvesting?", nil}, {"harvesting what?", nil},
+			{"don't harvest hide", nil}, {"I need some hide for armor", nil}, {"harvest everything", nil}, {"how does harvesting work?", nil},
+			{"your pick", nil}, {"loot the bodies", nil}, {"skin your pick", "any"}, {"harvest whatever's best", "any"},
+			{"your call", nil}, {"up to you", nil}, {"whatever's best", nil}, {"what's the best way to the bank", nil},
+			{"the hides were nice", nil}, {"any krayts around?", nil}, {"the hide on that thing is thick", nil},
+		}
+		for _, r in ipairs(readings) do
+			local got = BotCrew:harvestKindOf(r[1])
+			if got ~= r[2] then
+				fail("crewharvest: '" .. r[1] .. "' read as " .. tostring(got) .. ", expected " .. tostring(r[2]))
+			end
+		end
+		-- (ordinary chatter, even after harvest talk, is no order)
+		for _, chatter in ipairs({"your call", "up to you", "whatever's best", "you choose", "your pick"}) do
+			if BotCrew:harvestKindOf(chatter) ~= nil or BotCrew:intentFor(chatter, nil) == "harvest" then
+				fail("crewharvest: '" .. chatter .. "' alone reads as a harvest order")
+			end
+		end
+		for _, q in ipairs({"what are you harvesting?", "what are we skinning for", "harvesting what?", "which are you skinning, hide or meat?"}) do
+			if not BotCrew:harvestQuestion(q) then fail("crewharvest: '" .. q .. "' isn't a harvest question") end
+		end
+		if BotCrew:harvestQuestion("harvest the hides") or BotCrew:harvestQuestion("what's around?") then
+			fail("crewharvest: an order or another question read as a harvest question")
+		end
+
+		-- A creature with meat, hide and bone, as the planet's current spawns stand
+		local function options(hideSpawn, boneScore)
+			return {
+				{kind = "meat", amount = 300, class = "Tatooinian Carnivore Meat", spawn = "Ruvet", score = 420, lead = "OQ", leadValue = 640,
+					stats = "OQ 640, PE 300, FL 400, DR 340"},
+				{kind = "hide", amount = 120, class = "Tatooinian Leathery Hide", spawn = hideSpawn or "Glatoro", score = 700, lead = "OQ",
+					leadValue = 870, stats = "OQ 870, SR 640, UT 500, MA 790"},
+				{kind = "bone", amount = 60, class = "Tatooinian Bone", spawn = "Orlato", score = boneScore or 500, lead = "UT", leadValue = 640,
+					stats = "OQ 560, SR 480, UT 640, MA 320"},
+			}
+		end
+		local function kill(name, opts)
+			local mob = makeMob(name, cameren.x + 10, cameren.y + 6, 300)
+			mob.ownerGroup, mob.loot, mob.credits = gid, {"A trophy"}, 0
+			mob.harvests = opts
+			mob.harvest = opts[1]
+			attack(cameren, mob)
+			return mob
+		end
+		local function whyLines(since)
+			local out = {}
+			for _, l in ipairs(entries(log.group, ranger, since)) do
+				if l.text:find("OQ ", 1, true) or l.text:find("UT ", 1, true) or l.text:find("biggest yield", 1, true) then table.insert(out, l.text) end
+			end
+			return out
+		end
+
+		-- 2. Its own pick: the best score (the hide here), said once with why; the second carcass gets the short line only
+		local t = nowMs()
+		local bantha = kill("a bantha", options())
+		sim.run(40)
+		if not bantha.dead or not (bantha.harvested or {})[ranger.oid] then fail("crewharvest: the first bantha wasn't harvested") end
+		local got = entries(log.harvests, ranger, t)
+		if #got < 1 or got[1].got ~= "hide" then fail("crewharvest: the ranger took " .. tostring(got[1] and got[1].got) .. ", not the best-scoring hide") end
+		local why = whyLines(t)
+		if #why ~= 1 or not why[1]:lower():find("hide", 1, true) or not why[1]:find("OQ 870", 1, true) or not why[1]:find("Glatoro", 1, true) then
+			fail("crewharvest: the why line: " .. table.concat(why, " | "))
+		end
+		t = nowMs()
+		local bantha2 = kill("a bantha", options())
+		sim.run(40)
+		if not (bantha2.harvested or {})[ranger.oid] or #whyLines(t) ~= 0 then
+			fail("crewharvest: the second carcass said why again (" .. #whyLines(t) .. ")")
+		end
+		local short = false
+		for _, l in ipairs(entries(log.group, ranger, t)) do
+			if isLine(l.text, "ranger", "harvestedOne") and l.text:find("Glatoro", 1, true) then short = true end
+		end
+		if not short then fail("crewharvest: the short line doesn't name the spawn") end
+
+		-- A new spawn of the same kind: it says why again
+		t = nowMs()
+		local bantha3 = kill("a bantha", options("Mirnato"))
+		sim.run(40)
+		if #whyLines(t) ~= 1 or not whyLines(t)[1]:find("Mirnato", 1, true) then
+			fail("crewharvest: no new why line for a new spawn (" .. table.concat(whyLines(t), " | ") .. ")")
+		end
+		-- ...and when another kind is the best
+		t = nowMs()
+		local bantha4 = kill("a bantha", options("Mirnato", 900))
+		sim.run(40)
+		local again = whyLines(t)
+		if #again ~= 1 or not again[1]:lower():find("bone", 1, true) then
+			fail("crewharvest: no why line when the pick changed to bone (" .. table.concat(again, " | ") .. ")")
+		end
+
+		-- 3. "harvest bone" in group chat: the ranger answers (not the tank), keeps it for the hunt, says it, logs it
+		t = nowMs()
+		groupSay(cameren, "harvest hide")
+		sim.run(4)
+		local answers = entries(log.group, nil, t)
+		local fromRanger = 0
+		for _, l in ipairs(answers) do
+			if l.bot == ranger.oid and isLine(l.text, "ranger", "harvestKind") and l.text:lower():find("hide", 1, true) then fromRanger = fromRanger + 1 end
+		end
+		if readStringData(gk .. "harvestKind") ~= "hide" or fromRanger ~= 1 then
+			fail("crewharvest: 'harvest hide': kind '" .. readStringData(gk .. "harvestKind") .. "', " .. fromRanger .. " answers from the ranger (" .. #answers .. " lines)")
+		end
+		for _, l in ipairs(answers) do
+			if l.bot ~= ranger.oid and not isLine(l.text, "tank", "harvestAsk") then fail("crewharvest: someone besides the ranger answered: " .. l.text) end
+		end
+		if not readStringData(gk .. "huntLog"):find("Asked for hide only", 1, true) then fail("crewharvest: the hunt log doesn't have the request") end
+		-- Out loud, near the crew: "skin them for bone"
+		t = nowMs()
+		speak(tank, cameren, "skin them for bone", "spatial")
+		speak(ranger, cameren, "skin them for bone", "spatial")
+		speak(medic, cameren, "skin them for bone", "spatial")
+		speak(rifleman, cameren, "skin them for bone", "spatial")
+		sim.run(4)
+		local louder = {}
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if isLine(l.text, "ranger", "harvestKind") or isLine(l.text, "tank", "harvestKind") then table.insert(louder, l) end
+		end
+		if readStringData(gk .. "harvestKind") ~= "bone" or #louder ~= 1 or louder[1].bot ~= ranger.oid then
+			fail("crewharvest: out loud 'skin them for bone': kind '" .. readStringData(gk .. "harvestKind") .. "', " .. #louder .. " answers")
+		end
+
+		-- 4. Every creature after that gives bone; one with no bone gets its own pick, said once
+		t = nowMs()
+		local boneOne = kill("a bantha", options())
+		sim.run(40)
+		local took = entries(log.harvests, ranger, t)
+		if #took < 1 or took[1].got ~= "bone" or took[1].asked ~= "bone" then fail("crewharvest: asked for bone, took " .. tostring(took[1] and took[1].got)) end
+		local noBone = {options()[1], options()[2]}
+		t = nowMs()
+		kill("a dewback", noBone)
+		sim.run(40)
+		local missing = 0
+		for _, l in ipairs(entries(log.group, ranger, t)) do
+			if isLine(l.text, "ranger", "harvestNoKind") and l.text:find("bone", 1, true) then missing = missing + 1 end
+		end
+		took = entries(log.harvests, ranger, t)
+		if missing ~= 1 or #took < 1 or took[1].got ~= "hide" then
+			fail("crewharvest: a creature with no bone: " .. missing .. " lines, took " .. tostring(took[1] and took[1].got))
+		end
+		t = nowMs()
+		kill("a dewback", {options()[1], options()[2]})
+		sim.run(40)
+		missing = 0
+		for _, l in ipairs(entries(log.group, ranger, t)) do
+			if isLine(l.text, "ranger", "harvestNoKind") then missing = missing + 1 end
+		end
+		if missing ~= 0 then fail("crewharvest: the no-bone line was said twice in a hunt") end
+
+		-- 5. "what are you harvesting?": only the ranger answers, naming the type asked for and the resource with its stats
+		t = nowMs()
+		groupSay(cameren, "what are you harvesting?")
+		sim.run(4)
+		local status = entries(log.group, nil, t)
+		if #status ~= 1 or status[1].bot ~= ranger.oid or not status[1].text:find("Bone only", 1, true) or
+			not status[1].text:find("OQ", 1, true) or not status[1].text:find("as you asked", 1, true) then
+			fail("crewharvest: the status answer: " .. #status .. " lines, " .. tostring(status[1] and status[1].text))
+		end
+		-- Out loud, with nobody named
+		t = nowMs()
+		for _, b in ipairs({tank, ranger, medic, rifleman}) do speak(b, cameren, "what are we skinning for?", "spatial") end
+		sim.run(4)
+		status = entries(log.group, nil, t)
+		if #status ~= 1 or status[1].bot ~= ranger.oid then fail("crewharvest: out loud, the ranger didn't answer alone (" .. #status .. ")") end
+
+		-- 6. "harvest anything": its own pick again, and it says why again at the next carcass
+		t = nowMs()
+		groupSay(cameren, "harvest anything")
+		sim.run(4)
+		if readStringData(gk .. "harvestKind") ~= "" then fail("crewharvest: 'harvest anything' left the kind") end
+		local anyLineSaid = false
+		for _, l in ipairs(entries(log.group, ranger, t)) do
+			if isLine(l.text, "ranger", "harvestAny") then anyLineSaid = true end
+		end
+		if not anyLineSaid then fail("crewharvest: no line for 'harvest anything'") end
+		t = nowMs()
+		kill("a bantha", options("Mirnato", 450))
+		sim.run(40)
+		took = entries(log.harvests, ranger, t)
+		if #took < 1 or took[1].got ~= "hide" or took[1].asked ~= "" or #whyLines(t) ~= 1 then
+			fail("crewharvest: back on its own pick, took " .. tostring(took[1] and took[1].got) .. ", " .. #whyLines(t) .. " why lines")
+		end
+		-- The asked-for state goes to the brain
+		local facts = BotCrew:requestFields(ranger, ranger.oid, cameren.oid).harvest
+		if facts == nil or not facts:find("best crafting stats", 1, true) or not facts:find("Mirnato", 1, true) then
+			fail("crewharvest: the brain's harvest fact: " .. tostring(facts))
+		end
+
+		-- 7. A dead ranger can't: another crew member answers the order, and the kind is kept
+		ranger.dead = true
+		t = nowMs()
+		groupSay(cameren, "harvest meat")
+		sim.run(4)
+		local standIn = entries(log.group, nil, t)
+		if readStringData(gk .. "harvestKind") ~= "meat" or #standIn < 1 or standIn[1].bot == ranger.oid then
+			fail("crewharvest: with the ranger dead, kind '" .. readStringData(gk .. "harvestKind") .. "', " .. #standIn .. " answers")
+		end
+		ranger.dead = false
+
+		-- 8. The hunt ends after 30 minutes of silence; and the group breaking up clears the kind too
+		writeData(gk .. "huntSeen", sim.now - 2000)
+		groupSay(cameren, "follow me")
+		sim.run(2)
+		if readStringData(gk .. "harvestKind") ~= "" then fail("crewharvest: the kind outlived the hunt") end
+		groupSay(cameren, "harvest bone")
+		sim.run(3)
+		if readStringData(gk .. "harvestKind") ~= "bone" then fail("crewharvest: the kind wasn't set again") end
+		for _, m in ipairs({cameren.oid, tank.oid, rifleman.oid, medic.oid, ranger.oid}) do ctx.objects[m].groupId = nil end
+		groups[gid] = nil
+		sim.run(15)
+		if readStringData(gk .. "harvestKind") ~= "" then fail("crewharvest: the kind outlived the group") end
+
+		realPrint(string.format("crewharvest %d harvests, %d group lines", #log.harvests, #log.group))
+		teardown()
+	end
+
+	-- Phase 7b: missions by creature
+	function scenarios.crewcreature()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(4)
+		end)
+		sim.run(10)
+		local t1 = {oid = 7001, x = cameren.x + 8, y = cameren.y, planet = "tatooine"}
+		mw.terminals = {t1}
+		local function lines(b, since) return entries(log.group, b, since) end
+		local function rewards(b)
+			local out = {}
+			for _, m in ipairs(b.missions or {}) do table.insert(out, m.reward) end
+			table.sort(out, function(a, c) return a > c end)
+			return table.concat(out, ",")
+		end
+		local function targets(b)
+			local out = {}
+			for _, m in ipairs(b.missions or {}) do table.insert(out, m.target) end
+			table.sort(out)
+			return table.concat(out, ",")
+		end
+		local function fresh()
+			each(function(role, b) b.missions, b.offered = {}, {} end)
+			mw.refreshes, mw.accepts = {}, {}
+			sim.run(200)	-- (past the three minutes a follow-up counts)
+		end
+		local function ask(text)
+			local t = nowMs()
+			mw.refreshes = {}
+			groupSay(cameren, text)
+			sim.run(45)
+			return t
+		end
+
+		-- 0. Reading the words
+		local reads = {
+			{"get womp rat lairs north", "womp rat"}, {"janta missions", "janta"}, {"grab two dragonet lairs east", "dragonet"},
+			{"kreetle missions any direction", "kreetle"}, {"grab two dragonet nests", "dragonet"}, {"get dewbacks southeast", "dewback"},
+			{"grab two destroy missions north", nil}, {"grab two blorf missions north", nil}, {"get missions east", nil},
+			{"greater desert womp rat missions", "greater desert womp rat"}, {"missions with tusken raiders", "tusken raider"},
+			{"grab two missions here on tatooine", nil}, {"grab two missions with the leader", nil}, {"get missions near the sand", nil},
+			{"grab two missions on the rock", nil}, {"get missions death", nil}, {"grab two missions pa", nil},
+		}
+		for _, r in ipairs(reads) do
+			local got = BotCrew:missionCreatureOf(tank, r[1])
+			if got ~= r[2] then fail("crewcreature: '" .. r[1] .. "' read as creature " .. tostring(got) .. ", expected " .. tostring(r[2])) end
+		end
+
+		-- 0b. Hunting talk starts no errand, with a terminal by or not; "missions" or a take verb and a creature do
+		local chatter = {"kill that womp rat lair", "get over to the lair east", "that dragonet lair was rough", "watch the kreetle",
+			"rats!", "kreetle nest incoming", "attack the dewback nest", "follow me to the womp rat lair", "stay away from that lair",
+			"we should clear the lair east of here", "janta camp ahead"}
+		for _, near in ipairs({true, false}) do
+			mw.terminals = near and {t1} or {}
+			for _, line in ipairs(chatter) do
+				mw.listCalls, mw.accepts = {}, {}
+				local tq = nowMs()
+				groupSay(cameren, line)
+				speak(tank, cameren, line, "spatial")
+				sim.run(12)
+				if next(mw.listCalls) ~= nil or #mw.accepts > 0 or readStringData("bot:" .. tank.oid .. ":crew:mState") == "walking" then
+					fail("crewcreature: '" .. line .. "' started a mission errand (terminal near: " .. tostring(near) .. ")")
+				end
+				for _, l in ipairs(entries(log.group, nil, tq)) do
+					if isLine(l.text, "tank", "missionNoTerminal") or isLine(l.text, "tank", "missionWhere") then
+						fail("crewcreature: '" .. line .. "' got a mission answer: " .. l.text)
+					end
+				end
+			end
+		end
+		mw.terminals = {t1}
+		-- ("grab two dragonet lairs east", with a terminal by and a take verb and creature, is an errand)
+		mw.lists.default = {{{degrees = 90, reward = 5000, target = "dragonet lair"}, {degrees = 95, reward = 4000, target = "dragonet lair"}}}
+		t = ask("grab two dragonet lairs east")
+		each(function(role, b)
+			if rewards(b) ~= "5000,4000" then fail("crewcreature: 'grab two dragonet lairs east': the " .. role .. " holds '" .. rewards(b) .. "'") end
+		end)
+		fresh()
+
+		-- 1. A creature and a direction: the best paying of that creature within 45 degrees (the dewback nest pays more but isn't one)
+		mw.lists.default = {{{degrees = 10, reward = 9000, target = "dewback nest"}, {degrees = 350, reward = 3000, target = "womp rat lair"},
+			{degrees = 20, reward = 2500, target = "womp rat lair"}, {degrees = 200, reward = 8000, target = "womp rat lair"},
+			{degrees = 5, reward = 1000, target = "greater desert womp rat lair", creatures = {"greater desert womp rat"}},
+			{degrees = 40, reward = 4000, target = "janta camp", creatures = {"janta hunter", "janta warrior"}}}}
+		local t = ask("get womp rat lairs north")
+		each(function(role, b)
+			if rewards(b) ~= "3000,2500" then fail("crewcreature: the " .. role .. " took '" .. rewards(b) .. "' for womp rat lairs north (3000,2500)") end
+			if not lines(b, t)[1] or not lines(b, t)[1].text:find("womp rat", 1, true) then fail("crewcreature: the " .. role .. " didn't report womp rat lairs") end
+		end)
+		fresh()
+
+		-- 2. A creature and no direction: the best anywhere. A janta camp is found by its creatures
+		t = ask("janta missions")
+		each(function(role, b)
+			if targets(b) ~= "janta camp" then fail("crewcreature: the " .. role .. " took '" .. targets(b) .. "' for janta missions") end
+		end)
+		fresh()
+
+		-- 3. None of that creature on offer: it refreshes five times, takes nothing and says so (no other creature)
+		t = ask("grab two dragonet lairs east")
+		each(function(role, b)
+			if #(b.missions or {}) ~= 0 then fail("crewcreature: the " .. role .. " took a mission with no dragonet on offer") end
+			if mw.refreshes[b.oid] ~= 5 then fail("crewcreature: the " .. role .. " read " .. tostring(mw.refreshes[b.oid]) .. " lists (5)") end
+			local said = lines(b, t)
+			if #said ~= 1 or not isLine(said[1].text, role, "missionNoneOf") or not said[1].text:find("dragonet", 1, true) then
+				fail("crewcreature: the " .. role .. " said " .. #said .. " lines: " .. tostring(said[1] and said[1].text))
+			end
+		end)
+
+		-- 4. A follow-up keeps the creature (and the direction): "search again" with dragonets on the new list
+		mw.lists.default = {{{degrees = 95, reward = 9000, target = "womp rat lair"}, {degrees = 80, reward = 2000, target = "dragonet lair"},
+			{degrees = 100, reward = 3000, target = "dragonet lair"}, {degrees = 270, reward = 9999, target = "dragonet lair"}}}
+		each(function(role, b) b.offered = {} end)
+		mw.refreshes = {}
+		t = nowMs()
+		groupSay(cameren, "search again")
+		sim.run(45)
+		each(function(role, b)
+			if rewards(b) ~= "3000,2000" then fail("crewcreature: after 'search again' the " .. role .. " holds '" .. rewards(b) .. "' (3000,2000 east dragonets)") end
+		end)
+		fresh()
+
+		-- 4b. A creature alone, soon after, is a follow-up (a few words); a longer line of talk isn't
+		mw.lists.default = {{{degrees = 95, reward = 9000, target = "womp rat lair"}, {degrees = 85, reward = 2500, target = "kreetle nest"},
+			{degrees = 100, reward = 3500, target = "kreetle nest"}}}
+		each(function(role, b) b.offered = {} end)
+		mw.refreshes = {}
+		t = ask("grab two dragonet lairs east")
+		mw.refreshes = {}
+		local before4 = #mw.accepts
+		groupSay(cameren, "those kreetles are a pain to hunt down in the open")
+		sim.run(45)
+		if #mw.accepts ~= before4 then fail("crewcreature: a long line of chatter about kreetles started an errand") end
+		groupSay(cameren, "kreetles then")
+		sim.run(45)
+		each(function(role, b)
+			if rewards(b) ~= "3500,2500" then fail("crewcreature: after 'kreetles then' the " .. role .. " holds '" .. rewards(b) .. "' (3500,2500 east kreetles)") end
+		end)
+		fresh()
+
+		-- 4c. A bare creature with no take verb, outside the answer to "none on offer", starts nothing ("watch the kreetle")
+		do
+			mw.lists.default = {{{degrees = 95, reward = 3500, target = "kreetle nest"}}}
+			each(function(role, b) b.offered = {} end)
+			mw.refreshes, mw.accepts = {}, {}
+			groupSay(cameren, "grab two destroy missions east")
+			sim.run(45)
+			local heldBefore = #mw.accepts
+			for _, line in ipairs({"watch the kreetle", "kreetles!", "rock beetle incoming"}) do
+				groupSay(cameren, line)
+				sim.run(10)
+			end
+			if #mw.accepts ~= heldBefore then fail("crewcreature: a bare creature word started an errand") end
+			fresh()
+		end
+
+		-- 5. A bare direction after a creature errand keeps the creature; a new order with none asks for any creature
+		mw.lists.default = {{{degrees = 180, reward = 9000, target = "womp rat lair"}, {degrees = 175, reward = 2000, target = "kreetle nest"},
+			{degrees = 185, reward = 3000, target = "kreetle nest"}}}
+		t = ask("kreetle missions any direction")
+		each(function(role, b)
+			if rewards(b) ~= "3000,2000" then fail("crewcreature: the " .. role .. " took '" .. rewards(b) .. "' for kreetle missions any direction") end
+		end)
+		fresh()
+		mw.lists.default = {{{degrees = 180, reward = 9000, target = "womp rat lair"}, {degrees = 175, reward = 2000, target = "kreetle nest"}}}
+		t = ask("grab two destroy missions south")
+		each(function(role, b)
+			if rewards(b) ~= "9000,2000" then fail("crewcreature: the " .. role .. " took '" .. rewards(b) .. "' with no creature asked (9000,2000)") end
+		end)
+		fresh()
+
+		-- 6. A word that isn't a creature on this planet leaves the request as it is: any creature
+		mw.lists.default = {{{degrees = 0, reward = 9000, target = "womp rat lair"}, {degrees = 10, reward = 2000, target = "kreetle nest"}}}
+		t = ask("grab two blorf missions north")
+		each(function(role, b)
+			if rewards(b) ~= "9000,2000" then fail("crewcreature: the " .. role .. " took '" .. rewards(b) .. "' for a creature that doesn't exist (9000,2000)") end
+		end)
+
+		realPrint(string.format("crewcreature %d accepts, %d list reads", #mw.accepts, (function() local n = 0 for _, c in pairs(mw.listCalls) do n = n + c end return n end)()))
+		teardown()
+	end
+
+	-- Phase 7b: the handover after a disband (a window the client loses), the retry, the wait, and out of the group
+	function scenarios.crewhandover()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		sim.run(10)
+		local function items(n, prefix)
+			local out = {}
+			for i = 1, n do
+				table.insert(out, {oid = 9300000 + (sim.seq or 0) * 100 + i + math.random(1, 90), name = prefix .. i, quantity = 1, resource = false, tradable = true})
+			end
+			return out
+		end
+		local function disband()
+			local g = groups[cameren.groupId]
+			for _, m in ipairs(g and g.members or {}) do ctx.objects[m].groupId = nil end
+			if g then groups[g.id] = nil end
+		end
+		local function said(b, kind, since)
+			local n = 0
+			for _, l in ipairs(entries(log.group, b, since)) do if isLine(l.text, b.role, kind) then n = n + 1 end end
+			for _, l in ipairs(entries(log.says, b, since)) do if isLine(l.text, b.role, kind) then n = n + 1 end end
+			for _, l in ipairs(entries(log.tells, b, since)) do if isLine(l.text, b.role, kind) then n = n + 1 end end
+			return n
+		end
+
+		-- 1. A disband with goods: the offer doesn't open at once (the client is busy), and goes through
+		ranger.goods = items(3, "Trophy ")
+		cameren.received = {}
+		local t = nowMs()
+		disband()
+		sim.run(2)
+		if #entries(log.offers, ranger, t) ~= 0 then fail("crewhandover: the ranger offered within 2 s of the disband") end
+		sim.run(8)
+		local offers = entries(log.offers, ranger, t)
+		if #offers ~= 1 or offers[1].t - t < 3500 then
+			fail("crewhandover: after the disband the ranger offered " .. #offers .. " time(s), the first " .. tostring(offers[1] and (offers[1].t - t)) .. " ms after")
+		end
+		sim.run(20)
+		if #cameren.received ~= 3 or #ranger.goods ~= 0 then fail("crewhandover: the disband handover gave " .. #cameren.received .. " items") end
+		sim.run(15)
+		if mode(ranger) ~= "home" and mode(ranger) ~= "walkingHome" then fail("crewhandover: the ranger didn't go home (" .. mode(ranger) .. ")") end
+
+		-- (back in a group for the rest)
+		local function regroup()
+			cameren.groupId = nil
+			cameren.x, cameren.y = tank.x + 3, tank.y
+			each(function(role, b)
+				b.x, b.y = cameren.x + 4, cameren.y
+				invite(cameren, b, true)
+				sim.run(4)
+			end)
+			sim.run(10)
+		end
+		regroup()
+
+		-- 2. One lost window: offered again (a few seconds later); the second one is taken; no 'trade me' line
+		ranger.goods = items(2, "Claw ")
+		cameren.received = {}
+		sim.declineNext = 1
+		t = nowMs()
+		disband()
+		sim.run(60)
+		sim.declineNext = 0
+		offers = entries(log.offers, ranger, t)
+		if #offers ~= 2 then fail("crewhandover: a lost window was offered " .. #offers .. " time(s) (2)") end
+		if offers[2] and offers[2].t - offers[1].t < 8000 then fail("crewhandover: the second offer came " .. (offers[2].t - offers[1].t) .. " ms after the first") end
+		if #cameren.received ~= 2 or #ranger.goods ~= 0 then fail("crewhandover: after one lost window the player got " .. #cameren.received) end
+		if said(ranger, "handoverRetryAsk", t) ~= 0 then fail("crewhandover: it asked for 'trade me' after only one lost window") end
+		regroup()
+
+		-- 3. Two lost windows: it asks for 'trade me' and waits nearby; it hasn't gone home; 'trade me' out loud makes the offer
+		ranger.goods = items(2, "Fang ")
+		cameren.received = {}
+		sim.declineNext = 2
+		t = nowMs()
+		disband()
+		sim.run(50)
+		sim.declineNext = 0
+		offers = entries(log.offers, ranger, t)
+		if #offers ~= 2 then fail("crewhandover: two lost windows made " .. #offers .. " offers (2)") end
+		if said(ranger, "handoverRetryAsk", t) ~= 1 then fail("crewhandover: the 'trade me' line was said " .. said(ranger, "handoverRetryAsk", t) .. " time(s)") end
+		if mode(ranger) ~= "leaving" or #ranger.goods ~= 2 then fail("crewhandover: it didn't wait (mode " .. mode(ranger) .. ", " .. #ranger.goods .. " goods)") end
+		sim.run(60)
+		if #entries(log.offers, ranger, t) ~= 2 or mode(ranger) ~= "leaving" then fail("crewhandover: it offered or left while waiting for 'trade me'") end
+		local t2 = nowMs()
+		-- far away it isn't heard; near, with no name, it is
+		cameren.x = ranger.x + 40
+		speak(ranger, cameren, "trade me", "spatial")
+		sim.run(3)
+		if #entries(log.offers, ranger, t2) ~= 0 then fail("crewhandover: an unnamed 'trade me' from 40 m was heard") end
+		cameren.x = ranger.x + 4
+		speak(tank, cameren, "trade me", "spatial")
+		speak(ranger, cameren, "trade me", "spatial")
+		sim.run(25)
+		if #entries(log.offers, tank, t2) ~= 0 then fail("crewhandover: a bot with nothing to hand over answered 'trade me'") end
+		if #entries(log.offers, ranger, t2) ~= 1 or #cameren.received ~= 2 or #ranger.goods ~= 0 then
+			fail("crewhandover: 'trade me' while waiting: " .. #entries(log.offers, ranger, t2) .. " offers, " .. #cameren.received .. " received")
+		end
+		sim.run(10)
+		if mode(ranger) ~= "home" and mode(ranger) ~= "walkingHome" then fail("crewhandover: it didn't go home after the late trade (" .. mode(ranger) .. ")") end
+		regroup()
+
+		-- 4. Nobody says 'trade me' for two minutes: it goes home with the goods, and a tell tells where it is
+		ranger.goods = items(2, "Hide ")
+		cameren.received = {}
+		sim.declineNext = 2
+		t = nowMs()
+		disband()
+		sim.run(200)
+		sim.declineNext = 0
+		if #ranger.goods ~= 2 or (mode(ranger) ~= "home" and mode(ranger) ~= "walkingHome") then
+			fail("crewhandover: after two minutes it held " .. #ranger.goods .. " goods in mode " .. mode(ranger))
+		end
+		sim.run(30)
+		-- far from the bot, a tell: where it is
+		cameren.x, cameren.y = ranger.x + 400, ranger.y
+		t = nowMs()
+		speak(ranger, cameren, "hand it over", "tell")
+		sim.run(3)
+		local whereTold = said(ranger, "handoverWhere", t)
+		if whereTold ~= 1 or #entries(log.offers, ranger, t) ~= 0 then
+			fail("crewhandover: the tell from afar: " .. whereTold .. " 'where' lines and " .. #entries(log.offers, ranger, t) .. " offers")
+		end
+		for _, l in ipairs(entries(log.tells, ranger, t)) do
+			if not l.text:find("cantina", 1, true) then fail("crewhandover: the 'where' line doesn't say where: " .. l.text) end
+		end
+		-- (still on its way home, the line says so)
+		writeStringData("bot:" .. ranger.oid .. ":crew:mode", "walkingHome")
+		t = nowMs()
+		speak(ranger, cameren, "give me the loot", "tell")
+		sim.run(2)
+		if said(ranger, "handoverWhereBound", t) ~= 1 then fail("crewhandover: no 'on my way' line from a bot heading home") end
+		if mode(ranger) ~= "walkingHome" then fail("crewhandover: a tell from afar stopped the walk home (" .. mode(ranger) .. ")") end
+		writeStringData("bot:" .. ranger.oid .. ":crew:mode", "home")
+		-- ...then the player comes by: it offers
+		sim.run(20)
+		if #entries(log.offers, ranger, t) ~= 0 then fail("crewhandover: it offered while the player was far away") end
+		cameren.x, cameren.y = ranger.x + 5, ranger.y
+		sim.run(40)
+		if #cameren.received ~= 2 or #ranger.goods ~= 0 then
+			fail("crewhandover: the player came by and got " .. #cameren.received .. " items")
+		end
+		sim.run(20)
+		if mode(ranger) ~= "home" and mode(ranger) ~= "walkingHome" then fail("crewhandover: it didn't go back to its station (" .. mode(ranger) .. ")") end
+		for _, o in ipairs(entries(log.offers, ranger, t)) do
+			if o.to ~= cameren.oid then fail("crewhandover: an offer to someone else") end
+		end
+
+		-- 5. Out loud, near the bot at home: the same, at once
+		sim.run(30)
+		ranger.goods = items(1, "Tooth ")
+		cameren.received = {}
+		cameren.x, cameren.y = ranger.x + 4, ranger.y
+		t = nowMs()
+		speak(ranger, cameren, ranger.first .. ", hand it over", "spatial")
+		sim.run(20)
+		if #cameren.received ~= 1 then fail("crewhandover: asked out loud at home, " .. #cameren.received .. " items came") end
+		-- ...and with nothing to hand over it says so
+		t = nowMs()
+		speak(ranger, cameren, ranger.first .. ", hand it over", "spatial")
+		sim.run(3)
+		if said(ranger, "handoverNone", t) ~= 1 then fail("crewhandover: no 'nothing on me' line") end
+
+		-- 6. A window the player touched and cancelled isn't offered again (the player's choice)
+		sim.run(30)
+		regroup()
+		ranger.goods = items(2, "Gem ")
+		cameren.received = {}
+		sim.declineNext, sim.declineTouched = 1, true
+		t = nowMs()
+		disband()
+		sim.run(60)
+		sim.declineNext, sim.declineTouched = 0, false
+		if #entries(log.offers, ranger, t) ~= 1 or #ranger.goods ~= 2 or said(ranger, "handoverCancelled", t) ~= 1 then
+			fail("crewhandover: a cancelled window: " .. #entries(log.offers, ranger, t) .. " offers, " .. said(ranger, "handoverCancelled", t) .. " lines")
+		end
+
+		realPrint(string.format("crewhandover %d trades offered, %d opened", #log.offers, #log.opens))
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
 	table.insert(order, "crewswoop")
 	table.insert(order, "crewloot")
 	table.insert(order, "crewfix")
+	table.insert(order, "crewharvest")
+	table.insert(order, "crewcreature")
+	table.insert(order, "crewhandover")
 end

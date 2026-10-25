@@ -476,6 +476,8 @@ function BotJobs:heard(pBot, pSpeaker, text, channel, dev)
 		-- A crew bot on a hunt hears its group's humans out loud, nearby, without being named: it's group talk then
 		if module ~= nil and module.spatialGroup ~= nil and module:spatialGroup(pBot, pSpeaker, text) then
 			channel = "group"
+		elseif module ~= nil and module.spatialHandover ~= nil and module:spatialHandover(pBot, pSpeaker, text) then
+			-- (a bot with goods to hand over hears the player it is handing over to, named or not)
 		else
 			return
 		end

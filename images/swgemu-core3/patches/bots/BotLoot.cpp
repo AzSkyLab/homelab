@@ -17,6 +17,7 @@
 #include "server/zone/objects/resource/ResourceSpawn.h"
 #include "server/zone/objects/transaction/TransactionLog.h"
 #include "server/zone/managers/creature/CreatureManager.h"
+#include "server/zone/managers/resource/ResourceManager.h"
 #include "server/zone/managers/player/PlayerManager.h"
 #include "server/zone/managers/group/GroupLootTask.h"
 #include "server/zone/objects/creature/commands/TransferItemMiscCommand.h"
@@ -100,6 +101,103 @@ String resourceClass(ResourceContainer* container) {
 	return container->getDisplayedName();
 }
 
+
+// The crafting score of a spawn's stats: what a crafter weighs. Hide and bone go into armor segments (OQ, SR, UT, MA),
+// meat into food (OQ, PE, FL, DR). The average of the four, 0 when the resource has none of them
+int craftingScore(bool meat, const BotHarvestOption& o) {
+	int sum = meat ? o.oq + o.pe + o.fl + o.dr : o.oq + o.sr + o.ut + o.ma;
+
+	return sum / 4;
+}
+
+// The stat that leads for a kind, with its name
+void leadStat(const BotHarvestOption& o, String& name, int& value) {
+	bool meat = o.kind == "meat";
+	const char* names[4] = {"OQ", meat ? "PE" : "SR", meat ? "FL" : "UT", meat ? "DR" : "MA"};
+	int values[4] = {o.oq, meat ? o.pe : o.sr, meat ? o.fl : o.ut, meat ? o.dr : o.ma};
+
+	name = "";
+	value = 0;
+
+	for (int i = 0; i < 4; ++i) {
+		if (values[i] > value) {
+			value = values[i];
+			name = names[i];
+		}
+	}
+}
+
+// "OQ 870, SR 640, UT 500, MA 702": the stats that make the score
+String statsText(const BotHarvestOption& o) {
+	StringBuffer text;
+
+	if (o.kind == "meat")
+		text << "OQ " << o.oq << ", PE " << o.pe << ", FL " << o.fl << ", DR " << o.dr;
+	else
+		text << "OQ " << o.oq << ", SR " << o.sr << ", UT " << o.ut << ", MA " << o.ma;
+
+	return text.toString();
+}
+
+// One kind of the creature's: the current spawn of its class on this planet, as CreatureManager::harvest finds it. The
+// class string is trimmed (a template once had a trailing space; Core3 trims it when it loads the template)
+void addOption(ResourceManager* resources, const String& zoneName, const char* kind, const String& rawType, float max,
+		Vector<Reference<BotHarvestOption*>>& out) {
+	String type = rawType.trim();
+
+	if (type.isEmpty() || max <= 0)
+		return;
+
+	Reference<BotHarvestOption*> option = new BotHarvestOption();
+	option->kind = kind;
+	option->yield = (int) max;
+
+	ManagedReference<ResourceSpawn*> spawn = resources != nullptr ? resources->getCurrentSpawn(type, zoneName) : nullptr;
+
+	if (spawn != nullptr) {
+		option->harvestable = true;
+		option->spawn = spawn->getName();
+		option->resource = spawn->getFinalClass();
+		option->oq = spawn->getValueOf("res_quality");
+		option->sr = spawn->getValueOf("res_shock_resistance");
+		option->ut = spawn->getValueOf("res_toughness");
+		option->ma = spawn->getValueOf("res_malleability");
+		option->dr = spawn->getValueOf("res_decay_resist");
+		option->fl = spawn->getValueOf("res_flavor");
+		option->pe = spawn->getValueOf("res_potential_energy");
+		option->score = craftingScore(option->kind == "meat", *option);
+	}
+
+	out.add(option);
+}
+
+// Every kind the creature has, with its current spawn. Reads only; a read lock on the resource manager
+void creatureOptions(Creature* creature, Vector<Reference<BotHarvestOption*>>& out) {
+	Zone* zone = creature->getZone();
+
+	if (zone == nullptr)
+		return;
+
+	ManagedReference<ResourceManager*> resources = zone->getZoneServer()->getResourceManager();
+
+	if (resources == nullptr)
+		return;
+
+	String zoneName = zone->getZoneName();
+	ReadLocker locker(resources.get());
+
+	addOption(resources, zoneName, "meat", creature->getMeatType(), creature->getMeatMax(), out);
+	addOption(resources, zoneName, "hide", creature->getHideType(), creature->getHideMax(), out);
+	addOption(resources, zoneName, "bone", creature->getBoneType(), creature->getBoneMax(), out);
+}
+
+// Is a better than b: the higher crafting score, then the higher yield
+bool betterOption(const BotHarvestOption& a, const BotHarvestOption& b) {
+	if (a.score != b.score)
+		return a.score > b.score;
+
+	return a.yield > b.yield;
+}
 }
 
 bool BotLoot::lootCorpse(CreatureObject* bot, uint64 corpseOid, BotLootResult& out) {
@@ -352,33 +450,50 @@ bool BotLoot::harvest(CreatureObject* bot, uint64 corpseOid, const String& kind,
 	// meat 234, hide 235, bone 236 (the harvest radial's ids)
 	int type = 0;
 	String want = kind.toLowerCase();
+	Vector<Reference<BotHarvestOption*>> options;
+	creatureOptions(creature, options);
 
-	if (want == "meat" && !creature->getMeatType().isEmpty())
-		type = 234;
-	else if (want == "hide" && !creature->getHideType().isEmpty())
-		type = 235;
-	else if (want == "bone" && !creature->getBoneType().isEmpty())
-		type = 236;
-	else if (!want.isEmpty()) {
-		out.error = "no " + want;
-		return false;
-	} else {
-		// The ranger takes what the creature has most of
-		float best = 0;
+	// Only what the planet has a spawn of can be harvested. The asked-for kind if the creature has it, else the best
+	Reference<BotHarvestOption*> pick;
 
-		if (!creature->getMeatType().isEmpty() && creature->getMeatMax() > best) {
-			best = creature->getMeatMax();
-			type = 234;
+	for (int i = 0; i < options.size(); ++i) {
+		BotHarvestOption* option = options.get(i);
+
+		if (!option->harvestable)
+			continue;
+
+		if (option->kind == want) {
+			pick = option;
+			break;
 		}
 
-		if (!creature->getHideType().isEmpty() && creature->getHideMax() > best) {
-			best = creature->getHideMax();
-			type = 235;
-		}
+		if (pick == nullptr || betterOption(*option, *pick))
+			pick = option;
+	}
 
-		if (!creature->getBoneType().isEmpty() && creature->getBoneMax() > best) {
-			best = creature->getBoneMax();
-			type = 236;
+	// Asked for a kind the creature hasn't got
+	out.fallback = pick != nullptr && pick->kind != want && !want.isEmpty() && want != "any";
+
+	// The best of the others, to say why the pick is the pick
+	Reference<BotHarvestOption*> runnerUp;
+
+	for (int i = 0; i < options.size(); ++i) {
+		BotHarvestOption* option = options.get(i);
+
+		if (option->harvestable && option != pick.get() && (runnerUp == nullptr || betterOption(*option, *runnerUp)))
+			runnerUp = option;
+	}
+
+	if (pick != nullptr) {
+		type = pick->kind == "meat" ? 234 : pick->kind == "hide" ? 235 : 236;
+		out.spawn = pick->spawn;
+		out.score = pick->score;
+		leadStat(*pick, out.lead, out.leadValue);
+		out.stats = statsText(*pick);
+
+		if (runnerUp != nullptr) {
+			out.altKind = runnerUp->kind;
+			out.altScore = runnerUp->score;
 		}
 	}
 
@@ -436,9 +551,40 @@ bool BotLoot::harvest(CreatureObject* bot, uint64 corpseOid, const String& kind,
 		out.error = "failed";
 
 	lootLog().info(true) << bot->getFirstName() << " harvests " << creature->getDisplayedName() << ": " << out.amount << " units of "
-		<< out.kind << " (" << out.resource << ")";
+		<< out.kind << " (" << out.resource << ", spawn " << out.spawn << ", score " << out.score << (out.fallback ? ", fallback" : "") << ")";
 
 	return out.ok;
+}
+
+bool BotLoot::harvestChoice(CreatureObject* bot, uint64 corpseOid, Vector<Reference<BotHarvestOption*>>& out, String& error) {
+	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot)) {
+		error = "no bot";
+		return false;
+	}
+
+	ZoneServer* zoneServer = bot->getZoneServer();
+	ManagedReference<SceneObject*> object = zoneServer != nullptr ? zoneServer->getObject(corpseOid) : nullptr;
+
+	if (object == nullptr || !object->isCreatureObject()) {
+		error = "no corpse";
+		return false;
+	}
+
+	if (!object->asCreatureObject()->isCreature()) {
+		error = "not a creature";
+		return false;
+	}
+
+	ManagedReference<Creature*> creature = cast<Creature*>(object->asCreatureObject());
+
+	if (creature == nullptr) {
+		error = "not a creature";
+		return false;
+	}
+
+	creatureOptions(creature, out);
+
+	return true;
 }
 
 void BotLoot::goods(CreatureObject* bot, Vector<Reference<BotGoodsItem*>>& out) {

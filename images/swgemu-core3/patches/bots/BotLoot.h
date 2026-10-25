@@ -45,6 +45,18 @@ public:
 	String error;			// when !ok: "no bot", "no corpse", "player corpse", "alive", "not grouped", "not the group's", "too far"
 };
 
+// One resource a creature could give, with what this planet's current spawn of it is worth (BotLoot::harvestChoice)
+class BotHarvestOption : public Object {
+public:
+	String kind;			// "meat", "hide" or "bone"
+	String spawn;			// the current spawn's name, e.g. "Glatoro" ("" when there is none)
+	String resource;		// its class, e.g. "Tatooinian Leathery Hide"
+	int yield = 0;			// units the creature gives before the skill and density (get*Max)
+	int oq = 0, sr = 0, ut = 0, ma = 0, dr = 0, fl = 0, pe = 0;		// the spawn's stats, 0 when it has none
+	int score = 0;			// the crafting score: hide and bone average OQ, SR, UT, MA; meat OQ, PE, FL, DR
+	bool harvestable = false;	// the creature has it and the planet has a spawn of it
+};
+
 // botHarvest's result
 class BotHarvestResult : public Object {
 public:
@@ -52,7 +64,15 @@ public:
 	String kind;			// "meat", "hide" or "bone"
 	int amount = 0;			// units now in the bot's inventory
 	String resource;		// the resource's class, e.g. "Tatooinian Bone"
-	String error;			// when !ok: "no bot", "no corpse", "not a creature", "alive", "too far", "nothing to harvest", "cannot harvest", "no <kind>", "failed"
+	String spawn;			// the spawn's name, e.g. "Glatoro"
+	int score = 0;			// its crafting score
+	bool fallback = false;	// a kind was asked for and the creature hasn't got it: this is the bot's own pick
+	String lead;			// the spawn's best stat for this kind ("OQ", "SR", ...), "" when it has no stats
+	int leadValue = 0;
+	String stats;			// the stats a crafter weighs for this kind: "OQ 870, SR 640, UT 500, MA 702" (meat: OQ, PE, FL, DR)
+	String altKind;			// the best resource the pick was chosen over ("" when it was the only one)
+	int altScore = 0;
+	String error;			// when !ok: "no bot", "no corpse", "not a creature", "alive", "too far", "nothing to harvest", "cannot harvest", "failed"
 };
 
 // One corpse botCorpsesNear found
@@ -92,8 +112,15 @@ public:
 	static void corpsesNear(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::scene::SceneObject* center,
 		float range, Vector<Reference<BotCorpseInfo*>>& out);
 
-	// Harvests the corpse with the bot's own skills. kind: "meat", "hide", "bone", or "" for the one the creature has
-	// most of. Locks the bot and the corpse
+	// What the creature could give: its meat, hide and bone that exist, each with the resource this planet's current spawn
+	// would give (the one /harvestCorpse takes) and its stats and crafting score. Reads only, locks nothing but a read
+	// lock on the resource manager. Returns false and why ("no bot", "no corpse", "not a creature")
+	static bool harvestChoice(server::zone::objects::creature::CreatureObject* bot, uint64 corpseOid,
+		Vector<Reference<BotHarvestOption*>>& out, String& error);
+
+	// Harvests the corpse with the bot's own skills. kind: "meat", "hide", "bone", or "" for the one with the best
+	// crafting score (ties, and no stats at all: the most yield). A named kind the creature hasn't got falls back to
+	// that pick, with out.fallback set. Locks the bot and the corpse
 	static bool harvest(server::zone::objects::creature::CreatureObject* bot, uint64 corpseOid, const String& kind, BotHarvestResult& out);
 
 	// What the bot holds that isn't its own gear. Drops what has left the inventory from the record. Locks the bot

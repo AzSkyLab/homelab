@@ -90,8 +90,9 @@ public:
 	// a hand-over, not a request) once the owner is free and no other handover to it closed in the last few seconds
 	// (one trade at a time: the client doesn't show a request that arrives as another closes), puts the items in,
 	// accepts, and verifies last. Events to the jobs, BotJobs:onEvent(pBot, "trade", pOwner, detail): "bundleOpened"
-	// (the window is open now), "bundleDone" (the owner took them) or "bundleCancelled" (the
-	// owner cancelled, walked off, logged out or took too long). Pre: bot locked. False if a bundle is already under way
+	// (the window is open now), "bundleDone" (the owner took them), "bundleLost" (the window closed
+	// and the owner never accepted it or put anything in: probably never seen, to be offered again)
+	// or "bundleCancelled" (any other end: the owner cancelled after touching it, logged out, took too long). Pre: bot locked. False if a bundle is already under way
 	static bool giveBundle(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner,
 			const Vector<uint64>& items);
 

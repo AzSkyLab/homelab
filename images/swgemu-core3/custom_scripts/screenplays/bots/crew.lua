@@ -19,6 +19,7 @@
 --   runLuaFunction BotCrew:devInvite:<leader>:<crew>           the leader bot invites a crew bot
 --   runLuaFunction BotCrew:devGroupSay:<leader>:<text>         the leader says <text> in group chat ("_" is a space)
 --   runLuaFunction BotCrew:devSay:<leader>:<text>              the leader says <text> out loud (spatial chat)
+--   runLuaFunction BotCrew:devHear:<speaker>:<first>:<text>[:spatial|tell]   the speaker says <text> to one bot, e.g. one that left the group
 --   runLuaFunction BotCrew:devHunt:<first>                    a crew bot's hunt log and tally (what the brain gets)
 --   runLuaFunction BotCrew:devAttack:<leader>:<oid>            the leader attacks an object (devPeace:<leader>: peace)
 --   runLuaFunction BotCrew:devSpawn:<near>:<template>[:<m>]    spawn a creature <m> metres (default 25) north of a bot
@@ -221,7 +222,9 @@ BotCrew = ScreenPlay:new {
 		harvest = {"harvest them", "harvest it", "harvest all", "harvest the", "harvest everything", "harvest those",
 			"harvest these", "harvest that", "harvest up", "harvest please", "please harvest", "can you harvest",
 			"go harvest", "skin them", "skin it", "skin the", "skin all", "skin everything", "skin those", "skin that",
-			"skin these", "skin em", "harvest em", "go skin", "butcher them", "carve them"},
+			"skin these", "skin em", "harvest em", "go skin", "butcher them", "carve them", "harvest hide", "harvest meat",
+			"harvest bone", "skin for", "harvest for", "harvest only", "harvest just", "harvest anything", "harvest any ",
+			"harvest whatever", "skin anything", "skin whatever"},
 		loot = {"loot them", "loot it", "loot all", "loot the", "loot everything", "loot those", "loot these", "loot that",
 			"loot em", "loot up", "loot please", "please loot", "can you loot", "go loot", "search the bod",
 			"search the corpse", "search them", "search the carcass", "loot bodies", "loot corpses"},
@@ -391,6 +394,9 @@ function BotCrew:line(oid, kind, name, fill)
 		for field, value in pairs(fill) do
 			line = line:gsub("{" .. field .. "}", function() return value end)
 		end
+
+		-- (a field that came to nothing leaves its space behind)
+		line = line:gsub("%s+$", "")
 	end
 
 	return line
@@ -740,6 +746,11 @@ function BotCrew:tick(pBot, oid, now)
 	elseif mode == "home" and not creature:isGrouped() and not creature:isInCombat() then
 		self:idle(pBot, oid, now)
 	end
+
+	-- Asked for its goods by tell, and the player has come near
+	if not creature:isGrouped() and readData(ckey(oid, "wantBy")) ~= 0 then
+		self:lootWantTick(pBot, oid, now)
+	end
 end
 
 -- At home: sit a while, stand, emote; now and then ask around for a group
@@ -1042,6 +1053,15 @@ function BotCrew:leftGroup(pBot, oid, now)
 	end
 
 	deleteData(ckey(oid, "saidBye"))
+
+	-- The group broke up (its leader is on their own): the hunt's harvest choice goes with it
+	local leaderOid = readData(ckey(oid, "leader"))
+	local pGone = leaderOid ~= 0 and getSceneObject(leaderOid) or nil
+
+	if leaderOid ~= 0 and (pGone == nil or not CreatureObject(pGone):isGrouped()) then
+		self:harvestClear(leaderOid)
+	end
+
 	self:lootBeforeHome(pBot, oid, now)
 	self:leaveForHome(pBot, oid, now)
 end
@@ -2836,6 +2856,106 @@ function BotCrew:attackOrder(text, t)
 	return false
 end
 
+-- Harvest type talk (Phase 7b): "harvest hide", "skin them for bone", "meat only", "just the hides", "bone from now on";
+-- and back to the ranger's own pick: "harvest anything", "your pick", "whatever's best"
+local HARVEST_NOUNS = {hide = "hide", hides = "hide", leather = "hide", pelt = "hide", pelts = "hide", meat = "meat",
+	meats = "meat", steak = "meat", steaks = "meat", flesh = "meat", bone = "bone", bones = "bone"}
+local HARVEST_VERBS = {harvest = true, harvesting = true, harvested = true, skin = true, skinning = true, skinned = true,
+	carve = true, carving = true, butcher = true, butchering = true, take = true, taking = true, get = true, grab = true,
+	gather = true, collect = true, keep = true}
+-- ...the verbs that are only the harvest's own (a reset needs one of these, or harvest talk just before)
+local HARVEST_WORDS = {harvest = true, harvesting = true, harvested = true, skin = true, skinning = true, skinned = true,
+	carve = true, carving = true, butcher = true, butchering = true}
+-- ...a reset needs a harvest word in the line ("harvest anything", "skin your pick"): "your call" alone is about anything.
+-- The brain (the bridge reads the exchange before) carries a bare "your pick" after harvest talk as "harvest:any"
+local HARVEST_RESET = {" anything ", " any ", " whatever ", " the best "}
+local HARVEST_RESET_ALONE = {" whatever's best ", " whatevers best ", " whatever is best ", " whatever s best ", " your pick ", " your choice ",
+	" you choose ", " you pick ", " pick for yourself ", " choose for yourself ", " up to you ", " own pick ", " best stats ",
+	" your call "}
+local QUESTION_FIRST = {what = true, whats = true, ["what's"] = true, which = true, are = true, is = true, ["do"] = true,
+	does = true, did = true, why = true, how = true, who = true, where = true, when = true}
+-- A question about the harvest: "what are you harvesting?", "what are we skinning for", "harvesting what?"
+function BotCrew:harvestQuestion(text)
+	local t = wordsOf(text)
+	local hasVerb = false
+
+	for word in t:gmatch("%S+") do
+		if HARVEST_WORDS[word] then
+			hasVerb = true
+			break
+		end
+	end
+
+	if not hasVerb then
+		return false
+	end
+
+	local first = t:match("^ (%S+)")
+
+	return (first ~= nil and QUESTION_FIRST[first] == true) or t:find(" what ", 1, true) ~= nil or t:find(" which ", 1, true) ~= nil or
+		t:find(" whats ", 1, true) ~= nil or t:find(" what's ", 1, true) ~= nil
+end
+
+-- The kind a line asks the ranger to harvest ("hide", "meat" or "bone"), "any" for its own pick again, or nil when the
+-- line says neither (or asks a question, or says not to)
+function BotCrew:harvestKindOf(text)
+	if self:harvestQuestion(text) then
+		return nil
+	end
+
+	local t = wordsOf(text)
+	local words = {}
+
+	for word in t:gmatch("%S+") do
+		table.insert(words, word)
+	end
+
+	local verb, harvestVerb, restricted, kinds, count, kind = false, false, false, {}, 0, nil
+
+	for i, word in ipairs(words) do
+		if HARVEST_VERBS[word] then
+			verb = true
+			harvestVerb = harvestVerb or HARVEST_WORDS[word] == true
+
+			-- "don't harvest hide", "stop skinning": not an order
+			local p1, p2 = words[i - 1], words[i - 2]
+
+			if (p1 ~= nil and NEGATIONS[p1]) or (p2 ~= nil and NEGATIONS[p2] and FILLER[p1]) then
+				return nil
+			end
+		elseif HARVEST_NOUNS[word] ~= nil and kinds[HARVEST_NOUNS[word]] == nil then
+			kinds[HARVEST_NOUNS[word]] = true
+			count = count + 1
+			kind = HARVEST_NOUNS[word]
+		elseif word == "only" or word == "just" or word == "exclusively" then
+			restricted = true
+		end
+	end
+
+	-- Back to its own pick, with a harvest word in the line
+	if count == 0 and harvestVerb then
+		for _, list in ipairs({HARVEST_RESET, HARVEST_RESET_ALONE}) do
+			for _, phrase in ipairs(list) do
+				if t:find(phrase, 1, true) ~= nil then
+					return "any"
+				end
+			end
+		end
+	end
+
+	if count == 1 and (verb or restricted or t:find(" from now on ", 1, true) ~= nil) then
+		return kind
+	end
+
+	return nil
+end
+
+-- What a line is about for routing: the intent in its words, or "harvest" for a question about the harvest (the ranger
+-- answers it)
+function BotCrew:talkIntent(text)
+	return self:intentFor(text, nil) or (self:harvestQuestion(text) and "harvest" or nil)
+end
+
 -- The intent in the words for a role (nil: any role)
 function BotCrew:intentFor(text, role)
 	local t = wordsOf(text)
@@ -2843,7 +2963,8 @@ function BotCrew:intentFor(text, role)
 	for _, intent in ipairs({"home", "attack", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
 		-- A line that starts with the word is an order too ("loot", "harvest?", "loot, please", "kill!")
 		if (intent == "attack" and self:attackOrder(text, t)) or
-			(intent ~= "attack" and (hasAny(t, self.words[intent]) or self:startsWith(t, intent))) then
+			(intent ~= "attack" and (hasAny(t, self.words[intent]) or self:startsWith(t, intent) or
+				(intent == "harvest" and self:harvestKindOf(text) ~= nil))) then
 			local owner = self.owners[intent]
 
 			if owner == nil or role == nil or owner == role or self.anyone[intent] == true then
@@ -2870,6 +2991,13 @@ end
 
 -- The brain's action (reply line 4), for this role
 function BotCrew:allowed(action)
+	-- "harvest:hide": the bridge's harvest with the type asked for ("meat", "hide", "bone", "any")
+	local base, kind = tostring(action):match("^(%a+):(%a+)$")
+
+	if base == "harvest" and (kind == "meat" or kind == "hide" or kind == "bone" or kind == "any") and self:allowed(base) ~= nil then
+		return action
+	end
+
 	if action == "backoff" or action == "peace" then
 		action = "follow"
 	elseif action == "wound" then
@@ -2904,13 +3032,55 @@ function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 		self:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 	elseif action == "track" and self:role(oid) == "ranger" then
 		self:doTrack(pBot, oid, pPlayer, channel, brainLine)
-	elseif action == "harvest" then
+	elseif action == "harvest" or action:find("^harvest:") then
 		-- (the ranger works it in its loot turn; whoever answered scans and says how many)
-		self:lootRequest(pBot, oid, pPlayer, "harvest", channel, brainLine)
+		self:harvestAct(pBot, oid, pPlayer, action:match("^harvest:(%a+)$"), channel, brainLine)
 	elseif action == "loot" then
 		self:lootRequest(pBot, oid, pPlayer, "loot", channel, brainLine)
 	elseif (action == "buff" or action == "wounds") and self:role(oid) == "medic" then
 		self:medicBuff(pBot, oid, pPlayer, action, channel, brainLine)
+	end
+end
+
+-- "harvest ...": a type asked for (in the action, or in the words) is kept for the hunt; then the scan, as always
+function BotCrew:harvestAct(pBot, oid, pPlayer, kindArg, channel, brainLine)
+	local playerOid = SceneObject(pPlayer):getObjectID()
+	local g = self:group(pBot)
+	local kind = kindArg or self:harvestKindOf(readStringData(ckey(oid, "heard")))
+
+	if kind ~= nil and g ~= nil and g.byOid[playerOid] ~= nil and g.leader ~= nil then
+		self:harvestSetKind(pBot, oid, g.leader.oid, kind, playerOid, channel, brainLine)
+		brainLine = brainLine or "kind"
+	end
+
+	self:lootRequest(pBot, oid, pPlayer, "harvest", channel, brainLine)
+end
+
+-- The hunt's harvest type: kept under the leader until the group breaks up or the hunt ends; "any" is the ranger's pick
+function BotCrew:harvestSetKind(pBot, oid, leaderOid, kind, playerOid, channel, brainLine)
+	local name = self:firstName(getSceneObject(playerOid))
+
+	deleteData(gkey(leaderOid, "harvestNoKindSaid"))
+
+	if kind == "any" then
+		deleteStringData(gkey(leaderOid, "harvestKind"))
+		deleteStringData(gkey(leaderOid, "harvestSaid"))
+		self:huntEvent(pBot, "Told the ranger to choose its own harvest again")
+		print("BotJobs: " .. self:name(oid) .. " harvests by its own pick again")
+
+		if brainLine == nil then
+			self:say(pBot, oid, playerOid, channel, "harvestAny", name)
+		end
+
+		return
+	end
+
+	putString(gkey(leaderOid, "harvestKind"), kind)
+	self:huntEvent(pBot, "Asked for " .. kind .. " only")
+	print("BotJobs: " .. self:name(oid) .. " harvests " .. kind .. " only")
+
+	if brainLine == nil then
+		self:say(pBot, oid, playerOid, channel, "harvestKind", name, {kind = kind, Kind = (kind:gsub("^%l", string.upper))})
 	end
 end
 
@@ -2946,6 +3116,13 @@ function BotCrew:requestFields(pBot, oid, playerOid)
 	end
 
 	fields.situation = self:situation(pBot, oid)
+
+	-- What the ranger harvests, for the brain's talk about it
+	local harvestLeader = pPlayer ~= nil and self:group(pBot) ~= nil and self:harvestLeader(pBot, oid) or 0
+
+	if harvestLeader ~= 0 then
+		fields.harvest = self:harvestFacts(harvestLeader)
+	end
 
 	local leaderOid, huntAt = self:huntOf(pBot)
 
@@ -2983,6 +3160,7 @@ function BotCrew:huntOf(pBot)
 		put(gkey(leaderOid, "huntAt"), huntAt)
 		deleteStringData(gkey(leaderOid, "huntLog"))
 		deleteStringData(gkey(leaderOid, "killsPending"))
+		self:harvestClear(leaderOid)
 
 		for _, field in ipairs(self.huntTallyFields) do
 			deleteData(gkey(leaderOid, field))
@@ -3269,6 +3447,25 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
+	-- "What are you harvesting?" the ranger answers from its state (crew_loot.lua), in any channel it was asked in
+	if text ~= nil and self:role(oid) == "ranger" and CreatureObject(pBot):isGrouped() and self:harvestQuestion(text) then
+		local g = self:group(pBot)
+		local speakerOid = SceneObject(pSpeaker):getObjectID()
+
+		if g ~= nil and g.byOid[speakerOid] ~= nil and g.byOid[speakerOid].human then
+			self:harvestAnswer(pBot, oid, speakerOid, channel, self:firstName(pSpeaker))
+
+			return true
+		end
+	end
+
+	-- "Hand it over" by tell or out loud to a bot that isn't grouped any more (holding what it gathered; crew_loot.lua)
+	if channel ~= "group" and text ~= nil and not CreatureObject(pBot):isGrouped() and self:handoverWanted(text) then
+		if self:handoverUngrouped(pBot, oid, pSpeaker, channel, text) then
+			return true
+		end
+	end
+
 	-- "Hand it over" by tell or out loud to this bot (group chat goes through groupAddressed, crew_loot.lua)
 	if channel ~= "group" and text ~= nil and self:handoverWanted(text) then
 		local g = self:group(pBot)
@@ -3364,7 +3561,7 @@ function BotCrew:spatialGroup(pBot, pSpeaker, text)
 	end
 
 	-- Within earshot of the speaker, or the one who does this work (a ranger asked to camp, from further off)
-	local owner = self.owners[self:intentFor(text, nil) or ""]
+	local owner = self.owners[self:talkIntent(text) or ""]
 
 	if dist > self.spatialRange and not (owner ~= nil and owner == self:role(SceneObject(pBot):getObjectID()) and dist <= self.spatialHear) then
 		return false
@@ -3428,7 +3625,7 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 	end
 
 	local role = self:role(oid)
-	local intent = self:intentFor(text, nil)
+	local intent = self:talkIntent(text)
 
 	-- (the camp offer's "yes" in group chat; said out loud it has to be aimed at the ranger, which it isn't here)
 	if role == "ranger" and not spatial and os.time() - readData(ckey(oid, "offerAt")) <= self.campOfferWindow and
@@ -3457,8 +3654,9 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 	local owner = self.owners[intent or ""]
 
 	if owner ~= nil then
+		-- (the one who does the work, if it can: a dead ranger doesn't answer for the harvest, the first in earshot does)
 		for _, m in ipairs(pool) do
-			if m.job == owner then
+			if m.job == owner and not CreatureObject(m.p):isDead() then
 				return m.oid == oid
 			end
 		end
@@ -3827,6 +4025,27 @@ function BotCrew:devSayHear(pBot, args)
 	local leaderOid, text = args:match("^(%d+):(.*)$")
 
 	BotJobs:heard(pBot, getSceneObject(tonumber(leaderOid)), text, "spatial", false)
+end
+
+-- <speaker> (a bot counted as a player, devLead) says <text> to one bot, out loud ("spatial", it has to name the bot) or by
+-- "tell" (default): for a bot that is no longer in the speaker's group
+function BotCrew:devHear(speaker, first, text, channel)
+	local pSpeaker, pBot = devBot(speaker), devBot(first)
+
+	if pSpeaker == nil or pBot == nil or text == nil or text == "" then
+		print("BotCrew: usage devHear:<speaker bot>:<bot>:<text>[:spatial|tell]")
+		return
+	end
+
+	text = text:gsub("_", " ")
+	print("BotCrew: " .. CreatureObject(pSpeaker):getFirstName() .. " (" .. (channel or "tell") .. ") to " .. first .. ": " .. text)
+	createEvent(10, "BotCrew", "devHearNow", pBot, packArgs(SceneObject(pSpeaker):getObjectID(), channel or "tell", text))
+end
+
+function BotCrew:devHearNow(pBot, args)
+	local speakerOid, channel, text = args:match("^(%d+):(%a+):(.*)$")
+
+	BotJobs:heard(pBot, getSceneObject(tonumber(speakerOid)), text, channel, false)
 end
 
 -- The hunt log and the tally a crew bot sends the brain

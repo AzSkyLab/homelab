@@ -27,7 +27,8 @@ Phases 4-6 add the jobs musician, smuggler, tank, rifleman, medic, ranger, mayor
 fights). The model judges the insult and the bridge checks it against the words, as it does the action. Optional
 request fields: "cityInfo" (a player city's news, from botCityInfo) and "cityName", "role" (a citizen's trade),
 "grouped" (the bot is in the player's group), "situation" (a crew bot: where it is and what it's doing, in words),
-"hunt", "huntLog" and "huntTally" (a crew bot on a hunt: the hunt's id, what everyone said and what happened on it,
+"harvest" (a crew bot on a hunt: what the ranger is harvesting, asked for a type or choosing by stats, and its last
+pick, so any of them can say), "hunt", "huntLog" and "huntTally" (a crew bot on a hunt: the hunt's id, what everyone said and what happened on it,
 "(hunt)" being the events; it stands in for the bot's own memory, and the action check reads its last lines; and the
 hunt's running numbers, e.g. "3 lairs done, 2 missions left, 41 kills"), "instrument" (a musician's), "priceArmor" and "priceWeapon" (a
 smuggler's prices; 4000 and 6000 if absent).
@@ -184,7 +185,9 @@ _CREW = {"join": "join", "group": "join", "invite": "join", "join group": "join"
          "home": "home", "go home": "home", "leave": "home", "dismiss": "home", "loot": "loot", "loot bodies": "loot",
          "loot corpses": "loot", "loot all": "loot", "loot them": "loot", "looting": "loot", "harvest": "harvest",
          "skin": "harvest", "skin them": "harvest", "skinning": "harvest", "harvesting": "harvest",
-         "harvest corpses": "harvest", "butcher": "harvest", "attack": "attack", "attack target": "attack",
+         "harvest corpses": "harvest", "butcher": "harvest", "harvest hide": "harvest", "harvest meat": "harvest",
+         "harvest bone": "harvest", "harvest anything": "harvest", "harvest:hide": "harvest", "harvest:meat": "harvest",
+         "harvest:bone": "harvest", "harvest:any": "harvest", "attack": "attack", "attack target": "attack",
          "attack my target": "attack", "assist": "attack", "engage": "attack", "kill": "attack", "kill it": "attack",
          "kill target": "attack", "fight": "attack", "open fire": "attack"}
 _RANGER = {"camp": "camp", "place camp": "camp", "rest": "camp", "track": "track", "tracking": "track",
@@ -242,7 +245,9 @@ WORDS = {
     # "harvest them", "skin the bantha", "skin them all", "harvest everything"
     "harvest": re.compile(
         r"\b(harvest\w*|skin(ning)? ?(them|it|those|these|that|the|all|everything|'?em|up)\b|butcher\w*|"
-        r"carve (them|it|up|the)|process (them|the) (carcass\w*|bod\w+|corpse\w*))", re.I),
+        r"carve (them|it|up|the)|process (them|the) (carcass\w*|bod\w+|corpse\w*)|"
+        r"(only|just)\s+(the\s+)?(meat|hides?|bones?|leather|pelts?)\b|(meat|hides?|bones?|leather|pelts?)\s+"
+        r"(only|from now on)\b)", re.I),
     # "loot the bodies", "loot them", "search the corpses"
     "loot": re.compile(
         r"\b(loot\w*|search (the |those |them |all )?(bod\w+|corpses?|carcass\w*)|strip (the |them )?(bod\w+|corpses?))\b",
@@ -264,6 +269,46 @@ WORDS = {
         r"find (some|any|more) \w+|find \w+s\b|hunt (down|for) \w+|(see|spot|sense) anything|what do you see|"
         r"search (the area|around)|where are the \w+)", re.I),
 }
+# The type a harvest order names (Phase 7b): "harvest hide", "skin them for bone", "meat only", "just the hides", and
+# the reset to the ranger's own pick, "harvest anything", "your pick", "whatever's best"
+HARVEST_NOUN = re.compile(r"\b(?P<hide>hides?|leather|pelts?)\b|\b(?P<meat>meat|steaks?|flesh)\b|\b(?P<bone>bones?)\b", re.I)
+HARVEST_VERB = re.compile(r"\b(harvest\w*|skin(ning|ned)?|carv\w+|butcher\w*|take|taking|get|grab|gather|collect|keep)\b", re.I)
+HARVEST_OWN = re.compile(r"\b(harvest\w*|skin(ning|ned)?|carv\w+|butcher\w*)\b", re.I)
+HARVEST_ANY = re.compile(r"\b(anything|any|whatever|the best)\b", re.I)
+HARVEST_ALONE = re.compile(r"(whatever'?s best|whatever is best|your (pick|choice|call)|you (choose|pick)|up to you|"
+                           r"own pick|best stats|(pick|choose) for yourself)", re.I)
+HARVEST_QUESTION = re.compile(r"^\W*(what|which|what'?s|whats|are|is|do|does|did|why|how|who|where|when)\b", re.I)
+HARVEST_WHAT = re.compile(r"\b(what|which|what'?s|whats)\b", re.I)
+
+
+def harvest_asked(text):
+    """A question about the harvest ("what are you harvesting?", "harvesting what?", "are we skinning hide?")."""
+    if not HARVEST_OWN.search(text):
+        return False
+    return bool(HARVEST_QUESTION.search(text) or (text.rstrip().endswith("?") and HARVEST_WHAT.search(text)))
+HARVEST_NEGATED = re.compile(r"\b(no|nah|nope|never|don'?t|dont|do not|stop|quit|not)\b(\W+\w+){0,2}\W+(harvest\w*|skin\w*|"
+                             r"carv\w+|butcher\w*|take|get|grab)\b", re.I)
+
+
+def harvest_kind(text, before=""):
+    """The type a harvest order asks for: "hide", "meat" or "bone"; "any" for the ranger's own pick again; "" for none
+    (also for a question about the harvest, and for an order not to)."""
+    if harvest_asked(text) or HARVEST_NEGATED.search(text):
+        return ""
+    found = {name for m in HARVEST_NOUN.finditer(text) for name, value in m.groupdict().items() if value}
+    if not found:
+        own = bool(HARVEST_OWN.search(text))
+        if (own and HARVEST_ANY.search(text)) or (HARVEST_ALONE.search(text) and (own or WORDS["harvest"].search(before))):
+            return "any"
+        return ""
+    if len(found) != 1:
+        return ""
+    restricted = re.search(r"\b(only|just|exclusively|from now on)\b", text, re.I)
+    if HARVEST_VERB.search(text) or restricted:
+        return found.pop()
+    return ""
+
+
 # Job words that differ from the action's: a musician's buff is focus and willpower
 JOB_WORDS = {
     ("musician", "bufftarget"): re.compile(r"\b(bu+f+\w*|buf|buff target|focus|willpower)\b", re.I),
@@ -639,6 +684,12 @@ class Bridge:
                 "with the group, and at a mission terminal you can each take two destroy missions in the direction "
                 "the leader names."
             )
+            # What the ranger harvests (the Lua reads it from the hunt): anyone can be asked what it is taking
+            if r.get("harvest"):
+                who += (f" About the harvest: {r.get('harvest')}. The ranger chooses what to take by the stats a crafter "
+                        "wants (quality, and for hide and bone also shock resistance, toughness and malleability; for meat "
+                        "potential energy, flavor and decay resistance) unless the player asks for a type, which it then "
+                        "keeps for the whole hunt. If they ask what is being harvested, say so from this, in a line.")
             if r.get("situation"):
                 who += (f" Right now you're {r.get('situation')}. That's where you are, whatever was said before; "
                         "don't talk as if you were anywhere else.")
@@ -663,7 +714,8 @@ class Bridge:
                 '"stay" when they tell you to stay or wait where you are ("stay here", "wait up", "hold position"); '
                 '"home" when they send you home or let you go ("go home", "you can go", "we\'re done for tonight"); '
                 '"harvest" when they ask for the creatures to be skinned or harvested ("harvest them", "skin the '
-                'bantha", "skin everything"; the ranger does it); '
+                'bantha", "skin everything"; the ranger does it), or name the type to take ("harvest hide", "skin them '
+                'for bone", "meat only") or go back to the ranger\'s own pick ("harvest anything", "your pick"); '
                 '"loot" when they ask the crew to loot the bodies ("loot the bodies", "loot them", "loot everything"); '
                 '"attack" when they tell the crew to attack, kill or assist on their target ("attack my target", "kill '
                 'it", "assist me", "take it down")'
@@ -888,6 +940,17 @@ class Bridge:
 
     @staticmethod
     def decide(job, text, proposed, before=""):
+        """The action a bot player takes (a harvest names the type the player asked for: "harvest:hide", "harvest:any"),
+        see _decide."""
+        action = Bridge._decide(job, text, proposed, before)
+        if action == "harvest":
+            kind = harvest_kind(text, before)
+            if kind:
+                return "harvest:" + kind
+        return action
+
+    @staticmethod
+    def _decide(job, text, proposed, before=""):
         """The action a bot player takes: the model's proposal if the job allows it and the player's words plausibly
         asked for it, else a plain request the model missed, else none. `before` is the exchange just before (a short
         "ok, I'm here" after "come closer for your buff")."""
@@ -912,6 +975,9 @@ class Bridge:
                 # Only an order counts: "did you get em all?" has a request word and isn't one
                 return commanded(action) or (not text.rstrip().endswith("?") and mentioned(action, text)) or \
                     bool(re.match(r"\W*(\w+,?\s+)?(can|could|would|will)\s+(you|u|ya)\b", text, re.I) and mentioned(action, text))
+            # "meat only", "just the hides": an order whatever its shape (the harvest's type)
+            if action == "harvest" and not text.rstrip().endswith("?") and harvest_kind(text, before):
+                return True
             if REQUEST.search(text) or commanded(action):
                 return True
             if not text.rstrip().endswith("?"):
@@ -940,7 +1006,8 @@ class Bridge:
             return action in SELFISH and bool(re.search(SELF + pattern, text, re.I))
 
         def ok(action):
-            return not aside(action) and not negated(action) and (action != "attack" or asking(action))
+            return not aside(action) and not negated(action) and (action != "attack" or asking(action)) and \
+                not (action == "harvest" and harvest_asked(text))
 
         if proposed in allowed and ok(proposed):
             # A short reply carries the action on from the exchange before, unless it asks for something else itself
