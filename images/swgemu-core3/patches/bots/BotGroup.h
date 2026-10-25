@@ -80,6 +80,14 @@ public:
 	static uint64 placeCamp(server::zone::objects::creature::CreatureObject* bot, const String& kitTemplate, String& error,
 		uint64* blocker = nullptr);
 
+	// Would a camp from kitTemplate take at each of these points? points is x, y, x, y, ... (world coordinates, on the bot's
+	// planet); reasons gets one entry per point: "" for clear ground, else why not ("camp too close", "building too close",
+	// "lair too close", "in a city", "no camping here", "in water"). The kit's own scan (buildings within 100 m, camps and
+	// lairs by their radii) read once for the whole set, plus the planet's no-camping, water and city checks. Reads only
+	// (it never places anything); false for a bot that is not in a zone or a kit that isn't one
+	static bool campSpots(server::zone::objects::creature::CreatureObject* bot, const String& kitTemplate, const Vector<float>& points,
+		Vector<String>& reasons);
+
 	// Who is attacking a creature: the live creatures (never players) in its threat map that fight it, nearest
 	// first. A creature that is attacked has no defender of its own until it hits back (Core3's startCombat only gives
 	// the attacker one), so the main defender alone misses what attacks a bot or a player who isn't fighting back. Pre:

@@ -504,6 +504,7 @@ void registerDevTable(lua_State* L) {
 void BotGroupLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botGetGroupInviter", botGetGroupInviter);
 	lua->registerFunction("botPlaceCamp", botPlaceCamp);
+	lua->registerFunction("botCampSpots", botCampSpots);
 	lua->registerFunction("botRemoveCamp", botRemoveCamp);
 	lua->registerFunction("botGetCamp", botGetCamp);
 	lua->registerFunction("botTrack", botTrack);
@@ -541,6 +542,41 @@ int BotGroupLua::botPlaceCamp(lua_State* L) {
 	lua_pushinteger(L, blocker);
 
 	return 3;
+}
+
+// botCampSpots(pBot, kit, {x1, y1, x2, y2, ...}) -> {reason1, reason2, ...} ("" for clear ground), or nil
+int BotGroupLua::botCampSpots(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+
+	if (bot == nullptr || lua_gettop(L) < 3 || !lua_istable(L, 3)) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	Vector<float> points;
+	int count = (int) lua_rawlen(L, 3);
+
+	for (int i = 1; i <= count && i <= 512; ++i) {
+		lua_rawgeti(L, 3, i);
+		points.add((float) lua_tonumber(L, -1));
+		lua_pop(L, 1);
+	}
+
+	Vector<String> reasons;
+
+	if (!BotGroup::campSpots(bot, toString(L, 2), points, reasons)) {
+		lua_pushnil(L);
+		return 1;
+	}
+
+	lua_newtable(L);
+
+	for (int i = 0; i < reasons.size(); ++i) {
+		lua_pushstring(L, reasons.get(i).toCharArray());
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
 }
 
 // botAttackers(pCreature): the oids of the live creatures attacking it, nearest first (a bot, or a player: the creature

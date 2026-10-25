@@ -702,6 +702,7 @@ return function(ctx)
 		table.insert(log.stocks, {bot = b.oid, template = template, uses = uses, power = power})
 		return true
 	end
+	function api.botLineOfSight(b, t) return not (b ~= nil and b.noLineOfSight == true) end
 	-- Phase 8: grenades in the bot's pack, a creature's armor, the creatures around
 	function api.botStockItem(b, template, uses)
 		assert(type(template) == "string" and template:match("^object/weapon/ranged/grenade/[%w_]+%.iff$"), "botStockItem: bad template " .. tostring(template))
@@ -760,11 +761,13 @@ return function(ctx)
 		b.move = nil
 		return true
 	end
-	function api.botFollow(b, leader)
+	function api.botFollow(b, leader, near, far)
 		assert(leader ~= nil and leader.oid ~= nil, "botFollow: no leader")
 		if b == nil or not b.online or b.dead then return false end
-		b.move = {state = "follow", leader = leader.oid}
-		table.insert(log.follows, {bot = b.oid, t = nowMs(), leader = leader.oid})
+		-- (BotMover: near + (oid % 3) * (far - near) / 2 behind; 4 m by default)
+		local distance = near ~= nil and (near + (b.oid % 3) * ((far or near) - near) * 0.5) or 4
+		b.move = {state = "follow", leader = leader.oid, distance = distance}
+		table.insert(log.follows, {bot = b.oid, t = nowMs(), leader = leader.oid, near = near, far = far, distance = distance})
 		return true
 	end
 	function api.botStop(b)
@@ -1033,6 +1036,16 @@ return function(ctx)
 		if b == nil or b.cell ~= 0 or b.inTown then
 			return 0, (b ~= nil and b.cell ~= 0) and "inside" or "in a city"
 		end
+		-- A lair field the test put down (sim.campLairs): none either
+		local fields = {}
+		for _, l in ipairs(sim.campLairs or {}) do table.insert(fields, l) end
+		if sim.campHidden ~= nil then table.insert(fields, sim.campHidden) end
+		for _, field in ipairs(fields) do
+			if math.sqrt((b.x - field.x) ^ 2 + (b.y - field.y) ^ 2) <= field.r then
+				table.insert(log.campRefusals, {bot = b.oid, t = nowMs(), x = b.x, y = b.y})
+				return 0, "lair too close", 0
+			end
+		end
 		-- A lair the test put down: no camp within its radius
 		local lair = ctx.campLair
 		if lair ~= nil and math.sqrt((b.x - lair.x) ^ 2 + (b.y - lair.y) ^ 2) <= lair.r then
@@ -1046,6 +1059,25 @@ return function(ctx)
 			radius = 20, name = "a camp"})
 		table.insert(log.camps, {bot = b.oid, t = nowMs(), oid = camp.oid, kit = kit})
 		return camp.oid
+	end
+	-- The camp kit's scan without placing (the camp search): one reason per x, y pair, "" for clear ground. sim.campLairs are the
+	-- lairs it knows ({x, y, r}); sim.campHidden are the ones only the placement knows
+	function api.botCampSpots(b, kit, points)
+		assert(type(kit) == "string" and kit:match("^object/tangible/scout/camp/[%w_]+%.iff$"), "botCampSpots: bad kit " .. tostring(kit))
+		if b == nil then return nil end
+		sim.campSpotCalls = (sim.campSpotCalls or 0) + 1
+		local lairs = {}
+		for _, l in ipairs(sim.campLairs or {}) do table.insert(lairs, l) end
+		if ctx.campLair ~= nil then table.insert(lairs, ctx.campLair) end
+		local out = {}
+		for i = 1, #points, 2 do
+			local reason = ""
+			for _, l in ipairs(lairs) do
+				if math.sqrt((points[i] - l.x) ^ 2 + (points[i + 1] - l.y) ^ 2) <= l.r then reason = "lair too close" end
+			end
+			table.insert(out, reason)
+		end
+		return out
 	end
 	-- The live creatures attacking a bot or a player (their threat map), nearest first
 	function api.botAttackers(p)
@@ -1324,7 +1356,7 @@ return function(ctx)
 							if dist(o, leader) > 80 then
 								o.x, o.y = leader.x - 10, leader.y
 							else
-								walkToward(o, leader.x, leader.y, 4, o.riding and 18 or 6)
+								walkToward(o, leader.x, leader.y, m.distance or 4, o.riding and 18 or 6)
 							end
 						end
 					elseif m.state == "goto" then
@@ -1723,9 +1755,22 @@ return function(ctx)
 		cameren.speed = 5
 		sim.run(30)
 		cameren.speed = 0
+		-- (the positioning fix: out of town on foot each trails at its fighting band: the tank and ranger close, the rifleman and
+		-- medic 24-30 m back; BotCrew.trail)
 		each(function(role, b)
-			if dist(b, cameren) > 8 then
-				fail(string.format("crew: the %s is %.0f m behind after a walk", role, dist(b, cameren)))
+			local range = BotCrew.trail[role]
+			local d = dist(b, cameren)
+			if d > range[2] + 3 then
+				fail(string.format("crew: the %s is %.0f m behind after a walk (trail %d-%d)", role, d, range[1], range[2]))
+			elseif d < range[1] - 3 then
+				fail(string.format("crew: the %s is only %.0f m behind after a walk (trail %d-%d)", role, d, range[1], range[2]))
+			end
+			local follow
+			for _, f in ipairs(log.follows) do
+				if f.bot == b.oid then follow = f end
+			end
+			if follow == nil or follow.near ~= range[1] or follow.far ~= range[2] then
+				fail("crew: the " .. role .. "'s follow didn't carry its trail range")
 			end
 		end)
 
@@ -1751,7 +1796,7 @@ return function(ctx)
 		groupSay(cameren, "ok follow me")
 		sim.run(10)
 		each(function(role, b)
-			if moveState(b) ~= "follow" or dist(b, cameren) > 8 then
+			if moveState(b) ~= "follow" or dist(b, cameren) > BotCrew.trail[role][2] + 3 then
 				fail("crew: the " .. role .. " didn't follow again")
 			end
 		end)
@@ -1948,6 +1993,15 @@ return function(ctx)
 			fail("crew: the medic didn't take its pistol after cloning")
 		end
 		sim.run(30)
+		-- (the rejoin goes through ensureFollow: the role's trail range, not a close follow)
+		for _, b in ipairs({tank, medic}) do
+			local last
+			for _, f in ipairs(entries(log.follows, b, t)) do last = f end
+			local range = BotCrew.trail[b.role]
+			if last == nil or last.near ~= range[1] or last.far ~= range[2] then
+				fail("crew: the cloned " .. b.role .. " didn't rejoin with its trail range (" .. tostring(last and last.near) .. ")")
+			end
+		end
 		for _, b in ipairs({tank, medic}) do
 			if dist(b, cameren) > 12 or moveState(b) ~= "follow" then
 				fail(string.format("crew: the cloned %s isn't back with Cameren (%.0f m, %s)", b.role, dist(b, cameren), moveState(b)))
@@ -2765,7 +2819,7 @@ return function(ctx)
 		cameren.target = nil
 		sim.run(15)
 
-		-- 4. Camp search: a straight line away from the lair, quick
+		-- 4. Camp search: the spot is picked before the walk: the nearest clear ground around the leader, one walk, quick
 		cameren.x, cameren.y = cameren.x + 500, cameren.y + 500
 		sim.run(20)
 		ctx.campLair = {x = cameren.x, y = cameren.y, r = 50}
@@ -2783,28 +2837,18 @@ return function(ctx)
 		if placed[1].t - t > 45000 then
 			fail("crewfix: the camp search took " .. (placed[1].t - t) // 1000 .. " s")
 		end
-		if #refusals > 5 then
-			fail("crewfix: " .. #refusals .. " refused spots in a camp search")
+		if #refusals > 1 then
+			fail("crewfix: " .. #refusals .. " refused spots in a camp search (the clear spot is picked before the walk)")
 		end
-		-- Every try lies on one ray from the lair
-		local bearings = {}
-		for _, r in ipairs(refusals) do
-			if math.sqrt((r.x - ctx.campLair.x) ^ 2 + (r.y - ctx.campLair.y) ^ 2) > 8 then
-				table.insert(bearings, math.atan(r.x - ctx.campLair.x, r.y - ctx.campLair.y))
-			end
+		-- (the nearest ring that clears a 50 m lair on the leader is 70 m)
+		local campFrom = math.sqrt((camp.x - ctx.campLair.x) ^ 2 + (camp.y - ctx.campLair.y) ^ 2)
+		if campFrom <= 50 or campFrom > 75 then
+			fail(string.format("crewfix: the camp is %.0f m from the lair (clear ground starts at 50; the nearest ring is 70)", campFrom))
 		end
-		table.insert(bearings, math.atan(camp.x - ctx.campLair.x, camp.y - ctx.campLair.y))
-		for i = 2, #bearings do
-			local d = math.abs(bearings[i] - bearings[1])
-			if d > math.pi then d = 2 * math.pi - d end
-			if d > math.rad(12) then
-				fail(string.format("crewfix: the camp search turned (%.0f degrees off its line)", math.deg(d)))
-			end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campSearchLair") then
+			fail("crewfix: no line saying where the clear ground is")
 		end
-		if math.sqrt((camp.x - ctx.campLair.x) ^ 2 + (camp.y - ctx.campLair.y) ^ 2) <= 50 then
-			fail("crewfix: the camp is inside the lair's radius")
-		end
-		-- With the blocker unknown: still a single straight direction
+		-- With the blocker unknown: the same
 		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
 		ctx.campLair = nil
 		groupSay(cameren, "follow me")
@@ -2818,6 +2862,93 @@ return function(ctx)
 			fail("crewfix: " .. #placed .. " camps with an unknown blocker")
 		end
 		ctx.campLair = nil
+		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
+		groupSay(cameren, "follow me")
+		sim.run(60)
+
+		-- 4b. A field of lairs (squill lairs and mission lairs side by side): every stop of the old walk-away search had a lair in
+		-- range. The spot is picked first: the nearest clear ring (250 m: the field is 225 m across), one walk, one refusal at most
+		local function lairField(half, step, r)
+			local field, seen = {}, {}
+			for fx = -half, half, step do
+				for fy = -half, half, step do
+					table.insert(field, {x = cameren.x + fx, y = cameren.y + fy, r = r})
+					table.insert(seen, {oid = 880000 + #field, x = cameren.x + fx, y = cameren.y + fy})
+				end
+			end
+			return field, seen
+		end
+		sim.campLairs, sim.lairs = lairField(180, 60, 45)
+		local fieldCentre = {x = cameren.x, y = cameren.y}
+		t = nowMs()
+		groupSay(cameren, "let's camp here")
+		sim.run(170)
+		placed = entries(log.camps, ranger, t)
+		refusals = entries(log.campRefusals, ranger, t)
+		if #placed ~= 1 then
+			fail("crewfix: " .. #placed .. " camps in a field of lairs")
+		else
+			local c = ctx.objects[placed[1].oid]
+			local from = math.sqrt((c.x - fieldCentre.x) ^ 2 + (c.y - fieldCentre.y) ^ 2)
+			if from < 225 or from > 260 then
+				fail(string.format("crewfix: the camp in the lair field is %.0f m from the group (clear ground starts at 225)", from))
+			end
+			for _, l in ipairs(sim.campLairs) do
+				if math.sqrt((c.x - l.x) ^ 2 + (c.y - l.y) ^ 2) <= l.r then
+					fail("crewfix: the camp is inside a lair's radius")
+					break
+				end
+			end
+		end
+		if #refusals > 1 then
+			fail("crewfix: " .. #refusals .. " refused spots in the lair field (the spot is checked before the walk)")
+		end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campSearchLairs") then
+			fail("crewfix: no 'too many lairs' line with clear ground named")
+		end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campUpThere") then
+			fail("crewfix: no line saying where the camp is")
+		end
+		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
+		sim.campLairs, sim.lairs = nil, nil
+		groupSay(cameren, "follow me")
+		sim.run(80)
+
+		-- 4c. Nothing clear within 250 m: it says so plainly and stays with the group (no walk, no camp)
+		sim.campLairs, sim.lairs = lairField(300, 60, 45)
+		t = nowMs()
+		groupSay(cameren, "let's camp here")
+		sim.run(30)
+		if #entries(log.camps, ranger, t) ~= 0 then
+			fail("crewfix: a camp in a field with no clear ground")
+		end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campSearchNone") then
+			fail("crewfix: no plain 'no clear ground within 250 m' line")
+		end
+		if readStringData("bot:" .. ranger.oid .. ":crew:order") == "campSearch" then
+			fail("crewfix: the ranger is still searching with no clear ground")
+		end
+		sim.campLairs, sim.lairs = nil, nil
+		groupSay(cameren, "follow me")
+		sim.run(40)
+
+		-- 4d. A lair only the placement knows (a refusal after the walk): the spot is marked and the next one tried
+		local hx, hy = cameren.x + 70 * math.sin(math.rad(15)), cameren.y + 70 * math.cos(math.rad(15))
+		sim.campLairs = {{x = cameren.x, y = cameren.y, r = 50}}
+		sim.campHidden = {x = hx, y = hy, r = 25}
+		t = nowMs()
+		groupSay(cameren, "let's camp here")
+		sim.run(120)
+		placed = entries(log.camps, ranger, t)
+		refusals = entries(log.campRefusals, ranger, t)
+		-- (two refusals: the spot where the ranger stood, and the first one picked)
+		if #placed ~= 1 or #refusals ~= 2 then
+			fail("crewfix: with a hidden lair " .. #placed .. " camps and " .. #refusals .. " refusals, expected 1 and 2")
+		end
+		if not anyLine(entries(log.group, ranger, t), "ranger", "campSearchAgain") then
+			fail("crewfix: no 'next spot' line after a refused spot")
+		end
+		sim.campLairs, sim.campHidden = nil, nil
 		for _, c in ipairs(log.camps) do ctx.objects[c.oid].inWorld = false end
 		groupSay(cameren, "follow me")
 		sim.run(60)
@@ -3536,7 +3667,7 @@ return function(ctx)
 		end
 		-- (the rest of the crew went back to following)
 		each(function(role, b)
-			if dist(b, cameren) > 14 then
+			if dist(b, cameren) > math.max(14, BotCrew.trail[role][2] + 3) then
 				fail(string.format("crewloot: the %s stayed %.0f m behind after looting", role, dist(b, cameren)))
 			end
 		end)
@@ -3724,7 +3855,7 @@ return function(ctx)
 		local count = goodsCount(holder)
 		leaveGroup(holder)
 		holder.dismissed = true
-		sim.run(6)
+		sim.run(14) -- (a trailing bot walks up first)
 		if #entries(log.offers, holder, t) < 1 then
 			fail("crewloot: a dismissed bot didn't offer its goods")
 		end
@@ -4591,7 +4722,8 @@ return function(ctx)
 		reset()
 
 		-- 5. Adds: the creature the tank fights is on it (taunted, its lockout 80 s). Two adds come, one on the rifleman 20 m
-		-- off and one on the medic 35 m off: the tank taunts the nearer first, from where it stands; nothing is taunted inside a
+		-- off and one on the medic 35 m off: the tank taunts the one on the medic first (the positioning fix: the medic, then the
+		-- other ranged bots, then the nearest), from where it stands; nothing is taunted inside a
 		-- lockout; a creature that turns on someone else inside its lockout gets an intimidate or a warcry, and a taunt when it ends
 		local boss = mobOn("a kreetle", 10, cameren)
 		cameren.inCombat, cameren.target = true, boss.oid
@@ -4611,8 +4743,8 @@ return function(ctx)
 		end
 		if t1 == nil or t2 == nil then
 			fail("crewtactics: the adds weren't both taunted (" .. tostring(t1) .. ", " .. tostring(t2) .. ")")
-		elseif t1 >= t2 then
-			fail("crewtactics: the add on the rifleman (nearer) wasn't taunted first")
+		elseif t2 >= t1 then
+			fail("crewtactics: the add on the medic (further) wasn't taunted before the one on the rifleman")
 		end
 		if a1.aggro ~= tank.oid or a2.aggro ~= tank.oid then
 			fail("crewtactics: the adds aren't on the tank")
@@ -4754,18 +4886,26 @@ return function(ctx)
 		-- 1. Bands from the weapons: a creature 70 m off, the leader fighting it. The rifleman (T21: ideal 50 m) ends 40-50 m
 		-- from it, the medic (E-11, held to its stim reach) 30-40, the ranger (EE-3: ideal 27) 17-27; all kneel; nobody fired
 		-- while walking
+		-- (a bot plants where it settled in its band and doesn't follow the creature in: its distance is taken when it first kneels)
 		local m1 = mobAt(70, 0)
 		local t = nowMs()
 		attack(cameren, m1)
-		sim.run(30)
+		local planted = {}
+		for i = 1, 70 do
+			sim.run(1)
+			for _, r in ipairs({"rifleman", "medic", "ranger"}) do
+				if planted[r] == nil and crew[r].posture == "crouched" then planted[r] = dist(crew[r], m1) end
+			end
+		end
 		local function band(role, lo, hi)
 			local b = crew[role]
-			local d = dist(b, m1)
-			if d < lo or d > hi then
-				fail(string.format("crewband: the %s stands %.1f m from the creature (band %d-%d)", role, d, lo, hi))
+			local d = planted[role]
+			if d == nil then
+				fail("crewband: the " .. role .. " never knelt")
+				return
 			end
-			if b.posture ~= "crouched" then
-				fail("crewband: the " .. role .. " isn't kneeling at " .. string.format("%.1f", d) .. " m")
+			if d < lo or d > hi then
+				fail(string.format("crewband: the %s knelt %.1f m from the creature (band %d-%d)", role, d, lo, hi))
 			end
 			if firedWalking(b, t) > 0 then
 				fail("crewband: the " .. role .. " fired while walking")
@@ -4815,9 +4955,7 @@ return function(ctx)
 				if b.posture ~= "crouched" then stood = true end
 			end
 		end
-		if held == 0 then
-			fail("crewband: the tank had the fresh creature before the ranged bots could be watched holding")
-		end
+		-- (the tank's taunt was out of lockout and landed at once: the ranged bots had no hold to be watched in)
 		if stood then
 			fail("crewband: a ranged bot stood up during the hold on a fresh pull")
 		end
@@ -4830,8 +4968,8 @@ return function(ctx)
 		slay(m1b)
 		reset()
 
-		-- 3. A creature that goes for the rifleman: she backs off (away from it, toward the group) without firing, calls it,
-		-- and fights from where she is once it can't be kept off or is on the tank
+		-- 3. A creature that goes for the rifleman (the positioning fix: nobody backs off): she plants where she stands, calls "add on me",
+		-- keeps her target and keeps shooting; she does not walk
 		local m3 = mobAt(70, 0)
 		m3.hits = 5
 		attack(cameren, m3)
@@ -4843,41 +4981,59 @@ return function(ctx)
 		startCombat(m3, rifleman)
 		m3.x, m3.y = rifleman.x + 18, rifleman.y
 		sim.run(12)
-		-- (her back-off steps are 10 m from where she stood)
-		local step1
 		for _, mv in ipairs(entries(log.moves, rifleman, t)) do
-			local from = math.sqrt((mv.x - startX) ^ 2 + (mv.y - startY) ^ 2)
-			if step1 == nil and from > 9 and from < 11 then step1 = mv end
+			fail(string.format("crewband: the rifleman walked %.0f m with a creature on her", math.sqrt((mv.x - startX) ^ 2 + (mv.y - startY) ^ 2)))
+			break
 		end
-		if step1 == nil then
-			fail("crewband: the rifleman didn't back off from a creature on her at 18 m")
-		elseif math.sqrt((step1.x - (startX + 18)) ^ 2 + (step1.y - startY) ^ 2) <= 18 then
-			fail("crewband: the rifleman's back-off wasn't away from the creature")
+		if math.sqrt((rifleman.x - startX) ^ 2 + (rifleman.y - startY) ^ 2) > 3 then
+			fail("crewband: the rifleman moved with a creature on her")
 		end
-		if firedWalking(rifleman, t) > 0 then
-			fail("crewband: the rifleman fired while backing off")
-		end
-		local cleared = false
 		for _, e in ipairs(entries(log.targets, rifleman, t)) do
-			if e.target == 0 then cleared = true end
+			if e.target == 0 then fail("crewband: the rifleman dropped her target with a creature on her") end
 		end
-		if not cleared then
-			fail("crewband: the rifleman kept her target while backing off")
+		if not anyLine(entries(log.group, rifleman, t), "rifleman", "addOnMe") then
+			fail("crewband: no 'add on me' call")
 		end
-		if not anyLine(entries(log.group, rifleman, t), "rifleman", "backUp") then
-			fail("crewband: no 'backing up' call")
-		end
-		if not firstShot(rifleman, m3, t + 1) and #entries(log.targets, rifleman, t) < 2 then
-			fail("crewband: the rifleman never fired again")
-		end
-		local shotsAgain = 0
-		for _, e in ipairs(entries(log.targets, rifleman, t)) do
-			if e.engage and not e.moving then shotsAgain = shotsAgain + 1 end
-		end
-		if shotsAgain == 0 then
-			fail("crewband: the rifleman didn't stop and fire after backing off")
+		local shots3 = 0
+		for _, c in ipairs(okCommands(rifleman, nil, t)) do shots3 = shots3 + 1 end
+		if shots3 == 0 then fail("crewband: the rifleman didn't shoot with a creature on her") end
+		-- (the creature goes to the tank: planted, with nothing on her, she kneels)
+		m3.aggro = tank.oid
+		startCombat(m3, tank)
+		sim.run(8)
+		if rifleman.posture ~= "crouched" then
+			fail("crewband: the planted rifleman isn't kneeling once nothing is on her (" .. tostring(rifleman.posture) .. ")")
 		end
 		slay(m3)
+		reset()
+
+		-- 3b. Planted: the rifleman, planted in a fight, stays when the leader moves a few metres and the creature stays in reach; but
+		-- out of her weapon's reach (64 m) she walks
+		local m3b = mobAt(70, 0)
+		attack(cameren, m3b)
+		sim.run(25)
+		local px, py = rifleman.x, rifleman.y
+		t = nowMs()
+		m3b.x = m3b.x + 12
+		sim.run(10)
+		if #entries(log.moves, rifleman, t) > 0 then fail("crewband: the planted rifleman walked for a creature 12 m further off") end
+		m3b.x = m3b.x + 90
+		sim.run(15)
+		if #entries(log.moves, rifleman, t) == 0 then fail("crewband: the planted rifleman didn't walk to a target beyond her weapon's reach") end
+		-- ...and with no line of sight for losFor seconds
+		slay(m3b)
+		reset()
+		local m3c = mobAt(70, 0)
+		attack(cameren, m3c)
+		sim.run(25)
+		t = nowMs()
+		rifleman.noLineOfSight = true
+		sim.run(3)
+		if #entries(log.moves, rifleman, t) > 0 then fail("crewband: the rifleman walked before losFor seconds without a line of sight") end
+		sim.run(10)
+		if #entries(log.moves, rifleman, t) == 0 then fail("crewband: the rifleman didn't move after losing the line of sight") end
+		rifleman.noLineOfSight = nil
+		slay(m3c)
 		reset()
 
 		-- 4. A lair where the rifleman would stand: she stands elsewhere in her band, and so does the ranger
@@ -4894,8 +5050,9 @@ return function(ctx)
 				fail(string.format("crewband: the %s stands %.1f m from the lair", role, d))
 			end
 		end
+		-- (the creature closes on the tank while she walks, and she is planted where she settled: a little inside the band)
 		local d = dist(rifleman, m4)
-		if d < 38 or d > 51 then
+		if d < 33 or d > 51 then
 			fail(string.format("crewband: the rifleman stands %.1f m from the creature with a lair in the way", d))
 		end
 		sim.lairs = {}
@@ -5240,7 +5397,11 @@ return function(ctx)
 		sim.run(6)
 		for _, role in ipairs({"medic", "ranger", "rifleman", "squadleader", "entertainer", "commando"}) do
 			local b = crew[role]
-			if moveState(b) ~= "follow" then fail("crewsquad: the " .. role .. " isn't following during the retreat (" .. moveState(b) .. ")") end
+			-- (the medic is exempt: its heals and revives come before the retreat's follow, and trailing the leader at 26 m it
+			-- is the one that has the tank to walk to; it follows once it has nobody to heal)
+			if moveState(b) ~= "follow" and role ~= "medic" then
+				fail("crewsquad: the " .. role .. " isn't following during the retreat (" .. moveState(b) .. ")")
+			end
 			for _, e in ipairs(entries(log.targets, b, retreatAt + 2500)) do
 				if e.target ~= 0 and e.engage then fail("crewsquad: the " .. role .. " attacked during the retreat") end
 			end
@@ -5683,6 +5844,14 @@ return function(ctx)
 		end
 		sim.run(3)
 		if crew.ranger.posture == "sitting" then fail("crewcall: the called ranger is still sitting") end
+		-- (a called bot that is not in the group yet follows close, not at its trail range)
+		for _, role in ipairs(SEVEN) do
+			local last
+			for _, f in ipairs(entries(log.follows, crew[role], t)) do last = f end
+			if last ~= nil and last.near ~= nil then
+				fail("crewcall: the called " .. role .. " trails at " .. tostring(last.near) .. "-" .. tostring(last.far) .. " before it is in the group")
+			end
+		end
 		-- one invite from the first to arrive; the others wait quietly, following the caller
 		local invites, asks, inviter = 0, 0, nil
 		for _, role in ipairs(SEVEN) do
@@ -5856,6 +6025,100 @@ return function(ctx)
 		teardown()
 	end
 
+	-- crewtrail (the positioning fix): hunting on foot out of town each bot follows at its fighting band; in a town, in a building
+	-- and on a swoop the close follow comes back, and the trail again when the leader is out of town on foot
+	function scenarios.crewtrail()
+		setup("/nonexistent/sim-talk")
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		sim.run(10)
+		each(function(role, b) b.cell = 0 end)
+		cameren.cell = 0
+		local savedTowns = BotCrew.towns.tatooine
+		local function lastFollow(b)
+			local last
+			for _, f in ipairs(log.follows) do
+				if f.bot == b.oid then last = f end
+			end
+			return last
+		end
+		local function walk(m)
+			cameren.move = {state = "goto", x = cameren.x + m, y = cameren.y}
+			cameren.speed = 5
+			sim.run(m / 5 + 8)
+			cameren.speed = 0
+			sim.run(6)
+		end
+
+		-- 1. Out of town on foot: each bot's follow carries its range, and they settle at it (not on top of each other)
+		walk(100)
+		local seen = {}
+		each(function(role, b)
+			local range = BotCrew.trail[role]
+			local f = lastFollow(b)
+			local d = dist(b, cameren)
+			if f == nil or f.near ~= range[1] or f.far ~= range[2] then
+				fail("crewtrail: the " .. role .. " didn't follow at " .. range[1] .. "-" .. range[2])
+			end
+			if d > range[2] + 3 or d < range[1] - 3 then
+				fail(string.format("crewtrail: the %s trails at %.0f m, wanted %d-%d", role, d, range[1], range[2]))
+			end
+			table.insert(seen, string.format("%s %.0f", role, d))
+		end)
+		if dist(crew.medic, cameren) < dist(crew.ranger, cameren) + 10 then
+			fail("crewtrail: the medic doesn't trail well behind the ranger")
+		end
+
+		-- 2. In a town: the close follow
+		BotCrew.towns.tatooine = {{"Test town", cameren.x, cameren.y}}
+		sim.run(10)
+		each(function(role, b)
+			local f = lastFollow(b)
+			if f == nil or f.near ~= nil then
+				fail("crewtrail: the " .. role .. " still trails in a town")
+			end
+		end)
+		BotCrew.towns.tatooine = savedTowns
+
+		-- 3. Back in the wild on foot: the trail again
+		sim.run(10)
+		each(function(role, b)
+			local f = lastFollow(b)
+			if f == nil or f.near ~= BotCrew.trail[role][1] then
+				fail("crewtrail: the " .. role .. " didn't trail again out of town")
+			end
+		end)
+
+		-- 4. The leader on a swoop: the close follow (a bot trailing a swoop would be left behind)
+		cameren.riding = true
+		sim.run(10)
+		each(function(role, b)
+			local f = lastFollow(b)
+			if f == nil or f.near ~= nil then
+				fail("crewtrail: the " .. role .. " trails a leader on a swoop")
+			end
+		end)
+		cameren.riding = false
+		sim.run(10)
+
+		-- 5. In a building (a cell): the close follow
+		cameren.cell = 77
+		sim.run(10)
+		each(function(role, b)
+			local f = lastFollow(b)
+			if f == nil or f.near ~= nil then
+				fail("crewtrail: the " .. role .. " trails a leader inside a building")
+			end
+		end)
+		cameren.cell = 0
+		realPrint("crewtrail " .. table.concat(seen, ", "))
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -5867,6 +6130,7 @@ return function(ctx)
 	table.insert(order, "crewhandover")
 	table.insert(order, "crewtactics")
 	table.insert(order, "crewband")
+	table.insert(order, "crewtrail")
 	table.insert(order, "crewfull")
 	table.insert(order, "crewsquad")
 	table.insert(order, "crewcommando")

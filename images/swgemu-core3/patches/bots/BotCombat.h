@@ -180,6 +180,10 @@ public:
 	// its lock, so call it from an event on the bot (the bot is locked, as the crew's Lua is)
 	static bool threatOn(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* creature, BotThreat& out);
 
+	// Is there a line of sight between the bot and the target (Core3's own check for its ranged attacks)? False when either isn't in
+	// a zone, or they are in different ones. Reads only
+	static bool lineOfSight(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::scene::SceneObject* target);
+
 	// The creature's resistances (an AiAgent; anything else gives false). Lock-free reads, as Core3's own damage code does
 	static bool resists(server::zone::objects::creature::CreatureObject* creature, BotResists& out);
 

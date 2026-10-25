@@ -16,6 +16,7 @@
  *                                               range metres that the bot may attack, nearest first, at most 40; target is
  *                                               who each fights (0 for nobody). For area attacks (Phase 8): scan when weighing
  *                                               one, not every step
+ *   botLineOfSight(pBot, pTarget) -> bool    a clear line between them (Core3's check for ranged attacks); false for nil or another zone
  *   botResists(pCreature) -> {kinetic, energy, blast, heat, cold, electricity, acid, stun, lightsaber} or nil
  *                                               a creature's resistances in percent (-1: vulnerable); nil for anything
  *                                               but an AiAgent (Phase 8: the commando's weapon choice)
@@ -65,6 +66,7 @@ private:
 	static int botRepairGear(lua_State* L);
 	static int botFindPack(lua_State* L);
 	static int botResists(lua_State* L);
+	static int botLineOfSight(lua_State* L);
 	static int botCreaturesNear(lua_State* L);
 	static int botRecentIncaps(lua_State* L);
 	static int botDropDeadDefenders(lua_State* L);

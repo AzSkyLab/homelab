@@ -323,11 +323,11 @@ BotLines.crew = {
 		"Swoop won't take. Catching up on foot.",
 		"No room for my bike here. Running.",
 	},
-	-- A ranged bot stepping back from a creature that came for it
-	backUp = {
-		"On me, backing up.",
-		"Coming back to you, backing up.",
-		"It's on me, backing up.",
+	-- A ranged bot with a creature on it, planted where it stands (the positioning fix: it doesn't back off)
+	addOnMe = {
+		"Add on me!",
+		"Got one on me, tank!",
+		"Add on me, shooting it.",
 	},
 	-- The model can't answer and nothing was asked for: one of these, then a quiet minute
 	fallback = {
@@ -572,12 +572,28 @@ BotLines.ranger = {
 		"I won't camp by a lair. Further out.",
 	},
 	-- Refused for a lair (or a camp or building) close by: the ranger goes looking
+	-- The refusal, and where it is going: {metres} and {way} from the leader
 	campSearchLair = {
-		"Lair's too close here. Hang on, I'll find us clear ground.",
-		"Not by a lair. Give me a minute to find a better spot.",
+		"Lair's too close here. Clear ground about {metres} metres {way}, follow me.",
+		"Not by a lair. There's clear ground about {metres} metres {way}, follow me.",
+	},
+	campSearchLairs = {
+		"Too many lairs here. Clear ground about {metres} metres {way}, follow me.",
+		"Lairs all around. Clear ground about {metres} metres {way}, follow me.",
 	},
 	campSearch = {
-		"Ground's taken here. Let me find somewhere clear.",
+		"Ground's taken here. Clear ground about {metres} metres {way}, follow me.",
+	},
+	campSearchWater = {
+		"Wet ground here. Dry ground about {metres} metres {way}, follow me.",
+	},
+	campSearchAgain = {
+		"That one won't take either. Trying {metres} metres {way}, follow me.",
+		"No good. Next spot's {metres} metres {way}.",
+	},
+	campSearchNone = {
+		"No clear ground within {metres} metres of here. Let's move on and camp somewhere else.",
+		"Can't find a spot to camp for {metres} metres around. We should move on.",
 	},
 	-- Placed out there: {metres} and {way} from the leader
 	campUpThere = {

@@ -1670,7 +1670,8 @@ bool BotMover::follow(CreatureObject* bot, CreatureObject* leader, float nearDis
 
 	// Each bot keeps its own distance and side, so a crew spreads out
 	float followDist = nearDist + (float)(oid % 3) * (farDist - nearDist) * 0.5f;
-	float side = ((float)((oid / 3) % 5) - 2.f) * 0.6f;
+	// (a bot trailing far behind spreads wider, so they don't stack: 0.6 m a side at 5 m, more further back)
+	float side = ((float)((oid / 3) % 5) - 2.f) * 0.6f * Math::max(1.f, followDist / 5.f);
 
 	Locker locker(&job->mutex);
 
