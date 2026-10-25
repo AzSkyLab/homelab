@@ -104,20 +104,24 @@ BotCrew = ScreenPlay:new {
 	lairAvoid = 25,
 	lairScan = 120,
 	lairEvery = 6,
-	-- Backing off: a creature on the bot closer than the band's near edge (at least backOffRange) makes it step backOffStep
-	-- metres away from the creature and toward the group, without firing, for at most backFor seconds (then it stands and
-	-- fights, and doesn't back off again for backBlock). A placement walk that takes longer than moveFor seconds is
+	-- No back-off (the positioning fix): a bot walks away from nothing. A ranged bot walks to its band at the start of a fight only
+	-- if no creature is on it; once it is in its band or has a creature on it, it is planted for the rest of the fight (it
+	-- kneels if nothing is on it, never stands up to move) and moves again only when the target is beyond its weapon's
+	-- reach or it has had no line of sight to it for losFor seconds. A placement walk that takes longer than moveFor seconds is
 	-- given up for moveBlock seconds.
-	backOffRange = 15,
-	backOffStep = 10,
-	backFor = 4,
-	backBlock = 8,
+	losFor = 4,
+	losEvery = 2,
 	moveFor = 12,
 	dotMindFloor = 0.4,   -- the medic throws packs only with this share of its mind
 	dotResistAfter = 6,   -- a pack thrown this long ago with nothing on the creature was resisted (the throw waits in the queue)
 	moveBlock = 6,
 	stepGap = 1.5,        -- seconds between the walks of a band move
 	leaderSpread = 60,    -- a ranged bot standing to shoot follows again when its leader is further than this
+	-- Trailing (the positioning fix): hunting on foot out of town, a bot follows its leader at its fighting band, so a fight starts with
+	-- the ranged already at range: {nearest, furthest} metres behind. In town, in a building and on a swoop they follow
+	-- close as before (followNear / followFar). Each bot keeps its own distance within the range and its own side
+	trail = {tank = {4, 6}, ranger = {4, 6}, commando = {11, 13}, entertainer = {15, 18}, squadleader = {15, 18},
+		rifleman = {24, 28}, medic = {26, 30}},
 	holdFire = 10,        -- seconds without picking a fight after "back off"
 	moveEvery = 3,        -- seconds between walks after a moving target
 	attackerFresh = 5,    -- seconds an attacker seen on a group member counts
@@ -333,12 +337,19 @@ BotCrew = ScreenPlay:new {
 	campOfferWindow = 90,    -- a "yes" this soon after the offer places the camp
 	spatialRange = 20,       -- a grouped crew bot takes a group human's spoken words (not named) as group talk within this
 	spatialHear = 25,        -- ...and the crew member who does the work asked for (a camp, a track), within this
-	-- Refused for a lair, camp or building nearby: the ranger walks straight away from it, campSearchStep metres at a
-	-- time, and tries at each, up to campSearchSteps times; a camp placed out there waits this long (s) for the leader
-	-- to come within campRange
-	campSearchStep = 25,
-	campSearchSteps = 6,
-	campSearchWalk = 30,     -- s to reach a spot before trying it anyway
+	-- Refused for a lair, camp, building or no-camping ground: the ranger picks its spot before it walks. It tests spots on rings
+	-- around the leader (botCampSpots: the camp kit's own scan, without placing), takes the nearest clear one that is not
+	-- on a lair's way, says where, walks there and places the camp; a spot that still fails is marked and the next is
+	-- picked, up to campSearchSteps walks. Nothing clear within the last ring: it says so. A camp placed out there waits
+	-- campSearchGrace s for the leader
+	campRings = {30, 45, 70, 100, 140, 190, 250},
+	campBearings = 12,
+	campLairScan = 320,      -- m around the ranger: the lairs a walk should keep clear of
+	campLairBias = 80,       -- a spot within this of a lair costs (campLairBias - distance) / 2 metres of ring
+	campWayCost = 150,       -- ...and one with a lair's zone on the way costs this many
+	campTriedApart = 30,     -- a spot this close to one that failed isn't tried
+	campSearchSteps = 4,
+	campSearchWalk = 60,     -- s to reach a spot before trying it anyway
 	campSearchPollMs = 1500, -- between looks at the walk
 	campSearchGrace = 180,
 	woundedAt = 100,         -- wounds (all pools) or battle fatigue on someone that make the ranger offer a camp
@@ -790,7 +801,7 @@ function BotCrew:clear(oid)
 		"lungeAt", "injuryReady", "stateReady", "cureReady", "rezAt", "rezFor", "rezTries", "rezSaid",
 		"offerAt", "peaceAt", "leftAt", "handedAt", "saidBye", "leavingAt", "homeAt", "inviteSeen", "inviteSeenAt",
 		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt", "focus", "chatty", "calloutAt",
-		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "backSince", "backBlock",
+		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "planted", "addOid", "losAt", "losBadSince", "losTurn", "trailProfile",
 		"stepAt", "kneelAt", "bandNear", "bandFar", "bandMax", "bandOk", "lairsAt", "dotReady", "dotOid", "pT", "dT", "pA", "dA",
 		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
 		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt"}) do
@@ -1556,7 +1567,11 @@ function BotCrew:ensureFollow(pBot, oid, pLeader, now)
 		return
 	end
 
-	if move.state == "follow" and (move.leader == nil or move.leader == 0 or tonumber(move.leader) == leaderOid) then
+	local near, far = self:trailDistances(pBot, oid, pLeader)
+	local profile = near ~= nil and 1 or 0
+
+	if move.state == "follow" and (move.leader == nil or move.leader == 0 or tonumber(move.leader) == leaderOid) and
+		readData(ckey(oid, "trailProfile")) == profile then
 		return
 	end
 
@@ -1565,8 +1580,23 @@ function BotCrew:ensureFollow(pBot, oid, pLeader, now)
 	end
 
 	put(ckey(oid, "followAt"), now)
+	put(ckey(oid, "trailProfile"), profile)
 	self:standUp(pBot, oid)
-	bot("botFollow", pBot, pLeader)
+	bot("botFollow", pBot, pLeader, near, far)
+end
+
+-- How far behind the leader this bot trails: its role's range while hunting on foot out of town (the leader outdoors and not
+-- riding, the bot not riding), else nil (the close follow)
+function BotCrew:trailDistances(pBot, oid, pLeader)
+	local range = self.trail[self:role(oid)]
+
+	-- (a bot that was called and isn't in the group yet follows close: it waits to be invited)
+	if range == nil or readStringData(ckey(oid, "mode")) == "called" or SceneObject(pLeader):getParentID() ~= 0 or SceneObject(pBot):getParentID() ~= 0 or
+		bot("botMounted", pLeader) == true or bot("botMounted", pBot) == true or self:inTown(pLeader) then
+		return nil, nil
+	end
+
+	return range[1], range[2]
 end
 
 -- Walk to someone (or a point short of them, in the same cell), again only when they've moved or now and then
@@ -2131,13 +2161,40 @@ end
 -- The tank's turn with its queue empty: the creatures attacking the group, nearest first, within taunt range. One
 -- that isn't on the tank is taunted when its lockout is over (Core3's, from its threat map: a taunt inside it does
 -- nothing but add aggro), else slowed with an intimidate or a warcry. One command per step; true if it queued one.
+-- Whom a creature is on decides how urgent it is: the medic first, then any other who isn't the tank (a ranged bot is not made to
+-- take what it can't), the tank's own last. Then the nearest.
+function BotCrew:sortByVictim(pBot, list, g, oid)
+	local look = {}
+
+	for i = 1, math.min(#list, self.tauntLook + 4) do
+		local c = list[i]
+
+		c.th = bot("botThreatOn", pBot, c.p)
+
+		local victim = c.th ~= nil and c.th.target ~= 0 and g.byOid[c.th.target] or nil
+
+		c.prio = (victim ~= nil and victim.job == "medic") and 1 or ((victim ~= nil and victim.oid ~= oid) and 2 or 3)
+		table.insert(look, c)
+	end
+
+	table.sort(look, function(a, b)
+		if a.prio ~= b.prio then
+			return a.prio < b.prio
+		end
+
+		return a.dist < b.dist
+	end)
+
+	return look
+end
+
 function BotCrew:tankTurn(pBot, oid, pTarget, g, now)
 	local targetOid = pTarget ~= nil and SceneObject(pTarget):getObjectID() or 0
-	local list = self:groupCreatures(pBot, g, now, pTarget)
+	local list = self:sortByVictim(pBot, self:groupCreatures(pBot, g, now, pTarget), g, oid)
 
 	for i = 1, math.min(#list, self.tauntLook) do
 		local c = list[i]
-		local th = bot("botThreatOn", pBot, c.p)
+		local th = c.th
 
 		if th ~= nil then
 			if th.target == oid then
@@ -2210,9 +2267,9 @@ function BotCrew:rescueTurn(pBot, oid, g, now)
 
 	local tank = self:tankFor(oid, g)
 
-	for _, c in ipairs(self:groupCreatures(pBot, g, now, nil)) do
+	for _, c in ipairs(self:sortByVictim(pBot, self:groupCreatures(pBot, g, now, nil), g, oid)) do
 		if c.dist <= self.rescueRange then
-			local th = bot("botThreatOn", pBot, c.p)
+			local th = c.th
 
 			if th ~= nil and th.target ~= 0 and th.target ~= oid and (tank == nil or th.target ~= tank.oid) and
 				g.byOid[th.target] ~= nil and th.lockoutMs <= 0 and not th.taunted then
@@ -2992,7 +3049,6 @@ function BotCrew:retreatStep(pBot, oid, g, pLeader, now)
 
 	-- (the medic's heals came before this; a ranged bot walking to a band stops)
 	deleteData(ckey(oid, "moveSince"))
-	deleteData(ckey(oid, "backSince"))
 	self:ensureFollow(pBot, oid, pLeader, now)
 
 	return true
@@ -3446,10 +3502,17 @@ function BotCrew:lairsOf(pBot, oid, now)
 	return lairList(readStringData(ckey(oid, "lairs")))
 end
 
+-- Is the bot standing within lairAvoid of a lair? (a fight that starts there moves it out, as long as nothing is on it)
+function BotCrew:inLairZone(pBot, oid, now)
+	local x, y = SceneObject(pBot):getPositionX(), SceneObject(pBot):getPositionY()
+
+	return lairOnWay(self:lairsOf(pBot, oid, now), x, y, x, y, self.lairAvoid)
+end
+
 -- Where to stand to shoot: inside the band's far edge, on the leader's side of the target (the bot's own side when the
 -- leader is on top of it), and not within lairAvoid of a lair, nor with a lair on the way: the spot is turned away from
 -- one in 30 degree steps. nil when no turn is clear: the bot stays where it is.
-function BotCrew:bandSpot(pBot, oid, pTarget, pLeader, far, now)
+function BotCrew:bandSpot(pBot, oid, pTarget, pLeader, far, now, turn)
 	local tx, ty = SceneObject(pTarget):getPositionX(), SceneObject(pTarget):getPositionY()
 	local px, py = SceneObject(pBot):getPositionX(), SceneObject(pBot):getPositionY()
 	local px0, py0 = px, py
@@ -3474,14 +3537,54 @@ function BotCrew:bandSpot(pBot, oid, pTarget, pLeader, far, now)
 	local d = far - self.bandIn
 	local lairs = self:lairsOf(pBot, oid, now)
 
-	for _, degrees in ipairs({0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180}) do
+	local bearings = {0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180}
+
+	-- (a spot that proved blind: the walk starts from the next bearing, so it doesn't go back to the same place)
+	for k = 0, #bearings - 1 do
+		local degrees = bearings[(k + (turn or 0)) % #bearings + 1]
 		local a = math.rad(degrees)
 		local ax, ay = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
 		local sx, sy = tx + ax * d, ty + ay * d
 
-		-- (neither the spot nor the way to it near a lair)
-		if not lairOnWay(lairs, px0, py0, sx, sy, self.lairAvoid) then
+		-- (neither the spot nor the way to it near a lair; a bot already inside a lair's zone may walk out of it, away from the lair)
+		local ways = {}
+
+		for _, lair in ipairs(lairs) do
+			local fromLair = math.sqrt((lair.x - px0) ^ 2 + (lair.y - py0) ^ 2)
+			local toLair = math.sqrt((lair.x - sx) ^ 2 + (lair.y - sy) ^ 2)
+
+			-- (the lair the bot stands in is dropped only for a walk that heads away from it: the projection of the lair on the walk is
+			-- at or behind the start)
+			local wx, wy = sx - px0, sy - py0
+			local heading = (lair.x - px0) * wx + (lair.y - py0) * wy
+
+			if not (fromLair < self.lairAvoid and heading <= 0 and toLair >= self.lairAvoid) then
+				table.insert(ways, lair)
+			end
+		end
+
+		if not lairOnWay(ways, px0, py0, sx, sy, self.lairAvoid) then
 			return sx, sy
+		end
+	end
+
+	-- No band spot is clear and the bot stands in a lair's zone: straight out of it, directly away from that lair, if that is
+	-- still inside the weapon's far edge of the target (and clear of the other lairs)
+	for _, lair in ipairs(lairs) do
+		local ex, ey = px0 - lair.x, py0 - lair.y
+		local from = math.sqrt(ex * ex + ey * ey)
+
+		if from < self.lairAvoid then
+			if from < 1 then
+				ex, ey, from = 0, -1, 1
+			end
+
+			local sx, sy = lair.x + ex / from * (self.lairAvoid + 2), lair.y + ey / from * (self.lairAvoid + 2)
+			local toTarget = math.sqrt((sx - tx) ^ 2 + (sy - ty) ^ 2)
+
+			if toTarget <= far and toTarget >= self.bandMin and not lairOnWay(lairs, sx, sy, sx, sy, self.lairAvoid) then
+				return sx, sy
+			end
 		end
 	end
 
@@ -3497,54 +3600,6 @@ function BotCrew:bandStep(pBot, oid, x, y, z, cell, now)
 	put(ckey(oid, "stepAt"), now)
 	self:standUp(pBot, oid)
 	bot("botMoveTo", pBot, x, z, y, cell)
-end
-
--- Step away from a creature that is on this bot, toward the group
-function BotCrew:backOff(pBot, oid, pCreature, pLeader, g, now)
-	local bx, by = SceneObject(pBot):getPositionX(), SceneObject(pBot):getPositionY()
-	local cx, cy = SceneObject(pCreature):getPositionX(), SceneObject(pCreature):getPositionY()
-	local ax, ay = bx - cx, by - cy
-	local alen = math.sqrt(ax * ax + ay * ay)
-
-	if alen < 0.5 then
-		ax, ay, alen = 0, -1, 1
-	end
-
-	ax, ay = ax / alen, ay / alen
-
-	-- the group: the tank if it holds, else the leader
-	local tank = self:tankFor(oid, g)
-	local pGroup = tank ~= nil and tank.p or pLeader
-	local vx, vy = ax, ay
-
-	if pGroup ~= nil then
-		local gx, gy = SceneObject(pGroup):getPositionX() - bx, SceneObject(pGroup):getPositionY() - by
-		local glen = math.sqrt(gx * gx + gy * gy)
-
-		if glen > 1 then
-			vx, vy = ax + 0.5 * gx / glen, ay + 0.5 * gy / glen
-		end
-	end
-
-	local vlen = math.sqrt(vx * vx + vy * vy)
-
-	if vlen < 0.1 then
-		vx, vy, vlen = ax, ay, 1
-	end
-
-	-- (not toward a lair: straight away from the creature, else no step)
-	local lairs = self:lairsOf(pBot, oid, now)
-
-	for _, dir in ipairs({{vx / vlen, vy / vlen}, {ax, ay}}) do
-		local x, y = bx + dir[1] * self.backOffStep, by + dir[2] * self.backOffStep
-
-		if not lairOnWay(lairs, bx, by, x, y, self.lairAvoid) then
-			self:bandStep(pBot, oid, x, y, SceneObject(pBot):getPositionZ(), SceneObject(pBot):getParentID(), now)
-			return true
-		end
-	end
-
-	return false
 end
 
 -- The nearest creature that is on this bot now (its main defender is the bot: one in the bot's threat map that has
@@ -3593,8 +3648,11 @@ function BotCrew:cellRange(pBot, oid, pTarget, pLeader, dist, range, now)
 	self:stopMoving(pBot)
 end
 
--- A ranged bot's place in the fight, for this step: "move" (walking to its band or backing off: it holds fire, since
--- moving costs a rifle 100-150 accuracy) or "fire" (it stands in its band, kneels when nothing closes on it, and shoots)
+-- A ranged bot's place in the fight, for this step: "move" (walking to its band: it holds fire, since moving costs a rifle
+-- 100-150 accuracy) or "fire" (it stands where it is, kneels when nothing is on it, and shoots). It never walks away from
+-- a creature: at the start of a fight it walks to its band only if no creature is on it; once in its band, or with a
+-- creature on it, it is planted for the rest of the fight and moves only out of its weapon's reach, or after losFor
+-- seconds without a line of sight (the commando keeps to its short band: its specials reach 16 m)
 function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
 	local near, far = self:band(pBot, oid, role)
 	local move = bot("botMoveState", pBot) or {}
@@ -3604,40 +3662,83 @@ function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
 	if near == nil or pLeader == nil or readStringData(ckey(oid, "order")) == "stay" then
 		state = "fire"
 	elseif SceneObject(pTarget):getParentID() ~= 0 or SceneObject(pBot):getParentID() ~= 0 then
-		-- Inside a building (a cell): no band, no kneeling, no back-off: it stays with the leader or walks up to range, as it did
+		-- Inside a building (a cell): no band, no kneeling: it stays with the leader or walks up to range, as it did
 		self:cellRange(pBot, oid, pTarget, pLeader, dist, far, now)
 	else
 		local pOnMe = self:creatureOnMe(pBot, oid, g)
-		local onMeDist = pOnMe ~= nil and BotJobs:distance(pBot, pOnMe) or nil
 		local leaderDist = BotJobs:distance(pBot, pLeader)
+		local settling = readData(ckey(oid, "moveSince")) ~= 0
 
-		if onMeDist ~= nil and onMeDist < math.max(self.backOffRange, near) and now >= readData(ckey(oid, "backBlock")) and
-			role ~= "commando" then
-			-- A creature has come for this bot: step back toward the group, and shoot once it can't be kept off
-			if readData(ckey(oid, "backSince")) == 0 then
-				put(ckey(oid, "backSince"), now)
-				put(ckey(oid, "moveSince"), 0)
-				self:callout(pBot, oid, "backUp", nil, now)
-				print("BotJobs: " .. self:name(oid) .. " (" .. role .. ") backs off from " .. SceneObject(pOnMe):getDisplayedName() ..
-					", " .. string.format("%.0f", onMeDist) .. " m")
+		-- A creature on this bot: it plants where it stands, and says so (once per creature)
+		if pOnMe ~= nil and role ~= "commando" then
+			put(ckey(oid, "planted"), 1)
+
+			if readData(ckey(oid, "addOid")) ~= SceneObject(pOnMe):getObjectID() then
+				put(ckey(oid, "addOid"), SceneObject(pOnMe):getObjectID())
+				self:callout(pBot, oid, "addOnMe", nil, now)
+				print("BotJobs: " .. self:name(oid) .. " (" .. role .. ") has " .. SceneObject(pOnMe):getDisplayedName() .. " on it, " ..
+					string.format("%.0f", BotJobs:distance(pBot, pOnMe) or 0) .. " m: planted")
+			end
+		end
+
+		local planted = readData(ckey(oid, "planted")) == 1 and role ~= "commando"
+
+		if leaderDist == nil or leaderDist > self.leaderSpread then
+			self:ensureFollow(pBot, oid, pLeader, now)
+			state = "move"
+		elseif planted then
+			-- Planted: it shoots from here, unless the target is out of its weapon's reach or out of sight
+			local out, why = self:outOfReach(pBot, oid, pTarget, dist, now)
+
+			-- (and a lair's zone it stands in, with nothing on it, is walked out of, away from the lair)
+			if not out and pOnMe == nil and self:inLairZone(pBot, oid, now) then
+				out, why = true, "lair"
 			end
 
-			if now - readData(ckey(oid, "backSince")) > self.backFor then
-				put(ckey(oid, "backBlock"), now + self.backBlock)
-				put(ckey(oid, "backSince"), 0)
-			elseif self:backOff(pBot, oid, pOnMe, pLeader, g, now) then
-				state = "move"
+			if out and now >= readData(ckey(oid, "moveBlock")) then
+				if readData(ckey(oid, "moveSince")) == 0 then
+					put(ckey(oid, "moveSince"), now)
+					-- (the sight is looked at afresh from where it stands next; a spot that was blind turns the next walk)
+					deleteData(ckey(oid, "losBadSince"))
+					put(ckey(oid, "losAt"), now)
+
+					if why == "los" then
+						put(ckey(oid, "losTurn"), readData(ckey(oid, "losTurn")) + 1)
+					end
+				end
+
+				if now - readData(ckey(oid, "moveSince")) > self.moveFor then
+					put(ckey(oid, "moveBlock"), now + self.moveBlock)
+					put(ckey(oid, "moveSince"), 0)
+				else
+					local x, y = self:bandSpot(pBot, oid, pTarget, pLeader, far, now, readData(ckey(oid, "losTurn")))
+
+					if x ~= nil then
+						self:bandStep(pBot, oid, x, y, SceneObject(pTarget):getPositionZ(), SceneObject(pTarget):getParentID(), now)
+						state = "move"
+					end
+				end
+			else
+				put(ckey(oid, "moveSince"), 0)
+
+				if move.state == "goto" or move.state == "follow" then
+					bot("botStop", pBot)
+				end
+
+				-- 2: planted, it kneels to shoot when nothing is on it
+				if pOnMe == nil and CreatureObject(pBot):getPosture() ~= CROUCHED and now - readData(ckey(oid, "kneelAt")) >= 3 then
+					put(ckey(oid, "kneelAt"), now)
+					botEnqueue(pBot, "kneel", 0, "")
+				end
 			end
 		else
-			put(ckey(oid, "backSince"), 0)
+			local outside = dist > far - (settling and self.bandSettle or 0) or
+				(dist < near + (settling and self.bandSettle or 0) and pOnMe == nil)
+			local walking = false
 
-			if leaderDist == nil or leaderDist > self.leaderSpread then
-				self:ensureFollow(pBot, oid, pLeader, now)
-				state = "move"
-			elseif (dist > far - (readData(ckey(oid, "moveSince")) ~= 0 and self.bandSettle or 0) or
-				(dist < near + (readData(ckey(oid, "moveSince")) ~= 0 and self.bandSettle or 0) and pOnMe == nil)) and
-				now >= readData(ckey(oid, "moveBlock")) then
-				-- Not in the band: walk to a spot in it (it gives up on a walk that takes too long and fires from where it is)
+			if (outside or (pOnMe == nil and self:inLairZone(pBot, oid, now))) and now >= readData(ckey(oid, "moveBlock")) then
+				-- Not in the band (or standing in a lair's zone), nothing on it: walk to a spot in the band (it gives up on a walk
+				-- that takes too long and fires from where it is)
 				if readData(ckey(oid, "moveSince")) == 0 then
 					put(ckey(oid, "moveSince"), now)
 				end
@@ -3648,18 +3749,25 @@ function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
 				else
 					local x, y = self:bandSpot(pBot, oid, pTarget, pLeader, far, now)
 
-					-- (no clear spot: it stays where it is and shoots)
-					if x ~= nil then
+					-- (no clear spot, or already on it: it stays where it is and shoots)
+					if x ~= nil and math.sqrt((x - SceneObject(pBot):getPositionX()) ^ 2 + (y - SceneObject(pBot):getPositionY()) ^ 2) >= 2.5 then
 						self:bandStep(pBot, oid, x, y, SceneObject(pTarget):getPositionZ(), SceneObject(pTarget):getParentID(), now)
 						state = "move"
+						walking = true
 					end
 				end
-			else
+			end
+
+			if not walking then
 				put(ckey(oid, "moveSince"), 0)
 
-				-- In the band: stop, and kneel to shoot unless something is coming
+				-- In the band: stop, kneel to shoot unless something is on it, and stay put for the rest of the fight
 				if move.state == "goto" or move.state == "follow" then
 					bot("botStop", pBot)
+				end
+
+				if role ~= "commando" then
+					put(ckey(oid, "planted"), 1)
 				end
 
 				if pOnMe == nil and CreatureObject(pBot):getPosture() ~= CROUCHED and now - readData(ckey(oid, "kneelAt")) >= 3 then
@@ -3685,13 +3793,42 @@ function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
 	return state
 end
 
+-- Is the target beyond this bot's weapon, or has it been out of sight for losFor seconds? (the one reason a planted bot moves)
+function BotCrew:outOfReach(pBot, oid, pTarget, dist, now)
+	local reach = readData(ckey(oid, "bandMax"))
+
+	if reach ~= 0 and dist > reach then
+		return true, "range"
+	end
+
+	-- A line of sight, looked at every losEvery seconds
+	if now - readData(ckey(oid, "losAt")) >= self.losEvery then
+		put(ckey(oid, "losAt"), now)
+
+		if bot("botLineOfSight", pBot, pTarget) == false then
+			if readData(ckey(oid, "losBadSince")) == 0 then
+				put(ckey(oid, "losBadSince"), now)
+			end
+		else
+			deleteData(ckey(oid, "losBadSince"))
+		end
+	end
+
+	local since = readData(ckey(oid, "losBadSince"))
+
+	return since ~= 0 and now - since >= self.losFor, "los"
+end
+
 -- The fight is over: peace, packs refilled; the follow starts again on the next step
 function BotCrew:endFight(pBot, oid, now)
 	deleteData(ckey(oid, "target"))
 	deleteData(ckey(oid, "holdOid"))
 	deleteData(ckey(oid, "aimed"))
 	deleteData(ckey(oid, "moveSince"))
-	deleteData(ckey(oid, "backSince"))
+	deleteData(ckey(oid, "planted"))
+	deleteData(ckey(oid, "addOid"))
+	deleteData(ckey(oid, "losBadSince"))
+	deleteData(ckey(oid, "losTurn"))
 	deleteData(ckey(oid, "dotOid"))
 	self:tankDrop(oid)
 	put(ckey(oid, "peaceAt"), now)
@@ -4235,8 +4372,10 @@ function BotCrew:rejoin(pBot, oid, pLeader, now)
 		return
 	end
 
-	put(ckey(oid, "followAt"), now)
-	bot("botFollow", pBot, pLeader)
+	-- (through ensureFollow: the role's trail range, and a profile that is current)
+	put(ckey(oid, "followAt"), 0)
+	deleteData(ckey(oid, "trailProfile"))
+	self:ensureFollow(pBot, oid, pLeader, now)
 end
 
 -- Out of a fight: in camp, or following (or staying put); the ranger offers a camp when the group is hurt
@@ -4608,7 +4747,8 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 		print("BotJobs: " .. self:name(oid) .. " couldn't place a camp here (" .. tostring(why) .. ")")
 		local why = tostring(why or "")
 
-		if why == "lair too close" or why == "camp too close" or why == "building too close" then
+		if why == "lair too close" or why == "camp too close" or why == "building too close" or why == "no camping here" or
+			why == "in water" then
 			self:startCampSearch(pBot, oid, pPlayer, channel, why, blocker)
 			return
 		end
@@ -4662,80 +4802,141 @@ local function direction(bearing)
 	return COMPASS[math.floor(((degrees % 360) + 22.5) / 45) % 8 + 1]
 end
 
--- Camp search: the spot was refused for a lair (or a camp or building) nearby. The ranger walks straight away from
--- the thing in the way, campSearchStep metres at a time, and tries the camp at each stop, until one takes; then it
--- calls the group over. A fight, a new order or running out of steps ends the search.
+-- Camp search: the spot was refused for a lair, a camp, a building or no-camping ground. The ranger picks clear ground first
+-- (campPick), tells the group where, walks there and tries the camp; a spot that still fails is marked and the next picked.
+-- A fight, a new order or running out of walks ends the search.
 
 function BotCrew:startCampSearch(pBot, oid, pPlayer, channel, why, blockerOid)
 	local search = readData(ckey(oid, "campSearch")) + 1
 
 	put(ckey(oid, "campSearch"), search)
-	deleteData(ckey(oid, "campSearchDX"))
-	deleteData(ckey(oid, "campSearchDY"))
+	putString(ckey(oid, "campTried"), "")
 	putString(ckey(oid, "campSearchOrder"), readStringData(ckey(oid, "order")))
 	putString(ckey(oid, "order"), "campSearch")
-	self:campSearchAim(pBot, oid, blockerOid, pPlayer)
 
 	print("BotJobs: " .. self:name(oid) .. " looks for a clear spot to camp (" .. why .. ")")
-	self:say(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, why == "lair too close" and "campSearchLair" or "campSearch",
-		self:firstName(pPlayer))
-	self:campSearchNext(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, search, 1)
+	self:campSearchNext(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, search, 1, why)
 end
 
--- Which way to walk: directly away from what blocked the camp (its position is known from botPlaceCamp's third
--- result); if that is unknown, away from the group's leader; else a random way. Kept as a unit vector in thousandths.
-function BotCrew:campSearchAim(pBot, oid, blockerOid, pPlayer)
-	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
-	local fromX, fromY = nil, nil
-	local pBlocker = (blockerOid or 0) ~= 0 and getSceneObject(blockerOid) or nil
+-- The spots to test: rings around the centre, the bearings spread evenly and each ring turned half a step from the one before
+function BotCrew:campCandidates(cx, cy)
+	local points, spots = {}, {}
 
-	if pBlocker ~= nil then
-		fromX, fromY = SceneObject(pBlocker):getWorldPositionX(), SceneObject(pBlocker):getWorldPositionY()
-	elseif readData(ckey(oid, "campSearchDX")) ~= 0 or readData(ckey(oid, "campSearchDY")) ~= 0 then
-		-- Unknown blocker and a direction already: keep going the same way
-		return
-	elseif pPlayer ~= nil then
-		fromX, fromY = SceneObject(pPlayer):getWorldPositionX(), SceneObject(pPlayer):getWorldPositionY()
+	for r, ring in ipairs(self.campRings) do
+		for i = 0, self.campBearings - 1 do
+			local degrees = (i + (r % 2) * 0.5) * 360 / self.campBearings
+			local x, y = cx + math.sin(math.rad(degrees)) * ring, cy + math.cos(math.rad(degrees)) * ring
+
+			table.insert(spots, {x = x, y = y, ring = ring, degrees = degrees})
+			table.insert(points, x)
+			table.insert(points, y)
+		end
 	end
 
-	local dx, dy = 0, 0
-
-	if fromX ~= nil then
-		dx, dy = x - fromX, y - fromY
-	end
-
-	local length = math.sqrt(dx * dx + dy * dy)
-
-	if length < 1 then
-		local rad = math.rad(getRandomNumber(0, 359))
-
-		dx, dy, length = math.sin(rad), math.cos(rad), 1
-	end
-
-	put(ckey(oid, "campSearchDX"), dx / length * 1000)
-	put(ckey(oid, "campSearchDY"), dy / length * 1000)
+	return points, spots
 end
 
--- Spot `try`: campSearchStep metres on from where the bot stands now, along the aim
-function BotCrew:campSearchSpot(pBot, oid)
-	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+-- The nearest clear spot to the leader that the ranger can reach without going through a lair's zone (if one can), away from
+-- lairs where it can: {x, y, metres, degrees} and how many spots were clear of how many tested; nil when none is clear
+function BotCrew:campPick(pBot, oid, pLeader, tried)
+	local cx, cy = SceneObject(pLeader):getWorldPositionX(), SceneObject(pLeader):getWorldPositionY()
+	local px, py = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+	local points, spots = self:campCandidates(cx, cy)
+	local reasons = bot("botCampSpots", pBot, self:campKitOf(oid), points)
 
-	return x + readData(ckey(oid, "campSearchDX")) / 1000 * self.campSearchStep,
-		y + readData(ckey(oid, "campSearchDY")) / 1000 * self.campSearchStep
+	if reasons == nil then
+		return nil, 0, #spots
+	end
+
+	local lairs = {}
+
+	for _, lair in ipairs(bot("botLairsNear", pBot, self.campLairScan) or {}) do
+		table.insert(lairs, {x = lair.x, y = lair.y})
+	end
+
+	local best, bestScore, clear = nil, nil, 0
+
+	for i, spot in ipairs(spots) do
+		local apart = true
+
+		for _, t in ipairs(tried) do
+			if math.sqrt((t.x - spot.x) ^ 2 + (t.y - spot.y) ^ 2) < self.campTriedApart then
+				apart = false
+			end
+		end
+
+		if reasons[i] == "" then
+			clear = clear + 1
+		end
+
+		if reasons[i] == "" and apart then
+			local nearest = 9999
+
+			for _, lair in ipairs(lairs) do
+				nearest = math.min(nearest, math.sqrt((lair.x - spot.x) ^ 2 + (lair.y - spot.y) ^ 2))
+			end
+
+			local score = spot.ring + math.max(0, self.campLairBias - nearest) / 2 +
+				(lairOnWay(lairs, px, py, spot.x, spot.y, self.lairAvoid) and self.campWayCost or 0)
+
+			if best == nil or score < bestScore then
+				best, bestScore = spot, score
+			end
+		end
+	end
+
+	if best == nil then
+		return nil, clear, #spots
+	end
+
+	return {x = best.x, y = best.y, metres = best.ring, degrees = best.degrees, nLairs = #lairs}, clear, #spots
 end
 
-function BotCrew:campSearchNext(pBot, oid, playerOid, channel, search, try)
-	if try > self.campSearchSteps then
+function BotCrew:campSearchNext(pBot, oid, playerOid, channel, search, try, why)
+	local pPlayer = getSceneObject(playerOid)
+	local name = pPlayer ~= nil and self:firstName(pPlayer) or ""
+	local g = self:group(pBot)
+	local pLeader = g ~= nil and self:leaderOf(pBot, oid, g, os.time()) or pPlayer
+
+	if try > self.campSearchSteps or pLeader == nil then
 		self:endCampSearch(pBot, oid)
-		self:say(pBot, oid, playerOid, channel, "campSearchFail", self:firstName(getSceneObject(playerOid)))
-		print("BotJobs: " .. self:name(oid) .. " found no spot to camp")
+		self:say(pBot, oid, playerOid, channel, "campSearchFail", name)
+		print("BotJobs: " .. self:name(oid) .. " found no spot to camp (" .. self.campSearchSteps .. " tried)")
 		return
 	end
 
-	local x, y = self:campSearchSpot(pBot, oid)
-	local z = getTerrainHeight ~= nil and getTerrainHeight(pBot, x, y) or SceneObject(pBot):getWorldPositionZ()
+	local spot, clear, total = self:campPick(pBot, oid, pLeader, lairList(readStringData(ckey(oid, "campTried"))))
 
-	bot("botMoveTo", pBot, x, z, y, 0, "run")
+	if spot == nil then
+		self:endCampSearch(pBot, oid)
+		self:say(pBot, oid, playerOid, channel, try == 1 and "campSearchNone" or "campSearchFail", name,
+			{metres = tostring(self.campRings[#self.campRings])})
+		print("BotJobs: " .. self:name(oid) .. " found no spot to camp: " .. clear .. " of " .. total .. " spots clear within " ..
+			self.campRings[#self.campRings] .. " m, none left to try")
+		return
+	end
+
+	put(ckey(oid, "campSpotX"), spot.x)
+	put(ckey(oid, "campSpotY"), spot.y)
+
+	local way = direction(spot.degrees)
+	local kind = "campSearch"
+
+	if try > 1 then
+		kind = "campSearchAgain"
+	elseif why == "lair too close" then
+		kind = spot.nLairs >= 3 and "campSearchLairs" or "campSearchLair"
+	elseif why == "in water" then
+		kind = "campSearchWater"
+	end
+
+	print("BotJobs: " .. self:name(oid) .. " camp spot " .. try .. ": " .. clear .. " of " .. total .. " spots clear, going " ..
+		spot.metres .. " m " .. way .. " of the leader")
+	self:say(pBot, oid, playerOid, channel, kind, name, {metres = tostring(spot.metres), way = way})
+
+	local z = getTerrainHeight ~= nil and getTerrainHeight(pBot, spot.x, spot.y) or SceneObject(pBot):getWorldPositionZ()
+
+	bot("botMoveTo", pBot, spot.x, z, spot.y, 0, "run")
 	createEvent(self.campSearchPollMs, "BotCrew", "campSearchCheck", pBot,
 		packArgs(readData(key(oid, "gen")), search, try, playerOid, channel, os.time()))
 end
@@ -4771,17 +4972,15 @@ function BotCrew:campSearchCheck(pBot, args)
 
 	self:stopMoving(pBot)
 
-	local campOid, why, blocker = bot("botPlaceCamp", pBot, self:campKitOf(oid))
+	local campOid, why = bot("botPlaceCamp", pBot, self:campKitOf(oid))
 
 	if (campOid or 0) == 0 then
-		print("BotJobs: " .. self:name(oid) .. " camp spot " .. try .. ": " .. tostring(why))
+		print("BotJobs: " .. self:name(oid) .. " camp spot " .. try .. " failed: " .. tostring(why))
 
-		-- Away from whatever is in the way now (it may be another thing than the first)
-		if (blocker or 0) ~= 0 then
-			self:campSearchAim(pBot, oid, blocker, nil)
-		end
-
-		self:campSearchNext(pBot, oid, playerOid, channel, search, try + 1)
+		-- Marked (where it meant to go and where it stands), and the next picked
+		putString(ckey(oid, "campTried"), readStringData(ckey(oid, "campTried")) .. string.format("%d,%d;%d,%d;", math.floor(readData(ckey(oid, "campSpotX"))),
+			math.floor(readData(ckey(oid, "campSpotY"))), math.floor(SceneObject(pBot):getWorldPositionX()), math.floor(SceneObject(pBot):getWorldPositionY())))
+		self:campSearchNext(pBot, oid, playerOid, channel, search, try + 1, tostring(why))
 		return
 	end
 
@@ -4813,8 +5012,7 @@ end
 function BotCrew:endCampSearch(pBot, oid)
 	local before = readStringData(ckey(oid, "campSearchOrder"))
 
-	deleteData(ckey(oid, "campSearchDX"))
-	deleteData(ckey(oid, "campSearchDY"))
+	putString(ckey(oid, "campTried"), "")
 
 	put(ckey(oid, "campSearch"), readData(ckey(oid, "campSearch")) + 1)
 
@@ -6504,6 +6702,151 @@ function BotCrew:devHurtNow(pBot, amount)
 	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " takes " .. damage .. " damage, health " ..
 		CreatureObject(pBot):getHAM(HEALTH) .. ", incap " .. tostring(CreatureObject(pBot):isIncapacitated()) .. ", dead " ..
 		tostring(CreatureObject(pBot):isDead()))
+end
+
+-- devToughenBot:<first>[:<health>]: a bot with that much of every pool (a human stand-in that doesn't die in a test)
+function BotCrew:devToughenBot(first, amount)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devToughenBotNow", pBot, tostring(tonumber(amount or "") or 100000))
+	end
+end
+
+function BotCrew:devToughenBotNow(pBot, amount)
+	local hp = tonumber(amount) or 100000
+
+	for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+		CreatureObject(pBot):setMaxHAM(pool, hp)
+		CreatureObject(pBot):setHAM(pool, hp)
+	end
+
+	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " toughened to " .. hp)
+end
+
+-- devBlock:<first>:<dx>:<dy>: a building (the camp kit refuses ground within 100 m of one, as it does for lairs) dx m east and dy m
+-- north of a bot, to make a field of blockers on the dev server, which has few lairs
+function BotCrew:devBlock(first, dx, dy)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devBlockNow", pBot, packArgs(tonumber(dx or "") or 0, tonumber(dy or "") or 0))
+	end
+end
+
+function BotCrew:devBlockNow(pBot, args)
+	local a = unpackArgs(args)
+	local x, y = SceneObject(pBot):getWorldPositionX() + tonumber(a[1]), SceneObject(pBot):getWorldPositionY() + tonumber(a[2])
+	local z = getTerrainHeight ~= nil and getTerrainHeight(pBot, x, y) or SceneObject(pBot):getWorldPositionZ()
+	local pObject = spawnSceneObject(SceneObject(pBot):getZoneName(), "object/building/tatooine/filler_building_tatt_style01_01.iff", x, z, y, 0, 0)
+
+	print("BotCrew: blocker at " .. math.floor(x) .. "," .. math.floor(y) .. ": " .. (pObject ~= nil and tostring(SceneObject(pObject):getObjectID()) or "failed"))
+end
+
+-- devLairs:<first>[:<range>]: the lairs near a bot (default 300 m), and how many of the camp search's 84 spots the camp kit's scan
+-- clears around it
+function BotCrew:devLairs(first, range)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devLairsNow", pBot, tostring(tonumber(range or "") or 300))
+	end
+end
+
+function BotCrew:devLairsNow(pBot, range)
+	local lairs = bot("botLairsNear", pBot, tonumber(range)) or {}
+	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+	local near = 0
+
+	for _, lair in ipairs(lairs) do
+		if math.sqrt((lair.x - x) ^ 2 + (lair.y - y) ^ 2) <= 120 then
+			near = near + 1
+		end
+	end
+
+	local points = self:campCandidates(x, y)
+	local reasons = bot("botCampSpots", pBot, self:campKitOf(SceneObject(pBot):getObjectID()), points) or {}
+	local clear = 0
+
+	for _, r in ipairs(reasons) do
+		if r == "" then
+			clear = clear + 1
+		end
+	end
+
+	print(string.format("BotCrew: %s at %.0f,%.0f: %d lairs within %s m, %d within 120 m; camp kit scan clears %d of %d spots", CreatureObject(pBot):getFirstName(),
+		x, y, #lairs, range, near, clear, #reasons))
+
+	for i, lair in ipairs(lairs) do
+		if i <= 8 then
+			print(string.format("BotCrew: lair %d at %.0f,%.0f (%.0f m)", lair.oid, lair.x, lair.y, math.sqrt((lair.x - x) ^ 2 + (lair.y - y) ^ 2)))
+		end
+	end
+end
+
+-- devCampSearch:<first>: the ranger's pick for its group's leader, as the search would make it (nothing is moved or placed)
+function BotCrew:devCampSearch(first)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devCampSearchNow", pBot, "")
+	end
+end
+
+function BotCrew:devCampSearchNow(pBot, args)
+	local oid = SceneObject(pBot):getObjectID()
+	local g = self:group(pBot)
+	local pLeader = g ~= nil and self:leaderOf(pBot, oid, g, os.time()) or pBot
+	local spot, clear, total = self:campPick(pBot, oid, pLeader, {})
+
+	if spot == nil then
+		print("BotCrew: camp pick: nothing clear, " .. clear .. " of " .. total)
+	else
+		print(string.format("BotCrew: camp pick: %.0f,%.0f, %d m %s of the leader, %d of %d clear, %d lairs scanned", spot.x, spot.y, spot.metres,
+			direction(spot.degrees), clear, total, spot.nLairs))
+	end
+end
+
+-- devWatch:<leader bot>:<seconds>: once a second, print each member's distance from the leader and state, and whom each creature
+-- near the leader is on ("WATCH t=3 | Kragoth 6m ok, ... | 234->Kragoth, ...")
+function BotCrew:devWatch(first, seconds)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devWatchNow", pBot, packArgs(tonumber(seconds or "") or 60, 0))
+	end
+end
+
+function BotCrew:devWatchNow(pBot, args)
+	local a = unpackArgs(args)
+	local limit, i = tonumber(a[1]), tonumber(a[2])
+	local g = self:group(pBot)
+
+	if g ~= nil then
+		local names, parts, cparts = {}, {}, {}
+
+		for _, m in ipairs(g.members) do
+			local c = CreatureObject(m.p)
+
+			names[m.oid] = c:getFirstName()
+			table.insert(parts, string.format("%s %.0fm %s", c:getFirstName(), BotJobs:distance(pBot, m.p) or -1,
+				c:isDead() and "DEAD" or (c:isIncapacitated() and "INCAP" or "ok")))
+		end
+
+		for _, e in ipairs(bot("botCreaturesNear", pBot, 120) or {}) do
+			local pCreature = getSceneObject(e.oid)
+
+			if pCreature ~= nil and CreatureObject(pCreature):isInCombat() then
+				table.insert(cparts, string.format("%d->%s", e.oid % 1000, e.target ~= 0 and (names[e.target] or "?") or "-"))
+			end
+		end
+
+		print(string.format("WATCH t=%d | %s | %s", i, table.concat(parts, ", "), table.concat(cparts, ", ")))
+	end
+
+	if i < limit then
+		createEvent(1000, "BotCrew", "devWatchNow", pBot, packArgs(limit, i + 1))
+	end
 end
 
 -- A bot's combat state, and (with an oid) its view of that creature

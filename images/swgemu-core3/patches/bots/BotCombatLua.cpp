@@ -224,6 +224,7 @@ void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botWeaponRange", botWeaponRange);
 	lua->registerFunction("botThreatOn", botThreatOn);
 	lua->registerFunction("botResists", botResists);
+	lua->registerFunction("botLineOfSight", botLineOfSight);
 	lua->registerFunction("botCreaturesNear", botCreaturesNear);
 	lua->registerFunction("botLairsNear", botLairsNear);
 
@@ -382,6 +383,16 @@ int BotCombatLua::botCreaturesNear(lua_State* L) {
 		setIntField(L, "target", (lua_Integer) info.target);
 		lua_rawseti(L, -2, i + 1);
 	}
+
+	return 1;
+}
+
+// botLineOfSight(pBot, pTarget) -> bool
+int BotCombatLua::botLineOfSight(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	SceneObject* target = toSceneObject(L, 2);
+
+	lua_pushboolean(L, bot != nullptr && target != nullptr && BotCombat::lineOfSight(bot, target));
 
 	return 1;
 }

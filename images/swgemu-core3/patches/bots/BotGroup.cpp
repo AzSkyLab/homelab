@@ -2,6 +2,8 @@
  * BotGroup (Phase 5 bot players). See BotGroup.h.
  */
 
+#include <vector>
+
 #include "BotGroup.h"
 #include "BotManager.h"
 #include "BotLua.h"
@@ -373,6 +375,120 @@ uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, Strin
 		<< " at " << (int) position.getX() << " " << (int) position.getY();
 
 	return camp;
+}
+
+// What the camp kit's scan keeps away from: a camp, a building or a lair, with the distance within which a camp is refused
+struct CampBlocker {
+	float x, y, radius;
+	int kind; // 0 camp, 1 building, 2 lair
+};
+
+bool BotGroup::campSpots(CreatureObject* bot, const String& kitTemplate, const Vector<float>& points, Vector<String>& reasons) {
+	reasons.removeAll();
+
+	Zone* zone = bot != nullptr ? bot->getZone() : nullptr;
+
+	if (zone == nullptr || points.size() < 2)
+		return false;
+
+	String kitName = kitTemplate.isEmpty() ? String(DEFAULT_CAMP_KIT) : kitTemplate;
+	CampKitTemplate* kitData = dynamic_cast<CampKitTemplate*>(TemplateManager::instance()->getTemplate(kitName.hashCode()));
+	CampStructureTemplate* campData = kitData != nullptr
+		? dynamic_cast<CampStructureTemplate*>(TemplateManager::instance()->getTemplate(kitData->getSpawnObjectTemplate().hashCode())) : nullptr;
+
+	if (campData == nullptr)
+		return false;
+
+	PlanetManager* planetManager = zone->getPlanetManager();
+	float bx = bot->getWorldPositionX(), by = bot->getWorldPositionY();
+	float farthest = 0;
+
+	for (int i = 0; i + 1 < points.size(); i += 2) {
+		float dx = points.get(i) - bx, dy = points.get(i + 1) - by;
+		farthest = Math::max(farthest, (float) sqrt(dx * dx + dy * dy));
+	}
+
+	// One look around for everything the scan would find from any of the points (a building counts within 100 m)
+	std::vector<CampBlocker> blockers;
+	{
+		SortedVector<ManagedReference<TreeEntry*>> nearby;
+		zone->getInRangeObjects(bx, bot->getPositionZ(), by, Math::min(farthest + 130.f, 1024.f), &nearby, true, false);
+
+		for (int i = 0; i < nearby.size(); ++i) {
+			SceneObject* object = static_cast<SceneObject*>(nearby.get(i).get());
+
+			if (object == nullptr || object == bot)
+				continue;
+
+			if (object->isCampStructure()) {
+				blockers.push_back({object->getWorldPositionX(), object->getWorldPositionY(), object->getObjectTemplate()->getNoBuildRadius() + campData->getRadius(), 0});
+				continue;
+			}
+
+			if (object->isStructureObject()) {
+				blockers.push_back({object->getWorldPositionX(), object->getWorldPositionY(), 100.f, 1});
+				continue;
+			}
+
+			if (object->getObserverCount(ObserverEventType::OBJECTDESTRUCTION) > 0 || object->getObserverCount(ObserverEventType::CREATUREDESPAWNED) > 0) {
+				SortedVector<ManagedReference<Observer*>> observers = object->getObservers(ObserverEventType::OBJECTDESTRUCTION);
+				observers.addAll(object->getObservers(ObserverEventType::CREATUREDESPAWNED));
+
+				for (int j = 0; j < observers.size(); ++j) {
+					if (observers.get(j)->isObserverType(ObserverType::LAIR)) {
+						blockers.push_back({object->getWorldPositionX(), object->getWorldPositionY(), object->getObjectTemplate()->getNoBuildRadius() + campData->getRadius(), 2});
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i + 1 < points.size(); i += 2) {
+		float x = points.get(i), y = points.get(i + 1);
+		String reason;
+
+		// (the order of the kit's own: a camp, a building, a lair)
+		for (int kind = 0; kind < 3 && reason.isEmpty(); ++kind) {
+			for (size_t j = 0; j < blockers.size(); ++j) {
+				const CampBlocker& blocker = blockers[j];
+
+				if (blocker.kind != kind)
+					continue;
+
+				float dx = blocker.x - x, dy = blocker.y - y;
+
+				if (sqrt(dx * dx + dy * dy) <= blocker.radius) {
+					reason = kind == 0 ? "camp too close" : (kind == 1 ? "building too close" : "lair too close");
+					break;
+				}
+			}
+		}
+
+		if (reason.isEmpty() && planetManager != nullptr) {
+			if (planetManager->isInWater(x, y)) {
+				reason = "in water";
+			} else if (!planetManager->isCampingPermittedAt(x, y, campData->getRadius())) {
+				reason = "no camping here";
+			} else {
+				SortedVector<ManagedReference<ActiveArea*>> areas;
+				zone->getInRangeActiveAreas(x, 0, y, &areas, true);
+
+				for (int j = 0; j < areas.size(); ++j) {
+					ActiveArea* area = areas.get(j);
+
+					if (area != nullptr && area->isCityRegion()) {
+						reason = "in a city";
+						break;
+					}
+				}
+			}
+		}
+
+		reasons.add(reason);
+	}
+
+	return true;
 }
 
 bool BotGroup::removeCamp(CreatureObject* bot) {

@@ -5,6 +5,7 @@
 #include <atomic>
 
 #include "BotCombat.h"
+#include "server/zone/managers/collision/CollisionManager.h"
 #include "BotManager.h"
 #include "BotLua.h"
 #include "BotChat.h"
@@ -1396,6 +1397,13 @@ bool BotCombat::weaponRange(CreatureObject* bot, BotWeaponRange& out) {
 	out.templateName = held != nullptr && held == weapon.get() ? held->getObjectTemplate()->getFullTemplateString() : String();
 
 	return true;
+}
+
+bool BotCombat::lineOfSight(CreatureObject* bot, SceneObject* target) {
+	if (bot == nullptr || target == nullptr || bot->getZone() == nullptr || bot->getZone() != target->getZone())
+		return false;
+
+	return CollisionManager::checkLineOfSight(bot, target);
 }
 
 bool BotCombat::resists(CreatureObject* creature, BotResists& out) {

@@ -9,6 +9,10 @@
  *                                      too close", "lair too close", "not placed ..."); an existing camp's oid and
  *                                      "already camping". The default kit is the master camp (camp_luxury). The third
  *                                      result is the oid of the camp, building or lair that is too close (else 0)
+ *   botCampSpots(pBot, kit, points)    would a camp take at each point? points is {x1, y1, x2, y2, ...} (world coordinates on the bot's
+ *                                      planet); gives {reason1, reason2, ...}, "" for clear ground, else "camp too close", "building
+ *                                      too close", "lair too close", "in water", "no camping here" or "in a city": the kit's own scan
+ *                                      without placing, once for all the points (at most 512 numbers, 256 points). nil when the bot isn't in a zone (positioning fix, camp search)
  *   botAttackers(pCreature)            array of the oids of the live creatures attacking a bot or a player, nearest
  *                                      first (their threat map; a creature that is attacked has no defender of its
  *                                      own until it hits back). Call it from an event on that creature
@@ -57,6 +61,7 @@ public:
 private:
 	static int botGetGroupInviter(lua_State* L);
 	static int botPlaceCamp(lua_State* L);
+	static int botCampSpots(lua_State* L);
 	static int botRemoveCamp(lua_State* L);
 	static int botGetCamp(lua_State* L);
 	static int botTrack(lua_State* L);
