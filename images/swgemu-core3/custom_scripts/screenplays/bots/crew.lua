@@ -24,6 +24,9 @@
 --   runLuaFunction BotCrew:devAttack:<leader>:<oid>            the leader attacks an object (devPeace:<leader>: peace)
 --   runLuaFunction BotCrew:devSpawn:<near>:<template>[:<m>]    spawn a creature <m> metres (default 25) north of a bot
 --   runLuaFunction BotCrew:devWalk:<first>:<x>:<y>             a bot walks to a world point (outdoors)
+--   runLuaFunction BotCrew:devToughen:<oid>[:<hp>]             a creature's HAM up, so a fight lasts
+--   runLuaFunction BotCrew:devEquip:<first>:<template>         a bot holds a weapon (a leader bot needs a gun to open a fight)
+--   runLuaFunction BotCombatDev:threat:<oid>                   a creature's threat map, target, taunt lockout, DoTs (C++)
 --   runLuaFunction BotCrew:devState:<first>                    a crew bot's state
 
 includeFile("../custom_scripts/screenplays/bots/crew_lines.lua")
@@ -50,20 +53,65 @@ BotCrew = ScreenPlay:new {
 	loopStale = 8,
 
 	-- roster.lua settings, when it doesn't set them
-	defaults = {specialsHam = 0.5, stimPower = 800, rangedStimPower = 800, curePower = 300, packStock = 20},
+	defaults = {specialsHam = 0.5, stimPower = 800, rangedStimPower = 800, curePower = 300, packStock = 20,
+		-- The poison and disease packs, at what a master crafter makes (Core3's template limits): strength of the DoT,
+		-- seconds, the chance to land (against resistance) and the throw range in metres (+14 at healing range 100)
+		dotPower = 250, dotDuration = 240, dotPotency = 150, dotRange = 30},
 
 	-- Fighting
 	engageRange = 80,     -- a target further than this is left alone
 	meleeReach = 4,       -- unarmed reach, inside Core3's 5 m
 	closeTo = 2,          -- the tank walks to this far from its target
 	lungeRange = {6, 18}, -- unarmedlunge2 reaches 20 m
-	tauntEvery = 12,      -- seconds between taunts while the target is on someone else
-	ranges = {rifleman = 55, ranger = 50, medic = 40}, -- the ranged roles shoot within this (Core3's guns reach 64)
-	leaderSpread = 30,    -- a ranged bot standing to shoot follows again when its leader is further than this
+	-- The tank holds every creature (Phase 7c): it taunts what is on someone else when the creature's taunt lockout is
+	-- over (Core3's, read with botThreatOn), at most once per creature per tauntGap seconds, within tauntRange (the
+	-- taunt's reach). A creature it can't taunt yet is intimidated (within intimidateRange) or warcried, once per
+	-- debuffGap seconds each.
+	tauntRange = 64,
+	tauntGap = 6,
+	tauntLook = 5,        -- creatures it looks at in one step
+	intimidateRange = 24,
+	debuffGap = 12,
+	-- The others hold fire on a creature that isn't on the tank (on nobody, or on the human who pulled it) until it is
+	-- on the tank, or holdFor seconds after the tank engaged it (holdMax from when they first held, if the tank never
+	-- does); never for a creature on themselves
+	holdFor = 3,
+	holdMax = 6,
+	-- The ranger rescues a creature on a group member (not the tank) that the tank hasn't taken after this long (s)
+	rescueAfter = 2.5,
+	rescueRange = 40,
+	-- Range bands (Phase 7c): a ranged bot stands between its weapon's ideal range less bandWidth and the ideal range
+	-- (at least bandMin, at most bandMax metres; botWeaponRange). The medic's band is cut to its ranged-stim reach
+	-- from the tank. It places itself bandIn metres inside the band's far edge, on the leader's side of the target,
+	-- no closer than lairAvoid to a lair (scanned within lairScan every lairEvery seconds).
+	bandWidth = 10,
+	bandMin = 8,
+	bandMax = 60,
+	bandIn = 2,
+	bandSettle = 2,       -- a walk to the band goes on until the bot is this far inside its edges
+	lairAvoid = 25,
+	lairScan = 120,
+	lairEvery = 6,
+	-- Backing off: a creature on the bot closer than the band's near edge (at least backOffRange) makes it step backOffStep
+	-- metres away from the creature and toward the group, without firing, for at most backFor seconds (then it stands and
+	-- fights, and doesn't back off again for backBlock). A placement walk that takes longer than moveFor seconds is
+	-- given up for moveBlock seconds.
+	backOffRange = 15,
+	backOffStep = 10,
+	backFor = 4,
+	backBlock = 8,
+	moveFor = 12,
+	dotMindFloor = 0.4,   -- the medic throws packs only with this share of its mind
+	dotResistAfter = 6,   -- a pack thrown this long ago with nothing on the creature was resisted (the throw waits in the queue)
+	moveBlock = 6,
+	stepGap = 1.5,        -- seconds between the walks of a band move
+	leaderSpread = 60,    -- a ranged bot standing to shoot follows again when its leader is further than this
 	holdFire = 10,        -- seconds without picking a fight after "back off"
 	moveEvery = 3,        -- seconds between walks after a moving target
 	attackerFresh = 5,    -- seconds an attacker seen on a group member counts
-	pullChance = 30,      -- percent: the tank calls its pull in group chat
+	-- Callouts, as players made them: a fight is chatty with this chance, and a bot says one line per calloutGap s at most
+	calloutChance = 33,
+	calloutGap = 20,
 
 	-- Specials by role: the first a bot has of each family is used, picked by weight. Taunt and lunge are the
 	-- tank's own (below); the medic heals instead.
@@ -107,7 +155,12 @@ BotCrew = ScreenPlay:new {
 	-- What a bot can do besides specials, by the skill box that grants it (Core3's skills.iff)
 	abilities = {
 		taunt = "combat_brawler_novice",
+		intimidate = "combat_brawler_novice", -- intimidate1 (24 m: no block, dodge or counter)
+		warcry = "combat_brawler_novice",     -- warcry1 (a cone: delays the next attack)
 		lunge = "combat_brawler_master",
+		rescue = "outdoors_ranger_support_01",
+		poisonPack = "science_combatmedic_novice",         -- applyPoison
+		diseasePack = "science_combatmedic_healing_range_02", -- applyDisease
 		stims = "science_medic_novice",
 		rangedStims = "science_combatmedic_novice",
 		states = "science_doctor_novice",
@@ -119,13 +172,13 @@ BotCrew = ScreenPlay:new {
 
 	-- Healing. Reaches are half a metre inside Core3's (stims 7 m, ranged stims 30 m + healing_range 14 m, healstate
 	-- 6 m, cures 7 m, reviveplayer 7 m), so a command we start isn't refused for range.
-	reach = {stim = 6.5, ranged = 42, state = 5.5, cure = 6.5, revive = 6.5},
+	reach = {stim = 6.5, ranged = 42, state = 5.5, cure = 6.5, revive = 6.5, dot = 40},
 	-- Heal a group member below this share of health or action: in a fight, out of one; the medic itself first below
 	-- self; anyone else with stims heals itself below selfOther
 	healBelow = {fight = 0.75, rest = 0.9, self = 0.5, selfOther = 0.4},
 	-- Core3's waits (20 s less a fifth of the speed mod, at least 4 s), plus a margin
 	treatmentMarginMs = 600,
-	mindCost = {healdamage = 50, healstate = 20, cure = 100, revive = 200},
+	mindCost = {healdamage = 50, healstate = 20, cure = 100, revive = 200, dot = 150},
 	-- A revive is tried this many times for one death
 	reviveTries = 4,
 	-- Packs (botStockPack)
@@ -137,6 +190,9 @@ BotCrew = ScreenPlay:new {
 		poison = MED .. "medpack_cure_poison_c.iff",
 		disease = MED .. "medpack_cure_disease_c.iff",
 		revive = MED .. "medpack_revive.iff",
+		-- What the combat medic throws (single-target, the best potency): poison then disease on the tank's target
+		dotPoison = MED .. "medpack_poison_health_c.iff",
+		dotDisease = MED .. "medpack_disease_health_c.iff",
 	},
 	restockEvery = 300,
 
@@ -586,13 +642,18 @@ function BotCrew:clear(oid)
 
 	for _, field in ipairs({"loopAt", "target", "targetAt", "defender", "defenderAt", "holdUntil", "dead", "deadAt",
 		"cloneAsked", "cloneAt", "sitting", "sitUntil", "inCamp", "campAsked", "goX", "goY", "goAt", "followAt",
-		"tauntAt", "lungeAt", "injuryReady", "stateReady", "cureReady", "rezAt", "rezFor", "rezTries", "rezSaid",
+		"lungeAt", "injuryReady", "stateReady", "cureReady", "rezAt", "rezFor", "rezTries", "rezSaid",
 		"offerAt", "peaceAt", "leftAt", "handedAt", "saidBye", "leavingAt", "homeAt", "inviteSeen", "inviteSeenAt",
-		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt", "focus"}) do
+		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt", "focus", "chatty", "calloutAt",
+		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "backSince", "backBlock",
+		"stepAt", "kneelAt", "bandNear", "bandFar", "bandMax", "bandOk", "lairsAt", "dotReady", "dotOid", "pT", "dT", "pA", "dA",
+		"pP", "dP", "pS", "dS"}) do
 		deleteData(ckey(oid, field))
 	end
 
-	for _, field in ipairs({"mode", "order", "heard", "campTried"}) do
+	self:tankDrop(oid)
+
+	for _, field in ipairs({"mode", "order", "heard", "campTried", "lairs"}) do
 		deleteStringData(ckey(oid, field))
 	end
 
@@ -630,7 +691,8 @@ function BotCrew:learn(pBot, oid, role)
 	putString(ckey(oid, "can"), "," .. table.concat(can, ",") .. ",")
 end
 
--- Packs for what it can do (stims, ranged stims, state, cure and revive packs; a doctor's enhance and wound packs)
+-- Packs for what it can do (stims, ranged stims, state, cure and revive packs, the poison and disease packs it throws; a
+-- doctor's enhance and wound packs)
 function BotCrew:restock(pBot, oid)
 	local uses = self:setting("packStock")
 
@@ -658,6 +720,16 @@ function BotCrew:restock(pBot, oid)
 
 	if self:can(oid, "revive") then
 		botStockPack(pBot, self.packs.revive, uses, 0, 0)
+	end
+
+	if self:can(oid, "poisonPack") then
+		botStockPack(pBot, self.packs.dotPoison, uses, self:setting("dotPower"), self:setting("dotDuration"),
+			self:setting("dotPotency"), self:setting("dotRange"))
+	end
+
+	if self:can(oid, "diseasePack") then
+		botStockPack(pBot, self.packs.dotDisease, uses, self:setting("dotPower"), self:setting("dotDuration"),
+			self:setting("dotPotency"), self:setting("dotRange"))
 	end
 
 	if self:can(oid, "enhance") and BotDoctor ~= nil then
@@ -694,6 +766,8 @@ function BotCrew:equip(pBot, oid)
 	if template ~= nil then
 		bot("botEquip", pBot, template)
 	end
+
+	self:readBand(pBot, oid)
 end
 
 -- The ranger's camp kit: the roster's (campKit, or a camp kit it carries), else a master camp
@@ -953,7 +1027,18 @@ function BotCrew:step(pBot, oid, now)
 		return self.fightMs
 	end
 
-	local pTarget = self:pickTarget(pBot, oid, g, pLeader, now)
+	-- The ranger's rescue is a command, not a shot: it can go while the ranger holds fire or walks
+	if g ~= nil and role == "ranger" and ownFight == 0 and CreatureObject(pBot):getQueueSize() == 0 and
+		self:can(oid, "rescue") and self:rescueTurn(pBot, oid, g, now) then
+		return self.fightMs
+	end
+
+	local pTarget, held = self:pickTarget(pBot, oid, g, pLeader, now)
+
+	if pTarget == nil and held then
+		-- Holding fire on a fresh creature: the bot stays where it is (kneeling), the fight isn't over
+		return self.fightMs
+	end
 
 	if pTarget ~= nil then
 		self:fight(pBot, oid, pTarget, pLeader, g, now)
@@ -1362,6 +1447,26 @@ end
 -- fights; else the current one while still fighting it; else whatever attacks this bot, a crew mate or a player in the
 -- group. Ungrouped, only its own fight.
 function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
+	local pPick, free = self:pickBase(pBot, oid, g, pLeader, now)
+
+	-- With a tank that can hold creatures, whatever the pick is, the others hold fire on it until it is on the tank (second
+	-- result "held": the fight goes on, the bot just doesn't open)
+	if pPick == nil or free or g == nil then
+		return pPick
+	end
+
+	local tank = self:tankFor(oid, g)
+
+	if tank ~= nil and self:heldFire(pBot, oid, tank, pPick, g, now) then
+		return nil, true
+	end
+
+	return pPick
+end
+
+-- The pick before the hold; its second result is true for a pick the hold never applies to (its own provoked fight or
+-- duel, an order to attack)
+function BotCrew:pickBase(pBot, oid, g, pLeader, now)
 	-- A provoked fight or a duel of its own (fight.lua) comes first: the crew fights those properly
 	local opponent = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) or 0
 
@@ -1369,7 +1474,7 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 		local pOpponent = self:validTarget(pBot, getSceneObject(opponent), g, "opponent")
 
 		if pOpponent ~= nil then
-			return pOpponent
+			return pOpponent, true
 		end
 	end
 
@@ -1384,7 +1489,7 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 		local pFocus = self:validTarget(pBot, getSceneObject(focus), g, false)
 
 		if pFocus ~= nil then
-			return pFocus
+			return pFocus, true
 		end
 
 		deleteData(ckey(oid, "focus"))
@@ -1397,6 +1502,24 @@ function BotCrew:pickTarget(pBot, oid, g, pLeader, now)
 
 	if g == nil then
 		return pOwn or pOwnAttacker
+	end
+
+	-- With a tank that can hold creatures, the others fight what it fights (adds wait their turn), except a creature that
+	-- is on this bot now, which is fought back at once
+	local tank = self:tankFor(oid, g)
+
+	if tank ~= nil then
+		local pOnMe = self:creatureOnMe(pBot, oid, g)
+
+		if pOnMe ~= nil then
+			return pOnMe
+		end
+
+		local pTankTarget = self:validTarget(pBot, getSceneObject(readData(ckey(tank.oid, "target"))), g, false)
+
+		if pTankTarget ~= nil then
+			return pTankTarget
+		end
 	end
 
 	if pLeader ~= nil and CreatureObject(pLeader):isInCombat() then
@@ -1543,8 +1666,296 @@ function BotCrew:pickSpecial(oid)
 	return list[#list][1]
 end
 
+-- Tactics (Phase 7c, specs/2026-10-24-crew-tactics/)
+
+-- The tank's per-creature notes (under its key): E engaged (when it first took the creature as its target), T last
+-- taunt, I last intimidate, W last warcry, G said "Got it". The creatures it keeps notes for are listed, so a fight's
+-- end can drop them.
+local function tkey(tankOid, coid, field)
+	return ckey(tankOid, "t" .. field .. coid)
+end
+
+local TANK_NOTES = {"E", "T", "I", "W", "G"}
+local TANK_LIST = 12
+
+function BotCrew:tankNote(oid, coid)
+	local list = oidList(readStringData(ckey(oid, "tcList")))
+
+	for _, listed in ipairs(list) do
+		if listed == coid then
+			return
+		end
+	end
+
+	table.insert(list, coid)
+
+	while #list > TANK_LIST do
+		self:tankDropCreature(oid, table.remove(list, 1))
+	end
+
+	putString(ckey(oid, "tcList"), table.concat(list, ","))
+end
+
+function BotCrew:tankDropCreature(oid, coid)
+	for _, field in ipairs(TANK_NOTES) do
+		deleteData(tkey(oid, coid, field))
+	end
+end
+
+function BotCrew:tankDrop(oid)
+	for _, coid in ipairs(oidList(readStringData(ckey(oid, "tcList")))) do
+		self:tankDropCreature(oid, coid)
+	end
+
+	deleteStringData(ckey(oid, "tcList"))
+end
+
+-- The group member that can hold creatures: a tank (not this bot) in the group, standing, with taunt and not told to
+-- stay. nil without one: then the crew fights as it did before the tactics.
+function BotCrew:tankFor(oid, g)
+	for _, m in ipairs(g.crew) do
+		if m.job == "tank" and m.oid ~= oid then
+			local c = CreatureObject(m.p)
+
+			-- (not one in a duel or provoked fight of its own, nor away on a mission errand)
+			if not c:isDead() and not c:isIncapacitated() and readStringData(ckey(m.oid, "order")) ~= "stay" and
+				self:can(m.oid, "taunt") and (BotFight == nil or BotFight.fighting == nil or BotFight:fighting(m.oid) == 0) and
+				not self:missionBusy(m.oid, os.time()) then
+				return m
+			end
+		end
+	end
+
+	return nil
+end
+
+-- Hold fire on a creature that isn't on the tank (on nobody yet, or on the human who pulled it): until it is on the
+-- tank, or holdFor seconds after the tank engaged it. If the tank never does, holdMax seconds after this bot first held
+-- for it. Never for a creature on this bot (self-defence).
+function BotCrew:heldFire(pBot, oid, tank, pCreature, g, now)
+	local coid = SceneObject(pCreature):getObjectID()
+	local pOn = CreatureObject(pCreature):getMainDefender()
+
+	-- (a creature this bot has opened on already isn't held for again)
+	if readData(ckey(oid, "target")) == coid then
+		return false
+	end
+
+	if pOn ~= nil then
+		local onOid = SceneObject(pOn):getObjectID()
+
+		if onOid == tank.oid or onOid == oid then
+			return false
+		end
+	end
+
+	local tankDist = BotJobs:distance(tank.p, pCreature)
+
+	if tankDist == nil or tankDist > self.engageRange then
+		return false
+	end
+
+	if readData(ckey(oid, "holdOid")) ~= coid then
+		put(ckey(oid, "holdOid"), coid)
+		put(ckey(oid, "holdAt"), now)
+		print("BotJobs: " .. self:name(oid) .. " holds fire on " .. SceneObject(pCreature):getDisplayedName() .. " until it is on " ..
+			self:name(tank.oid))
+	end
+
+	local engaged = readData(tkey(tank.oid, coid, "E"))
+	local releaseAt = engaged ~= 0 and engaged + self.holdFor or readData(ckey(oid, "holdAt")) + self.holdMax
+
+	return now < releaseAt
+end
+
+-- Every creature attacking a member of the group, as the members' last looks recorded them (noteDefender, scanHuman),
+-- with pFirst (the fight's target) too; nearest to this bot first
+function BotCrew:groupCreatures(pBot, g, now, pFirst)
+	local seen, list = {}, {}
+
+	local function add(coid)
+		if coid ~= 0 and not seen[coid] then
+			local p = self:validTarget(pBot, getSceneObject(coid), g, false)
+
+			if p ~= nil then
+				seen[coid] = true
+				table.insert(list, {p = p, oid = coid, dist = BotJobs:distance(pBot, p) or 999})
+			end
+		end
+	end
+
+	if pFirst ~= nil then
+		add(SceneObject(pFirst):getObjectID())
+	end
+
+	-- (the creature a member fights counts too: one that took the shot is on that member before it has hit back, and
+	-- the attackers lists only show it from then on)
+	for _, m in ipairs(g.crew) do
+		if now - readData(ckey(m.oid, "defenderAt")) <= self.attackerFresh then
+			add(readData(ckey(m.oid, "defender")))
+
+			for _, coid in ipairs(oidList(readStringData(ckey(m.oid, "attackers")))) do
+				add(coid)
+			end
+		end
+	end
+
+	for _, m in ipairs(g.humans) do
+		if now - readData("crew:human:" .. m.oid .. ":at") <= self.attackerFresh then
+			add(readData("crew:human:" .. m.oid .. ":defender"))
+
+			for _, coid in ipairs(oidList(readStringData("crew:human:" .. m.oid .. ":attackers"))) do
+				add(coid)
+			end
+		end
+	end
+
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+
+	return list
+end
+
+-- A short group-chat line as a player calls one: only in a chatty fight (rolled when the fight starts), and a bot
+-- says at most one every calloutGap seconds
+function BotCrew:callout(pBot, oid, kind, name, now)
+	if readData(ckey(oid, "chatty")) ~= 1 or now - readData(ckey(oid, "calloutAt")) < self.calloutGap then
+		return false
+	end
+
+	put(ckey(oid, "calloutAt"), now)
+	self:groupSay(pBot, oid, kind, name)
+
+	return true
+end
+
+-- Command effect on a creature, once per `gap` seconds: true when it was queued
+function BotCrew:tankCommand(pBot, oid, c, field, command, gap, now)
+	if now - readData(tkey(oid, c.oid, field)) < gap then
+		return false
+	end
+
+	botEnqueue(pBot, command, c.oid, "")
+	self:tankNote(oid, c.oid)
+	put(tkey(oid, c.oid, field), now)
+	print("BotJobs: " .. self:name(oid) .. " (tank) " .. command .. " " .. SceneObject(c.p):getDisplayedName() .. " " .. c.oid ..
+		", " .. string.format("%.0f", c.dist) .. " m")
+
+	return true
+end
+
+-- The tank's turn with its queue empty: the creatures attacking the group, nearest first, within taunt range. One
+-- that isn't on the tank is taunted when its lockout is over (Core3's, from its threat map: a taunt inside it does
+-- nothing but add aggro), else slowed with an intimidate or a warcry. One command per step; true if it queued one.
+function BotCrew:tankTurn(pBot, oid, pTarget, g, now)
+	local targetOid = pTarget ~= nil and SceneObject(pTarget):getObjectID() or 0
+	local list = self:groupCreatures(pBot, g, now, pTarget)
+
+	for i = 1, math.min(#list, self.tauntLook) do
+		local c = list[i]
+		local th = bot("botThreatOn", pBot, c.p)
+
+		if th ~= nil then
+			if th.target == oid then
+				if readData(tkey(oid, c.oid, "T")) ~= 0 and readData(tkey(oid, c.oid, "G")) == 0 then
+					put(tkey(oid, c.oid, "G"), 1)
+					self:callout(pBot, oid, "got", nil, now)
+				end
+			elseif c.dist <= self.tauntRange and (th.target ~= 0 or c.oid == targetOid) then
+				if self:tankAct(pBot, oid, c, th, g, now) then
+					return true
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+-- One creature that isn't on the tank (or is on nobody and is the fight's target)
+function BotCrew:tankAct(pBot, oid, c, th, g, now)
+	if th.tauntable and th.lockoutMs <= 0 and not th.taunted then
+		if self:tankCommand(pBot, oid, c, "T", "taunt", self.tauntGap, now) then
+			put(tkey(oid, c.oid, "G"), 0)
+
+			local victim = th.target ~= 0 and g.byOid[th.target] or nil
+
+			if victim ~= nil and victim.oid ~= oid then
+				self:callout(pBot, oid, "addGrab", self:firstName(victim.p), now)
+			end
+
+			return true
+		end
+
+		return false
+	end
+
+	-- Not tauntable yet: its taunt is in force (the creature should come to the tank) or the lockout runs on
+	if th.taunted and th.tauntable then
+		return false
+	end
+
+	local victim = th.target ~= 0 and g.byOid[th.target] or nil
+
+	if victim == nil or victim.oid == oid then
+		return false
+	end
+
+	self:callout(pBot, oid, "tauntDown", nil, now)
+
+	if self:can(oid, "intimidate") and c.dist <= self.intimidateRange and
+		self:tankCommand(pBot, oid, c, "I", "intimidate1", self.debuffGap, now) then
+		return true
+	end
+
+	if self:can(oid, "warcry") and c.dist <= self.intimidateRange and
+		self:tankCommand(pBot, oid, c, "W", "warcry1", self.debuffGap, now) then
+		return true
+	end
+
+	return false
+end
+
+-- The ranger's rescue (Core3's: the creature's main defender must be in the group, TAUNTED for 5 s; it shares the
+-- taunt's lockout, so it works only where a taunt would). It takes a creature on a group member that the tank hasn't
+-- taken after rescueAfter seconds, or any such creature when there is no tank to hold it.
+function BotCrew:rescueTurn(pBot, oid, g, now)
+	if now - readData(ckey(oid, "rescueAt")) < self.tauntGap then
+		return false
+	end
+
+	local tank = self:tankFor(oid, g)
+
+	for _, c in ipairs(self:groupCreatures(pBot, g, now, nil)) do
+		if c.dist <= self.rescueRange then
+			local th = bot("botThreatOn", pBot, c.p)
+
+			if th ~= nil and th.target ~= 0 and th.target ~= oid and (tank == nil or th.target ~= tank.oid) and
+				g.byOid[th.target] ~= nil and th.lockoutMs <= 0 and not th.taunted then
+				if readData(ckey(oid, "offOid")) ~= c.oid then
+					put(ckey(oid, "offOid"), c.oid)
+					put(ckey(oid, "offSince"), now)
+				end
+
+				if tank == nil or now - readData(ckey(oid, "offSince")) >= self.rescueAfter then
+					botEnqueue(pBot, "rescue", c.oid, "")
+					print("BotJobs: " .. self:name(oid) .. " (ranger) rescue " .. SceneObject(c.p):getDisplayedName() .. " " .. c.oid ..
+						", on " .. tostring(self:firstName(g.byOid[th.target].p)))
+					put(ckey(oid, "rescueAt"), now)
+					put(ckey(oid, "offSince"), now)
+
+					return true
+				end
+
+				return false
+			end
+		end
+	end
+
+	return false
+end
+
 -- One fight step: a new target is set and attacked (the tank taunts it), the bot moves to its range, and with its command
--- queue empty it uses a special (the tank taunts again when the target turns on someone else)
+-- queue empty it uses a special (the tank holds the creatures that aren't on it, see tankTurn)
 function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 	local role = self:role(oid)
 	local targetOid = SceneObject(pTarget):getObjectID()
@@ -1555,16 +1966,38 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 		put(ckey(oid, "targetAt"), now)
 		self:lootNote(oid, targetOid)
 		self:standUp(pBot, oid)
-		-- (botSetTarget queues a real attack, so auto-attack runs)
-		bot("botSetTarget", pBot, targetOid)
+		-- (botSetTarget queues a real attack, so auto-attack runs; a ranged bot aims once it stands where it should)
+		put(ckey(oid, "aimed"), 0)
+
+		if role == "tank" then
+			bot("botSetTarget", pBot, targetOid)
+		end
 		print("BotJobs: " .. self:name(oid) .. " (" .. role .. ") attacks " .. SceneObject(pTarget):getDisplayedName())
 
-		if role == "tank" and self:can(oid, "taunt") then
-			botEnqueue(pBot, "taunt", targetOid, "")
-			put(ckey(oid, "tauntAt"), now)
+		if previous == 0 then
+			put(ckey(oid, "chatty"), percent(self.calloutChance) and 1 or 0)
+		end
 
-			if previous == 0 and g ~= nil and percent(self.pullChance) then
-				self:groupSay(pBot, oid, "pull")
+		if role == "tank" then
+			-- The tank engages: when the others may open is counted from here
+			self:tankNote(oid, targetOid)
+			put(tkey(oid, targetOid, "E"), now)
+			put(tkey(oid, targetOid, "G"), 0)
+
+			if self:can(oid, "taunt") then
+				-- (not inside the creature's lockout, nor while a taunt is in force: Core3 would do nothing but add aggro)
+				local th = bot("botThreatOn", pBot, pTarget)
+
+				if th == nil or (th.tauntable and th.lockoutMs <= 0 and not th.taunted) then
+					botEnqueue(pBot, "taunt", targetOid, "")
+					put(tkey(oid, targetOid, "T"), now)
+					print("BotJobs: " .. self:name(oid) .. " (tank) taunt " .. SceneObject(pTarget):getDisplayedName() .. " " .. targetOid ..
+						", opening")
+				end
+
+				if previous == 0 and g ~= nil then
+					self:callout(pBot, oid, "pull", nil, now)
+				end
 			end
 		end
 	end
@@ -1573,8 +2006,8 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 
 	if role == "tank" then
 		self:closeIn(pBot, oid, pTarget, dist, now)
-	else
-		self:holdRange(pBot, oid, pTarget, pLeader, dist, role, now)
+	elseif self:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now) == "move" then
+		return
 	end
 
 	if CreatureObject(pBot):getQueueSize() > 0 then
@@ -1582,10 +2015,7 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 	end
 
 	if role == "tank" then
-		if self:can(oid, "taunt") and CreatureObject(pTarget):getTargetID() ~= oid and
-			now - readData(ckey(oid, "tauntAt")) >= self.tauntEvery then
-			botEnqueue(pBot, "taunt", targetOid, "")
-			put(ckey(oid, "tauntAt"), now)
+		if g ~= nil and self:can(oid, "taunt") and self:tankTurn(pBot, oid, pTarget, g, now) then
 			return
 		end
 
@@ -1599,7 +2029,7 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 
 			return
 		end
-	elseif dist > (self.ranges[role] or 50) then
+	elseif dist > readData(ckey(oid, "bandMax")) then
 		return
 	end
 
@@ -1634,15 +2064,217 @@ function BotCrew:closeIn(pBot, oid, pTarget, dist, now)
 	self:walkNear(pBot, oid, pTarget, dist, now, self.closeTo)
 end
 
--- The ranged roles stand and shoot within their range while the leader is near; out of range they stay with the
--- leader (who is usually by the fight) or walk up to it
-function BotCrew:holdRange(pBot, oid, pTarget, pLeader, dist, role, now)
-	local range = self.ranges[role] or 50
+-- Range bands (Phase 7c)
 
-	if readStringData(ckey(oid, "order")) == "stay" or pLeader == nil then
+-- The held weapon's band, cached per bot (equip refreshes it): near and far edge and the furthest the weapon reaches. A
+-- weapon that isn't ranged, or a build without botWeaponRange, gives the old stand-anywhere-in-reach.
+function BotCrew:readBand(pBot, oid)
+	local r = bot("botWeaponRange", pBot)
+
+	if r == nil or not r.ranged then
+		put(ckey(oid, "bandNear"), 0)
+		put(ckey(oid, "bandFar"), 0)
+		put(ckey(oid, "bandMax"), r ~= nil and r.maxRange or 64)
 		return
 	end
 
+	local far = math.max(self.bandMin, math.min(self.bandMax, r.idealRange))
+
+	put(ckey(oid, "bandNear"), math.max(self.bandMin, far - self.bandWidth))
+	put(ckey(oid, "bandFar"), far)
+	put(ckey(oid, "bandMax"), r.maxRange)
+end
+
+-- The edges of this bot's band (nil for a bot with none). The medic's is held to its ranged-stim reach from the tank
+-- (who stands against the target)
+function BotCrew:band(pBot, oid, role)
+	if readData(ckey(oid, "bandMax")) == 0 then
+		self:readBand(pBot, oid)
+	end
+
+	local near, far = readData(ckey(oid, "bandNear")), readData(ckey(oid, "bandFar"))
+
+	if far == 0 then
+		return nil
+	end
+
+	if role == "medic" and self:can(oid, "rangedStims") then
+		far = math.min(far, math.floor(self.reach.ranged - 2))
+		near = math.max(self.bandMin, far - self.bandWidth)
+	end
+
+	return near, far
+end
+
+-- Is the straight way from (x1, y1) to (x2, y2) within `avoid` metres of a lair?
+local function lairOnWay(lairs, x1, y1, x2, y2, avoid)
+	local dx, dy = x2 - x1, y2 - y1
+	local len2 = dx * dx + dy * dy
+
+	for _, lair in ipairs(lairs) do
+		local k = len2 > 0 and math.max(0, math.min(1, ((lair.x - x1) * dx + (lair.y - y1) * dy) / len2)) or 0
+		local px, py = x1 + k * dx, y1 + k * dy
+
+		if math.sqrt((lair.x - px) ^ 2 + (lair.y - py) ^ 2) < avoid then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function lairList(text)
+	local out = {}
+
+	for x, y in string.gmatch(text or "", "(-?%d+),(-?%d+)") do
+		table.insert(out, {x = tonumber(x), y = tonumber(y)})
+	end
+
+	return out
+end
+
+-- The lairs near, scanned now and then (a scan is a look at everything around)
+function BotCrew:lairsOf(pBot, oid, now)
+	if now - readData(ckey(oid, "lairsAt")) >= self.lairEvery then
+		put(ckey(oid, "lairsAt"), now)
+
+		local parts = {}
+
+		for _, lair in ipairs(bot("botLairsNear", pBot, self.lairScan) or {}) do
+			table.insert(parts, string.format("%d,%d", math.floor(lair.x), math.floor(lair.y)))
+		end
+
+		putString(ckey(oid, "lairs"), table.concat(parts, ";"))
+	end
+
+	return lairList(readStringData(ckey(oid, "lairs")))
+end
+
+-- Where to stand to shoot: inside the band's far edge, on the leader's side of the target (the bot's own side when the
+-- leader is on top of it), and not within lairAvoid of a lair, nor with a lair on the way: the spot is turned away from
+-- one in 30 degree steps. nil when no turn is clear: the bot stays where it is.
+function BotCrew:bandSpot(pBot, oid, pTarget, pLeader, far, now)
+	local tx, ty = SceneObject(pTarget):getPositionX(), SceneObject(pTarget):getPositionY()
+	local px, py = SceneObject(pBot):getPositionX(), SceneObject(pBot):getPositionY()
+	local px0, py0 = px, py
+
+	if pLeader ~= nil then
+		local lx, ly = SceneObject(pLeader):getPositionX(), SceneObject(pLeader):getPositionY()
+
+		if math.sqrt((lx - tx) ^ 2 + (ly - ty) ^ 2) >= 10 then
+			px, py = lx, ly
+		end
+	end
+
+	local dx, dy = px - tx, py - ty
+	local len = math.sqrt(dx * dx + dy * dy)
+
+	if len < 1 then
+		dx, dy, len = 0, -1, 1
+	end
+
+	dx, dy = dx / len, dy / len
+
+	local d = far - self.bandIn
+	local lairs = self:lairsOf(pBot, oid, now)
+
+	for _, degrees in ipairs({0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180}) do
+		local a = math.rad(degrees)
+		local ax, ay = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
+		local sx, sy = tx + ax * d, ty + ay * d
+
+		-- (neither the spot nor the way to it near a lair)
+		if not lairOnWay(lairs, px0, py0, sx, sy, self.lairAvoid) then
+			return sx, sy
+		end
+	end
+
+	return nil
+end
+
+-- A walk of a band move, at most one per stepGap seconds (the mover keeps walking to the last point)
+function BotCrew:bandStep(pBot, oid, x, y, z, cell, now)
+	if now - readData(ckey(oid, "stepAt")) < self.stepGap then
+		return
+	end
+
+	put(ckey(oid, "stepAt"), now)
+	self:standUp(pBot, oid)
+	bot("botMoveTo", pBot, x, z, y, cell)
+end
+
+-- Step away from a creature that is on this bot, toward the group
+function BotCrew:backOff(pBot, oid, pCreature, pLeader, g, now)
+	local bx, by = SceneObject(pBot):getPositionX(), SceneObject(pBot):getPositionY()
+	local cx, cy = SceneObject(pCreature):getPositionX(), SceneObject(pCreature):getPositionY()
+	local ax, ay = bx - cx, by - cy
+	local alen = math.sqrt(ax * ax + ay * ay)
+
+	if alen < 0.5 then
+		ax, ay, alen = 0, -1, 1
+	end
+
+	ax, ay = ax / alen, ay / alen
+
+	-- the group: the tank if it holds, else the leader
+	local tank = self:tankFor(oid, g)
+	local pGroup = tank ~= nil and tank.p or pLeader
+	local vx, vy = ax, ay
+
+	if pGroup ~= nil then
+		local gx, gy = SceneObject(pGroup):getPositionX() - bx, SceneObject(pGroup):getPositionY() - by
+		local glen = math.sqrt(gx * gx + gy * gy)
+
+		if glen > 1 then
+			vx, vy = ax + 0.5 * gx / glen, ay + 0.5 * gy / glen
+		end
+	end
+
+	local vlen = math.sqrt(vx * vx + vy * vy)
+
+	if vlen < 0.1 then
+		vx, vy, vlen = ax, ay, 1
+	end
+
+	-- (not toward a lair: straight away from the creature, else no step)
+	local lairs = self:lairsOf(pBot, oid, now)
+
+	for _, dir in ipairs({{vx / vlen, vy / vlen}, {ax, ay}}) do
+		local x, y = bx + dir[1] * self.backOffStep, by + dir[2] * self.backOffStep
+
+		if not lairOnWay(lairs, bx, by, x, y, self.lairAvoid) then
+			self:bandStep(pBot, oid, x, y, SceneObject(pBot):getPositionZ(), SceneObject(pBot):getParentID(), now)
+			return true
+		end
+	end
+
+	return false
+end
+
+-- The nearest creature that is on this bot now (its main defender is the bot: one in the bot's threat map that has
+-- gone for the tank since doesn't count)
+function BotCrew:creatureOnMe(pBot, oid, g)
+	local best, bestDist = nil, nil
+
+	for _, coid in ipairs(oidList(readStringData(ckey(oid, "attackers")))) do
+		local pCreature = self:validTarget(pBot, getSceneObject(coid), g, false)
+		local pOn = pCreature ~= nil and CreatureObject(pCreature):getMainDefender() or nil
+
+		if pOn ~= nil and SceneObject(pOn):getObjectID() == oid then
+			local dist = BotJobs:distance(pBot, pCreature) or 999
+
+			if best == nil or dist < bestDist then
+				best, bestDist = pCreature, dist
+			end
+		end
+	end
+
+	return best
+end
+
+-- Indoors: shoot within the band's far edge while the leader is near; out of range stay with the leader (who is usually by
+-- the fight) or walk up to it
+function BotCrew:cellRange(pBot, oid, pTarget, pLeader, dist, range, now)
 	if dist > range then
 		local leaderToTarget = BotJobs:distance(pLeader, pTarget)
 
@@ -1665,9 +2297,106 @@ function BotCrew:holdRange(pBot, oid, pTarget, pLeader, dist, role, now)
 	self:stopMoving(pBot)
 end
 
+-- A ranged bot's place in the fight, for this step: "move" (walking to its band or backing off: it holds fire, since
+-- moving costs a rifle 100-150 accuracy) or "fire" (it stands in its band, kneels when nothing closes on it, and shoots)
+function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
+	local near, far = self:band(pBot, oid, role)
+	local move = bot("botMoveState", pBot) or {}
+	local state = "fire"
+
+	-- No band, no leader to stay with or told to stay: it shoots where it is
+	if near == nil or pLeader == nil or readStringData(ckey(oid, "order")) == "stay" then
+		state = "fire"
+	elseif SceneObject(pTarget):getParentID() ~= 0 or SceneObject(pBot):getParentID() ~= 0 then
+		-- Inside a building (a cell): no band, no kneeling, no back-off: it stays with the leader or walks up to range, as it did
+		self:cellRange(pBot, oid, pTarget, pLeader, dist, far, now)
+	else
+		local pOnMe = self:creatureOnMe(pBot, oid, g)
+		local onMeDist = pOnMe ~= nil and BotJobs:distance(pBot, pOnMe) or nil
+		local leaderDist = BotJobs:distance(pBot, pLeader)
+
+		if onMeDist ~= nil and onMeDist < math.max(self.backOffRange, near) and now >= readData(ckey(oid, "backBlock")) then
+			-- A creature has come for this bot: step back toward the group, and shoot once it can't be kept off
+			if readData(ckey(oid, "backSince")) == 0 then
+				put(ckey(oid, "backSince"), now)
+				put(ckey(oid, "moveSince"), 0)
+				self:callout(pBot, oid, "backUp", nil, now)
+				print("BotJobs: " .. self:name(oid) .. " (" .. role .. ") backs off from " .. SceneObject(pOnMe):getDisplayedName() ..
+					", " .. string.format("%.0f", onMeDist) .. " m")
+			end
+
+			if now - readData(ckey(oid, "backSince")) > self.backFor then
+				put(ckey(oid, "backBlock"), now + self.backBlock)
+				put(ckey(oid, "backSince"), 0)
+			elseif self:backOff(pBot, oid, pOnMe, pLeader, g, now) then
+				state = "move"
+			end
+		else
+			put(ckey(oid, "backSince"), 0)
+
+			if leaderDist == nil or leaderDist > self.leaderSpread then
+				self:ensureFollow(pBot, oid, pLeader, now)
+				state = "move"
+			elseif (dist > far - (readData(ckey(oid, "moveSince")) ~= 0 and self.bandSettle or 0) or
+				(dist < near + (readData(ckey(oid, "moveSince")) ~= 0 and self.bandSettle or 0) and pOnMe == nil)) and
+				now >= readData(ckey(oid, "moveBlock")) then
+				-- Not in the band: walk to a spot in it (it gives up on a walk that takes too long and fires from where it is)
+				if readData(ckey(oid, "moveSince")) == 0 then
+					put(ckey(oid, "moveSince"), now)
+				end
+
+				if now - readData(ckey(oid, "moveSince")) > self.moveFor then
+					put(ckey(oid, "moveBlock"), now + self.moveBlock)
+					put(ckey(oid, "moveSince"), 0)
+				else
+					local x, y = self:bandSpot(pBot, oid, pTarget, pLeader, far, now)
+
+					-- (no clear spot: it stays where it is and shoots)
+					if x ~= nil then
+						self:bandStep(pBot, oid, x, y, SceneObject(pTarget):getPositionZ(), SceneObject(pTarget):getParentID(), now)
+						state = "move"
+					end
+				end
+			else
+				put(ckey(oid, "moveSince"), 0)
+
+				-- In the band: stop, and kneel to shoot unless something is coming
+				if move.state == "goto" or move.state == "follow" then
+					bot("botStop", pBot)
+				end
+
+				if pOnMe == nil and CreatureObject(pBot):getPosture() ~= CROUCHED and now - readData(ckey(oid, "kneelAt")) >= 3 then
+					put(ckey(oid, "kneelAt"), now)
+					botEnqueue(pBot, "kneel", 0, "")
+				end
+			end
+		end
+	end
+
+	if state == "move" then
+		-- (no target, no auto-attack)
+		put(ckey(oid, "aimed"), 0)
+
+		if CreatureObject(pBot):getTargetID() ~= 0 then
+			bot("botSetTarget", pBot, 0)
+		end
+	elseif readData(ckey(oid, "aimed")) ~= 1 then
+		put(ckey(oid, "aimed"), 1)
+		bot("botSetTarget", pBot, SceneObject(pTarget):getObjectID())
+	end
+
+	return state
+end
+
 -- The fight is over: peace, packs refilled; the follow starts again on the next step
 function BotCrew:endFight(pBot, oid, now)
 	deleteData(ckey(oid, "target"))
+	deleteData(ckey(oid, "holdOid"))
+	deleteData(ckey(oid, "aimed"))
+	deleteData(ckey(oid, "moveSince"))
+	deleteData(ckey(oid, "backSince"))
+	deleteData(ckey(oid, "dotOid"))
+	self:tankDrop(oid)
 	put(ckey(oid, "peaceAt"), now)
 	bot("botSetTarget", pBot, 0)
 	botEnqueue(pBot, "peace", 0, "")
@@ -1881,7 +2610,105 @@ function BotCrew:medicTurn(pBot, oid, g, now)
 		end
 	end
 
+	-- Nothing needs the medic: a poison and a disease pack on the creature it fights
+	if fighting then
+		return self:dotTurn(pBot, oid, g, now)
+	end
+
 	return false
+end
+
+-- The combat medic's damage packs (Phase 7c): a poison pack, then a disease pack, on the creature it is fighting (the
+-- tank's target), each once the last of its kind has run its course. Packs land by chance (potency against the
+-- creature's resistance): a kind that missed twice, or a creature that can't be poisoned or diseased, is let be.
+function BotCrew:dotTurn(pBot, oid, g, now)
+	if not (self:can(oid, "poisonPack") or self:can(oid, "diseasePack")) or readData(ckey(oid, "aimed")) ~= 1 or
+		not self:ready(oid, "dot") then
+		return false
+	end
+
+	-- Mind is what heals and revives cost too: packs only above a floor (a revive and a pack, or two fifths of its mind)
+	local creature = CreatureObject(pBot)
+
+	if creature:getHAM(MIND) < math.max(self.mindCost.revive + self.mindCost.dot, creature:getMaxHAM(MIND) * self.dotMindFloor) then
+		return false
+	end
+
+	-- ...and only while nobody needs a heal (a heal queued behind a pack waits out the pack's four seconds)
+	for _, m in ipairs(g.members) do
+		if m.player and not CreatureObject(m.p):isDead() and not CreatureObject(m.p):isIncapacitated() and
+			math.min(self:ratio(m.p, HEALTH), self:ratio(m.p, ACTION)) < self.healBelow.fight + 0.1 then
+			return false
+		end
+	end
+
+	local coid = readData(ckey(oid, "target"))
+	local pTarget = coid ~= 0 and self:validTarget(pBot, getSceneObject(coid), g, false) or nil
+	local dist = pTarget ~= nil and BotJobs:distance(pBot, pTarget) or nil
+
+	if pTarget == nil or dist == nil or dist > self.reach.dot then
+		return false
+	end
+
+	local th = bot("botThreatOn", pBot, pTarget)
+
+	if th == nil then
+		return false
+	end
+
+	-- A new creature: count its resists afresh
+	if readData(ckey(oid, "dotOid")) ~= coid then
+		put(ckey(oid, "dotOid"), coid)
+
+		for _, field in ipairs({"pT", "dT", "pA", "dA", "pP", "dP", "pS", "dS"}) do
+			put(ckey(oid, field), 0)
+		end
+	end
+
+	for _, kind in ipairs({
+		{ability = "poisonPack", command = "applypoison", on = th.poisoned, immune = th.poisonImmune, tries = "pT", at = "pA",
+			pending = "pP", said = "pS", line = "poisoned", name = "poison"},
+		{ability = "diseasePack", command = "applydisease", on = th.diseased, immune = th.diseaseImmune, tries = "dT", at = "dA",
+			pending = "dP", said = "dS", line = "diseased", name = "disease"}}) do
+		if self:can(oid, kind.ability) then
+			if kind.on then
+				-- It landed (and runs its course): say so once, forget the misses
+				put(ckey(oid, kind.pending), 0)
+				put(ckey(oid, kind.tries), 0)
+
+				if readData(ckey(oid, kind.said)) == 0 then
+					put(ckey(oid, kind.said), 1)
+					self:callout(pBot, oid, kind.line, nil, now)
+				end
+			else
+				-- A pack thrown a while ago and nothing on the creature: it resisted
+				if readData(ckey(oid, kind.pending)) == 1 and now - readData(ckey(oid, kind.at)) >= self.dotResistAfter then
+					put(ckey(oid, kind.pending), 0)
+					put(ckey(oid, kind.tries), readData(ckey(oid, kind.tries)) + 1)
+				end
+
+				if not kind.immune and readData(ckey(oid, kind.tries)) < 2 and readData(ckey(oid, kind.pending)) == 0 then
+					botEnqueue(pBot, kind.command, coid, "")
+					put(ckey(oid, kind.at), now)
+					put(ckey(oid, kind.pending), 1)
+					put(ckey(oid, "dotReady"), getTimestampMilli() + self:waitDotMs(pBot))
+					print("BotJobs: " .. self:name(oid) .. " " .. kind.command .. " " .. SceneObject(pTarget):getDisplayedName() .. " " ..
+						coid .. ", " .. string.format("%.0f", dist) .. " m")
+
+					return true
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+-- Core3's wait between pack throws: 12 s less up to 6 with healing range speed, at least 4, plus a margin
+function BotCrew:waitDotMs(pBot)
+	local delay = math.floor(12 - 6 * (CreatureObject(pBot):getSkillMod("healing_range_speed") or 0) / 100 + 0.5)
+
+	return math.max(4, delay) * 1000 + self.treatmentMarginMs
 end
 
 -- A state or cure treatment within reach (Core3 finds the pack), else a walk to the patient
@@ -4117,6 +4944,37 @@ function BotCrew:devFire(first, targetOid, cmd)
 	end
 
 	createEvent(10, "BotCrew", "devFireNow", pBot, packArgs(targetOid, cmd or ""))
+end
+
+-- devEquip:<first>:<weapon template>: holds that weapon (a leader bot needs a gun to open a fight from range)
+function BotCrew:devEquip(first, template)
+	local pBot = devBot(first)
+
+	if pBot == nil or template == nil then
+		print("BotCrew: usage devEquip:<bot>:<template, e.g. object/weapon/ranged/rifle/rifle_cdef.iff>")
+		return
+	end
+
+	print("BotCrew: " .. tostring(first) .. " equips " .. template .. ": " .. tostring(bot("botEquip", pBot, template)))
+end
+
+-- devToughen:<oid>[:<health>]: a creature's health, action and mind (and their maximums) to that much (default 60000), so a
+-- fight lasts long enough to watch
+function BotCrew:devToughen(oid, amount)
+	local p = getSceneObject(tonumber(oid or "") or 0)
+	local hp = tonumber(amount or "") or 60000
+
+	if p == nil or not SceneObject(p):isCreatureObject() then
+		print("BotCrew: usage devToughen:<creature oid>[:<health>]")
+		return
+	end
+
+	for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+		CreatureObject(p):setMaxHAM(pool, hp)
+		CreatureObject(p):setHAM(pool, hp)
+	end
+
+	print("BotCrew: " .. SceneObject(p):getDisplayedName() .. " toughened to " .. hp)
 end
 
 function BotCrew:devFireNow(pBot, args)

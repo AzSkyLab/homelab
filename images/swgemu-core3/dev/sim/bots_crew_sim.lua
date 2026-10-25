@@ -52,12 +52,12 @@ return function(ctx)
 		SPECIAL[cmd] = "carbine"
 	end
 	local WEAPON_RANGE = {unarmed = 5, rifle = 64, carbine = 64, pistol = 64}
-	local ROLE_WEAPON = {tank = "unarmed", rifleman = "rifle", ranger = "carbine", medic = "pistol"}
+	local ROLE_WEAPON = {tank = "unarmed", rifleman = "rifle", ranger = "carbine", medic = "rifle"}
 	-- Skill boxes by role, as prefixes (the roster's skills bring every box they require)
 	local ROLE_SKILLS = {
 		tank = {"combat_unarmed_", "combat_brawler_", "science_medic_"},
-		rifleman = {"combat_rifleman_", "combat_marksman_", "combat_carbine_"},
-		medic = {"science_combatmedic_", "science_doctor_", "science_medic_"},
+		rifleman = {"combat_rifleman_", "combat_marksman_", "combat_carbine_", "science_medic_novice", "science_medic_injury_"},
+		medic = {"science_combatmedic_", "science_doctor_", "science_medic_", "combat_marksman_rifle_"},
 		ranger = {"outdoors_ranger_", "outdoors_scout_", "combat_marksman_", "combat_carbine_novice", "combat_carbine_ability_",
 			"combat_carbine_accuracy_01", "combat_carbine_accuracy_02"},
 	}
@@ -72,7 +72,7 @@ return function(ctx)
 
 	local log = {}
 	local function resetLog()
-		log = {loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
+		log = {taunts = {}, debuffs = {}, rescues = {}, dots = {}, loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
 			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
 			tracks = {}, events = {}, mounts = {}, dismounts = {}}
 	end
@@ -94,6 +94,7 @@ return function(ctx)
 	-- Creature methods the crew reads (the world objects of living_cities_sim.lua)
 
 	local methods = {}
+	function methods.getPosture(self) return self.posture == "sitting" and 8 or (self.posture == "crouched" and 1 or 0) end
 	function methods.isGrouped(self) return self.groupId ~= nil end
 	function methods.getGroupSize(self)
 		local g = self.groupId and groups[self.groupId]
@@ -110,6 +111,14 @@ return function(ctx)
 	function methods.isIncapacitated(self) return self.incap == true end
 	function methods.isInCombat(self) return self.inCombat == true end
 	function methods.getMainDefender(self)
+		-- A creature is on whoever it's after (its AI picks; Phase 7c: taunt, rescue)
+		if self.isMob then
+			local victim = ctx.objects[self.aggro or 0]
+			if victim ~= nil and not victim.dead and not victim.incap and victim.inWorld then
+				return victim
+			end
+			return nil
+		end
 		for _, oid in ipairs(self.defenders or {}) do
 			local o = ctx.objects[oid]
 			if o ~= nil and not o.dead and not o.incap and o.inWorld then
@@ -223,7 +232,7 @@ return function(ctx)
 			t.threats = t.threats or {}
 			addUnique(t.threats, a.oid)
 		end
-		if t.isMob then
+		if t.isMob and not t.neverAggro then
 			local current = ctx.objects[t.aggro or 0]
 			if current == nil or current.dead or current.incap then
 				t.aggro = a.oid
@@ -330,8 +339,32 @@ return function(ctx)
 			if t == nil or t.dead then return false, "bad target" end
 			if dist(b, t) > 64 then return false, "too far" end
 			startCombat(b, t)
-			t.aggro = b.oid
 			b.queueUntil = nowMs() + 1000
+			-- Core3's TauntCommand: TAUNTED for the taunt mod (40 at master) seconds, then as long again before anyone can
+			-- taunt it; inside that a taunt does nothing (it reports success, and adds aggro)
+			local inLockout = nowMs() < (t.lockUntil or 0)
+			table.insert(log.taunts, {bot = b.oid, t = nowMs(), creature = t.oid, inLockout = inLockout})
+			if not inLockout and not t.noTaunt then
+				local mod = (b.skillMods and b.skillMods.taunt) or 40
+				t.tauntUntil, t.lockUntil, t.tauntedBy = nowMs() + mod * 1000, nowMs() + 2 * mod * 1000, b.oid
+				t.aggro = b.oid
+			end
+			return true
+		elseif cmd == "intimidate1" or cmd == "warcry1" then
+			if t == nil or t.dead then return false, "bad target" end
+			if dist(b, t) > (cmd == "intimidate1" and 24 or 40) then return false, "too far" end
+			startCombat(b, t)
+			b.queueUntil = nowMs() + 1000
+			table.insert(log.debuffs, {bot = b.oid, t = nowMs(), creature = t.oid, cmd = cmd})
+			return true
+		elseif cmd == "rescue" then
+			if t == nil or t.dead or not t.isMob then return false, "bad target" end
+			local victim = ctx.objects[t.aggro or 0]
+			if victim == nil or b.groupId == nil or victim.groupId ~= b.groupId then return false, "not a group member" end
+			table.insert(log.rescues, {bot = b.oid, t = nowMs(), creature = t.oid, inLockout = nowMs() < (t.lockUntil or 0)})
+			if nowMs() < (t.lockUntil or 0) then return true end
+			t.tauntUntil, t.lockUntil, t.tauntedBy = nowMs() + 5000, nowMs() + 10000, b.oid
+			t.aggro = b.oid
 			return true
 		elseif SPECIAL[cmd] ~= nil then
 			if t == nil or t.dead or t.incap then return false, "bad target" end
@@ -428,6 +461,35 @@ return function(ctx)
 			return true
 		elseif cmd == "stand" then
 			b.posture = "upright"
+			return true
+		elseif cmd == "kneel" then
+			b.posture = "crouched"
+			return true
+		elseif cmd == "applypoison" or cmd == "applydisease" then
+			-- Core3's DotPackCommand: in range (the pack's 30 and 14 for healing range), a pack, its wait (6 s at master) and
+			-- mind; it lands unless the creature is immune or resists
+			if t == nil or t.dead or not t.isMob then return false, "bad target" end
+			if dist(b, t) > 44 then return false, "too far" end
+			local template = "object/tangible/medicine/crafted/" .. (cmd == "applypoison" and "medpack_poison_health_c" or "medpack_disease_health_c") .. ".iff"
+			local pack = (b.packs or {})[template]
+			if pack == nil or pack.uses <= 0 then return false, "no pack" end
+			if nowMs() < (b.dotReady or 0) then return false, "must wait" end
+			if b:getHAM(MIND) < 150 then return false, "not enough mind" end
+			b.dotReady = nowMs() + 6000
+			pack.uses = pack.uses - 1
+			b:pool(MIND).cur = b:getHAM(MIND) - 150
+			startCombat(b, t)
+			local immune = cmd == "applypoison" and t.immunePoison or false
+			local landed = false
+			if not immune then
+				if (t.resists or 0) > 0 then
+					t.resists = t.resists - 1
+				else
+					landed = true
+					t[cmd == "applypoison" and "poisonUntil" or "diseaseUntil"] = nowMs() + 240000
+				end
+			end
+			table.insert(log.dots, {bot = b.oid, t = nowMs(), cmd = cmd, creature = t.oid, landed = landed})
 			return true
 		end
 		return false, "unknown command " .. cmd
@@ -547,7 +609,9 @@ return function(ctx)
 		assert(math.type(oid) == "integer", "botSetTarget: oid must be an integer")
 		if b == nil then return false end
 		b.target = oid
-		table.insert(log.targets, {bot = b.oid, t = nowMs(), target = oid})
+		if oid == 0 then b.combatTarget = nil end
+		table.insert(log.targets, {bot = b.oid, t = nowMs(), target = oid, engage = oid ~= 0 and engage ~= false,
+			moving = (b.move or {}).state == "goto"})
 		-- Unless engage is false, a target the bot may attack gets a real attack queued
 		local t = ctx.objects[oid]
 		if oid ~= 0 and engage ~= false and t ~= nil and not t.dead and t:isAttackableBy(b) then
@@ -785,13 +849,42 @@ return function(ctx)
 		if p == nil then return out end
 		for _, oid in ipairs(p.threats or {}) do
 			local o = ctx.objects[oid]
-			if o ~= nil and o.isMob and not o.dead and not o.incap and o.inWorld and o.inCombat and o.aggro == p.oid then
+			-- (Core3: in the bot's threat map, in combat, with the bot among its defenders: not necessarily on it any more)
+			local hasDefender = false
+			for _, d in ipairs(o ~= nil and o.defenders or {}) do if d == p.oid then hasDefender = true end end
+			if o ~= nil and o.isMob and not o.dead and not o.incap and o.inWorld and o.inCombat and (o.aggro == p.oid or hasDefender) then
 				table.insert(out, o)
 			end
 		end
 		table.sort(out, function(a, b) return dist(a, p) < dist(b, p) end)
 		for i, o in ipairs(out) do out[i] = o.oid end
 		return out
+	end
+	-- The held weapon's ranges (Phase 7c): Core3's templates (T21 and E-11 50 m, EE-3 27 m, fists 5 m)
+	local RANGES = {rifle = {ranged = true, idealRange = 50, maxRange = 64}, carbine = {ranged = true, idealRange = 27, maxRange = 64},
+		pistol = {ranged = true, idealRange = 15, maxRange = 64}, unarmed = {ranged = false, idealRange = 5, maxRange = 5}}
+	function api.botWeaponRange(b)
+		local r = b ~= nil and RANGES[b.weapon or "unarmed"] or nil
+		if r == nil then return nil end
+		return {template = "", ranged = r.ranged, pointBlankRange = 0, pointBlankAccuracy = -70, idealRange = r.idealRange,
+			idealAccuracy = 6, maxRange = r.maxRange, maxAccuracy = 10}
+	end
+	-- Lairs a scenario sets in sim.lairs: {{oid, x, y}}
+	function api.botLairsNear(b, range)
+		local out = {}
+		for _, lair in ipairs(sim.lairs or {}) do
+			if dist(b, {planet = b.planet, x = lair.x, y = lair.y}) <= range then table.insert(out, lair) end
+		end
+		return out
+	end
+	-- A creature's threat picture (Phase 7c): who it's on, whether a taunt is in force, when the next one would take
+	function api.botThreatOn(b, c)
+		if b == nil or c == nil or not c.isMob then return nil end
+		local victim = ctx.objects[c.aggro or 0]
+		return {target = (victim ~= nil and not victim.dead and not victim.incap) and victim.oid or 0, tauntable = not c.noTaunt,
+			taunted = nowMs() < (c.tauntUntil or 0), tauntedBy = c.tauntedBy or 0,
+			lockoutMs = math.max(0, (c.lockUntil or 0) - nowMs()), poisoned = nowMs() < (c.poisonUntil or 0),
+			diseased = nowMs() < (c.diseaseUntil or 0), poisonImmune = c.immunePoison == true, diseaseImmune = false, entries = {}}
 	end
 	-- The players (bots too) and people NPCs around an object, by name
 	function api.botPeopleNear(center, range)
@@ -1018,7 +1111,7 @@ return function(ctx)
 			if o.inWorld and not o.dead and not o.incap then
 				-- Walking (BotMover: never while sitting; catch-up snap at 80 m)
 				local m = o.move
-				if m ~= nil and o.posture ~= "sitting" then
+				if m ~= nil and o.posture ~= "sitting" and o.posture ~= "crouched" and not o.frozen then
 					if m.state == "follow" then
 						local leader = ctx.objects[m.leader]
 						if leader ~= nil and leader.planet == o.planet then
@@ -1057,7 +1150,7 @@ return function(ctx)
 					end
 				end
 				-- Auto-attack every 2 s on the combat target, in weapon range
-				if o.isPlayer and o.inCombat and o.combatTarget ~= nil then
+				if o.isPlayer and o.inCombat and o.combatTarget ~= nil and (o.target or 0) ~= 0 then
 					local target = ctx.objects[o.combatTarget]
 					if target ~= nil and not target.dead and not target.incap and dist(o, target) <= WEAPON_RANGE[o.weapon or "pistol"] and
 						t >= (o.nextAuto or 0) then
@@ -1332,13 +1425,18 @@ return function(ctx)
 			stocked[st.bot][st.template:match("crafted/(.-)%.iff")] = true
 		end
 		for _, pack in ipairs({"crafted_stimpack_sm_s1_e", "medpack_grenade_damage_e", "medpack_stunned_b", "medpack_cure_poison_c",
-			"medpack_cure_disease_c", "medpack_revive", "medpack_enhance_health_d", "medpack_wound_health_e"}) do
+			"medpack_cure_disease_c", "medpack_revive", "medpack_enhance_health_d", "medpack_wound_health_e",
+			"medpack_poison_health_c", "medpack_disease_health_c"}) do
 			if not (stocked[medic.oid] or {})[pack] then
 				fail("crew: the medic has no " .. pack)
 			end
 		end
-		if not (stocked[tank.oid] or {}).crafted_stimpack_sm_s1_e or stocked[rifleman.oid] ~= nil then
-			fail("crew: stims for the tank (a master medic) and nothing for the rifleman")
+		-- (Phase 7c: the rifleman has Novice Medic and its injury boxes: stims, and nothing else)
+		local riflemanPacks = 0
+		for _ in pairs(stocked[rifleman.oid] or {}) do riflemanPacks = riflemanPacks + 1 end
+		if not (stocked[tank.oid] or {}).crafted_stimpack_sm_s1_e or not (stocked[rifleman.oid] or {}).crafted_stimpack_sm_s1_e or
+			riflemanPacks ~= 1 then
+			fail("crew: stims for the tank (a master medic) and the rifleman (Novice Medic), and nothing else for the rifleman")
 		end
 		if #entries(log.equips, rifleman) ~= 1 or not entries(log.equips, rifleman)[1].template:find("rifle", 1, true) then
 			fail("crew: the rifleman's rifle wasn't equipped at login")
@@ -1469,7 +1567,7 @@ return function(ctx)
 		rat.hits = 120
 		t = nowMs()
 		attack(cameren, rat)
-		sim.run(3)
+		sim.run(10) -- (Phase 7c: the others hold fire until the tank has the rat, or three seconds, and walk to their bands first; the 60 s below is 53)
 		each(function(role, b)
 			local set = entries(log.targets, b, t)
 			if #set == 0 or set[1].target ~= rat.oid or not engaged(b, rat.oid, t) then
@@ -1479,7 +1577,7 @@ return function(ctx)
 		if #okCommands(tank, "taunt", t) == 0 then
 			fail("crew: the tank didn't taunt")
 		end
-		sim.run(60)
+		sim.run(53)
 		local tankSpecials, riflemanSpecials, rangerSpecials = {}, {}, {}
 		for _, c in ipairs(okCommands(tank, nil, t)) do if SPECIAL[c.cmd] then tankSpecials[c.cmd] = (tankSpecials[c.cmd] or 0) + 1 end end
 		for _, c in ipairs(okCommands(rifleman, nil, t)) do if SPECIAL[c.cmd] then riflemanSpecials[c.cmd] = (riflemanSpecials[c.cmd] or 0) + 1 end end
@@ -1558,11 +1656,11 @@ return function(ctx)
 		sim.run(60)
 
 		-- 10. Defending: a creature goes for the rifleman while Cameren stands idle
-		local kreetle = makeMob("a kreetle", rifleman.x - 15, rifleman.y, 800)
+		local kreetle = makeMob("a kreetle", rifleman.x - 15, rifleman.y, 4000)
 		t = nowMs()
 		startCombat(kreetle, rifleman)
 		kreetle.aggro = rifleman.oid
-		sim.run(6)
+		sim.run(20) -- (the rifleman steps back first, walks to her band, and fires once the tank has it)
 		each(function(role, b)
 			local defended = false
 			for _, e in ipairs(entries(log.targets, b, t)) do
@@ -1617,8 +1715,13 @@ return function(ctx)
 		if #entries(log.clones, rifleman, t) > 0 then
 			fail("crew: the rifleman cloned while the medic was there")
 		end
-		if not anyLine(entries(log.group, rifleman, t), "rifleman", "down") or not anyLine(entries(log.group, medic, t), "medic", "reviving") then
-			fail("crew: no 'I'm down' and 'coming' lines around the revive")
+		-- (a medic that revives within one step of the death beats the rifleman's own look at it: no "down" then)
+		local revived = okCommands(medic, "reviveplayer", t)[1]
+		local quick = revived ~= nil and revived.t - t < BotCrew.groupMs
+		if (not quick and not anyLine(entries(log.group, rifleman, t), "rifleman", "down")) or not anyLine(entries(log.group, medic, t), "medic", "reviving") then
+			local seen = {}
+			for _, l in ipairs(entries(log.group, nil, t)) do table.insert(seen, l.text) end
+			fail("crew: no 'I'm down' and 'coming' lines around the revive (" .. table.concat(seen, " | ") .. ")")
 		end
 		sim.run(10)
 
@@ -2301,7 +2404,7 @@ return function(ctx)
 		t = nowMs()
 		startCombat(rat, medic)
 		rat.aggro = medic.oid
-		sim.run(8)
+		sim.run(16)
 		for _, b in ipairs({tank, rifleman, ranger}) do
 			if not engaged(b, rat.oid, t) then
 				fail("crewfix: the " .. b.role .. " didn't defend the medic")
@@ -2429,7 +2532,7 @@ return function(ctx)
 		cameren.target = mite.oid
 		t = nowMs()
 		groupSay(cameren, "attack my target")
-		sim.run(4)
+		sim.run(14) -- (the ranged bots walk to their bands before they fire)
 		if not anyLine(entries(log.group, tank, t), "tank", "attack") then
 			fail("crewfix: 'attack my target' got no attack line from the tank")
 		end
@@ -3030,7 +3133,7 @@ return function(ctx)
 		if ridersCount() ~= 4 then
 			fail("crewswoop: only " .. ridersCount() .. " remounted")
 		end
-		local mob = makeMob("a womp rat", tank.x + 20, tank.y, 600)
+		local mob = makeMob("a womp rat", tank.x + 20, tank.y, 6000)
 		t = nowMs()
 		tank.vehicleAttacker = mob.oid	-- it goes for the tank's swoop, and the tank isn't "in combat" itself
 		sim.run(4)
@@ -3049,6 +3152,7 @@ return function(ctx)
 				fail("crewswoop: the " .. b.role .. " kept riding while the tank was attacked")
 			end
 		end
+		sim.run(10) -- (the ranged bots walk to their bands before they fire)
 		if not engaged(rifleman, mob.oid, t) or not engaged(ranger, mob.oid, t) then
 			fail("crewswoop: the rifleman and the ranger didn't fight what attacked the tank's swoop")
 		end
@@ -4089,6 +4193,549 @@ return function(ctx)
 		teardown()
 	end
 
+	-- crewtactics (Phase 7c, group 3): the tank holds the creatures, the others hold fire on a fresh one, the ranger rescues
+	function scenarios.crewtactics()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		local savedChance = BotCrew.calloutChance
+		BotCrew.calloutChance = 100
+
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		sim.run(10)
+		if members(cameren) ~= 5 then
+			fail("crewtactics: " .. members(cameren) .. " in the group, expected Cameren and four crew")
+		end
+		each(function(role, b) b.cell = 0 end)
+		cameren.cell = 0
+		sim.run(10)
+
+		-- A creature that is on `victim` (the sim's AI hits whoever it is on)
+		local function mobOn(name, dx, victim, hp)
+			local m = makeMob(name, cameren.x + dx, cameren.y, hp or 1e7)
+			m.hits = 5
+			if victim ~= nil then
+				startCombat(m, victim)
+				m.aggro = victim.oid
+			end
+			return m
+		end
+		-- When a bot took the creature on: its first shot, or the first walk to its band (a held-fire bot does neither)
+		local function firstEngage(b, mob, since)
+			local first
+			for _, e in ipairs(entries(log.targets, b, since)) do
+				if e.target == mob.oid then first = e.t break end
+			end
+			for _, e in ipairs(entries(log.moves, b, since)) do
+				if first == nil or e.t < first then first = e.t end
+				break
+			end
+			return first
+		end
+		local function slay(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function reset()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(12)
+		end
+		local step = BotCrew.fightMs
+
+		-- 1. The leader is in a fight and aims at a fresh creature (on nobody): the tank engages it and taunts; the others
+		-- hold fire and open once it is on the tank
+		local m1 = mobOn("a kreetle", 40, nil)
+		cameren.inCombat, cameren.target = true, m1.oid
+		local t = nowMs()
+		sim.run(6)
+		local tankAt = firstEngage(tank, m1, t)
+		if tankAt == nil or #okCommands(tank, "taunt", t) == 0 then
+			fail("crewtactics: the tank didn't open on the leader's target")
+		end
+		if m1.aggro ~= tank.oid then
+			fail("crewtactics: the creature isn't on the tank")
+		end
+		for _, role in ipairs({"rifleman", "medic", "ranger"}) do
+			local at = firstEngage(crew[role], m1, t)
+			if at == nil then
+				fail("crewtactics: the " .. role .. " never opened on the creature")
+			elseif at < tankAt then
+				fail("crewtactics: the " .. role .. " opened before the tank engaged")
+			end
+		end
+		slay(m1)
+		reset()
+
+		-- 2. A creature the taunt doesn't take (and that goes for nobody): the others wait three seconds, then open
+		local m2 = mobOn("a kreetle", 40, nil)
+		m2.neverAggro, m2.noTaunt = true, true
+		cameren.inCombat, cameren.target = true, m2.oid
+		t = nowMs()
+		sim.run(10)
+		tankAt = firstEngage(tank, m2, t)
+		if tankAt == nil then
+			fail("crewtactics: the tank didn't engage the creature that wouldn't come")
+		end
+		for _, role in ipairs({"rifleman", "medic", "ranger"}) do
+			local at = firstEngage(crew[role], m2, t)
+			if at == nil then
+				fail("crewtactics: the " .. role .. " never opened on the creature that wouldn't come")
+			elseif tankAt ~= nil and (at - tankAt < 3000 - 1 or at - tankAt > 3000 + 2 * step) then
+				fail(string.format("crewtactics: the %s opened %.1f s after the tank (expected about 3)", role, (at - tankAt) / 1000))
+			end
+		end
+		slay(m2)
+		reset()
+
+		-- 3. A creature the leader pulled (it is on the leader): the others still hold, until the tank has taken it
+		local m3 = mobOn("a kreetle", 12, cameren)
+		cameren.inCombat, cameren.target = true, m3.oid
+		t = nowMs()
+		sim.run(6)
+		tankAt = firstEngage(tank, m3, t)
+		local tauntAt = okCommands(tank, "taunt", t)[1]
+		if tankAt == nil or tauntAt == nil or m3.aggro ~= tank.oid then
+			fail("crewtactics: the tank didn't take the creature off the leader")
+		end
+		each(function(role, b)
+			if role ~= "tank" then
+				local at = firstEngage(b, m3, t)
+				if at == nil then
+					fail("crewtactics: the " .. role .. " never opened on the pulled creature")
+				elseif at < tauntAt.t then
+					fail("crewtactics: the " .. role .. " opened on a creature still on the leader, before the tank's taunt")
+				end
+			end
+		end)
+		slay(m3)
+		reset()
+
+		-- 3b. ...and one the tank can't take stays on the leader: they open holdFor seconds after the tank engaged it
+		local m3b = mobOn("a kreetle", 12, cameren)
+		m3b.noTaunt = true
+		cameren.inCombat, cameren.target = true, m3b.oid
+		t = nowMs()
+		sim.run(10)
+		tankAt = firstEngage(tank, m3b, t)
+		if tankAt == nil then
+			fail("crewtactics: the tank didn't engage the creature on the leader")
+		end
+		for _, role in ipairs({"rifleman", "medic", "ranger"}) do
+			local at = firstEngage(crew[role], m3b, t)
+			if at == nil then
+				fail("crewtactics: the " .. role .. " never opened on the creature the tank couldn't take")
+			elseif tankAt ~= nil and (at - tankAt < 3000 - 1 or at - tankAt > 3000 + 2 * step) then
+				fail(string.format("crewtactics: the %s opened %.1f s after the tank on a creature still on the leader (expected about 3)", role, (at - tankAt) / 1000))
+			end
+		end
+		slay(m3b)
+		reset()
+
+		-- 3c. A creature on one of them is never held for: the rifleman defends itself at once
+		local m3c = mobOn("a kreetle", 12, rifleman)
+		cameren.inCombat, cameren.target = false, 0
+		t = nowMs()
+		sim.run(4)
+		local at = firstEngage(rifleman, m3c, t)
+		if at == nil or at - t > 2 * step then
+			fail("crewtactics: the rifleman held fire on a creature on itself")
+		end
+		slay(m3c)
+		reset()
+
+		-- 4. No hold without a usable tank: told to stay, the tank doesn't hold anyone up
+		groupSay(cameren, tank.first .. ", stay")
+		sim.run(3)
+		local m4 = mobOn("a kreetle", 40, nil)
+		m4.neverAggro, m4.noTaunt = true, true
+		cameren.inCombat, cameren.target = true, m4.oid
+		t = nowMs()
+		sim.run(4)
+		for _, role in ipairs({"rifleman", "medic", "ranger"}) do
+			local at = firstEngage(crew[role], m4, t)
+			if at == nil or at - t > 2 * step then
+				fail("crewtactics: the " .. role .. " held fire with the tank told to stay")
+			end
+		end
+		slay(m4)
+		reset()
+		groupSay(cameren, tank.first .. " follow")
+		sim.run(5)
+
+		-- 4b. A creature jumps the medic while nobody fights: the others hold fire on it, whichever of them looks first,
+		-- until the tank has it
+		local mj = mobOn("a kreetle", 20, medic)
+		t = nowMs()
+		sim.run(8)
+		local tauntJ = okCommands(tank, "taunt", t)[1]
+		if tauntJ == nil or mj.aggro ~= tank.oid then
+			fail("crewtactics: the tank didn't take the creature that jumped the medic")
+		end
+		for _, role in ipairs({"rifleman", "ranger"}) do
+			local at = firstEngage(crew[role], mj, t)
+			if at ~= nil and at < tauntJ.t then
+				fail("crewtactics: the " .. role .. " opened on the creature that jumped the medic before the tank had it")
+			end
+		end
+		slay(mj)
+		reset()
+
+		-- 5. Adds: the creature the tank fights is on it (taunted, its lockout 80 s). Two adds come, one on the rifleman 20 m
+		-- off and one on the medic 35 m off: the tank taunts the nearer first, from where it stands; nothing is taunted inside a
+		-- lockout; a creature that turns on someone else inside its lockout gets an intimidate or a warcry, and a taunt when it ends
+		local boss = mobOn("a kreetle", 10, cameren)
+		cameren.inCombat, cameren.target = true, boss.oid
+		t = nowMs()
+		sim.run(6)
+		if boss.aggro ~= tank.oid or boss.lockUntil == nil then
+			fail("crewtactics: the first creature isn't on the tank")
+		end
+		local a1 = mobOn("a kreetle", 20, rifleman)
+		local a2 = mobOn("a kreetle", 35, medic)
+		t = nowMs()
+		sim.run(8)
+		local t1, t2
+		for _, tn in ipairs(entries(log.taunts, tank, t)) do
+			if tn.creature == a1.oid and t1 == nil then t1 = tn.t end
+			if tn.creature == a2.oid and t2 == nil then t2 = tn.t end
+		end
+		if t1 == nil or t2 == nil then
+			fail("crewtactics: the adds weren't both taunted (" .. tostring(t1) .. ", " .. tostring(t2) .. ")")
+		elseif t1 >= t2 then
+			fail("crewtactics: the add on the rifleman (nearer) wasn't taunted first")
+		end
+		if a1.aggro ~= tank.oid or a2.aggro ~= tank.oid then
+			fail("crewtactics: the adds aren't on the tank")
+		end
+		-- The add the tank took off the rifleman is no longer hers to shoot: she follows the tank's target
+		if rifleman.target ~= boss.oid then
+			fail("crewtactics: the rifleman kept shooting the add the tank took off her")
+		end
+		-- The boss turns on the rifleman part-way into its lockout: debuffs, and no taunt until the lockout ends
+		sim.run(12)
+		t = nowMs()
+		boss.aggro = rifleman.oid
+		sim.run(20)
+		if #entries(log.debuffs, tank, t) == 0 then
+			fail("crewtactics: a creature turned on the rifleman inside its lockout and nothing slowed it")
+		end
+		for _, tn in ipairs(log.taunts) do
+			if tn.creature == boss.oid and tn.t > boss.lockUntil - 2 * 40 * 1000 + 1 and tn.t < boss.lockUntil - 1 then
+				fail("crewtactics: the tank taunted a creature inside its lockout")
+			end
+		end
+		-- ...and taunts it as soon as the lockout is over
+		local lockEnd = boss.lockUntil
+		sim.run((lockEnd - nowMs()) / 1000 + 5)
+		local after
+		for _, tn in ipairs(log.taunts) do
+			if tn.creature == boss.oid and tn.t >= lockEnd - 200 and tn.t <= lockEnd + 3 * step then after = tn end
+		end
+		if after == nil then
+			fail("crewtactics: no taunt after the lockout ended")
+		end
+		for _, tn in ipairs(log.taunts) do
+			if tn.inLockout then
+				fail("crewtactics: a taunt was sent inside a creature's lockout (" .. tn.creature .. ")")
+			end
+		end
+		slay(boss, a1, a2)
+		reset()
+
+		-- 6. Rescue: with the tank out of reach, the ranger pulls a creature off the medic after rescueAfter seconds, once
+		local home = tank.x
+		tank.x = tank.x - 140
+		tank.frozen = true
+		local m6 = mobOn("a kreetle", 25, medic)
+		t = nowMs()
+		sim.run(8)
+		local rescues = entries(log.rescues, ranger, t)
+		if #rescues ~= 1 then
+			fail("crewtactics: the ranger rescued " .. #rescues .. " times, expected once")
+		elseif rescues[1].t - t < BotCrew.rescueAfter * 1000 - 1 then
+			fail("crewtactics: the ranger rescued too soon")
+		elseif m6.aggro ~= ranger.oid then
+			fail("crewtactics: the rescued creature isn't on the ranger")
+		end
+		if #entries(log.taunts, tank, t) > 0 then
+			fail("crewtactics: the tank taunted from out of range")
+		end
+		slay(m6)
+		tank.frozen, tank.x = false, home
+		reset()
+
+		-- 7. Callouts: some lines (every fight was chatty here), of the tank's kinds, one per bot per 20 s
+		local function callout(text)
+			return isLine(text, "tank", "pull") or isLine(text, "tank", "got") or isLine(text, "tank", "addGrab") or
+				isLine(text, "tank", "tauntDown")
+		end
+		local last, kinds = -1e9, 0
+		for _, l in ipairs(entries(log.group, tank, 0)) do
+			if callout(l.text) then
+				kinds = kinds + 1
+				if l.t - last < 19000 then
+					fail("crewtactics: two callouts " .. (l.t - last) / 1000 .. " s apart")
+				end
+				last = l.t
+			end
+		end
+		if kinds == 0 then
+			fail("crewtactics: the tank called nothing out in any fight")
+		end
+
+		realPrint(string.format("crewtactics %d taunts, %d debuffs, %d rescues, %d callouts, after-lockout taunt %s", #log.taunts,
+			#log.debuffs, #log.rescues, kinds, after ~= nil and "yes" or "NO"))
+		BotCrew.calloutChance = savedChance
+		teardown()
+	end
+
+	-- crewband (Phase 7c, group 4): each ranged bot stands in its weapon's band and kneels, backs off a creature that comes
+	-- for it without firing on the move, keeps away from lairs; the medic throws poison and disease packs between heals
+	function scenarios.crewband()
+		setup("/nonexistent/sim-talk")
+		local tank, rifleman, medic, ranger = crew.tank, crew.rifleman, crew.medic, crew.ranger
+		local savedChance = BotCrew.calloutChance
+		BotCrew.calloutChance = 100
+		sim.lairs = {}
+
+		each(function(role, b) login(b) end)
+		local cameren = makeHuman("Cameren", tank.x + 3, tank.y)
+		each(function(role, b)
+			invite(cameren, b, true)
+			sim.run(3)
+		end)
+		sim.run(10)
+		if members(cameren) ~= 5 then
+			fail("crewband: " .. members(cameren) .. " in the group, expected Cameren and four crew")
+		end
+		each(function(role, b) b.cell = 0 end)
+		cameren.cell = 0
+		sim.run(10)
+
+		local function mobAt(dx, dy, hp)
+			local m = makeMob("a kreetle", cameren.x + dx, cameren.y + dy, hp or 1e7)
+			m.hits = 0
+			return m
+		end
+		local function slay(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function reset()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(15)
+		end
+		-- Shots fired (a target set with an attack queued) while the bot was walking
+		local function firedWalking(b, since)
+			local n = 0
+			for _, e in ipairs(entries(log.targets, b, since)) do
+				if e.engage and e.moving then n = n + 1 end
+			end
+			return n
+		end
+		local function firstShot(b, mob, since)
+			for _, e in ipairs(entries(log.targets, b, since)) do
+				if e.target == mob.oid and e.engage then return e end
+			end
+			return nil
+		end
+
+		-- 1. Bands from the weapons: a creature 70 m off, the leader fighting it. The rifleman (T21: ideal 50 m) ends 40-50 m
+		-- from it, the medic (E-11, held to its stim reach) 30-40, the ranger (EE-3: ideal 27) 17-27; all kneel; nobody fired
+		-- while walking
+		local m1 = mobAt(70, 0)
+		local t = nowMs()
+		attack(cameren, m1)
+		sim.run(30)
+		local function band(role, lo, hi)
+			local b = crew[role]
+			local d = dist(b, m1)
+			if d < lo or d > hi then
+				fail(string.format("crewband: the %s stands %.1f m from the creature (band %d-%d)", role, d, lo, hi))
+			end
+			if b.posture ~= "crouched" then
+				fail("crewband: the " .. role .. " isn't kneeling at " .. string.format("%.1f", d) .. " m")
+			end
+			if firedWalking(b, t) > 0 then
+				fail("crewband: the " .. role .. " fired while walking")
+			end
+			local shot = firstShot(b, m1, t)
+			if shot == nil then
+				fail("crewband: the " .. role .. " never fired")
+			end
+		end
+		band("rifleman", 38, 51)
+		band("medic", 28, 41)
+		band("ranger", 15, 28)
+		if dist(tank, m1) > 5 then
+			fail("crewband: the tank isn't on the creature")
+		end
+		if dist(medic, tank) > 42 then
+			fail(string.format("crewband: the medic is %.1f m from the tank, out of its stim reach", dist(medic, tank)))
+		end
+
+		-- 2. The medic's packs: poison then disease on the tank's target, once each, between heals
+		local dots = entries(log.dots, medic, t)
+		if #dots ~= 2 or dots[1].cmd ~= "applypoison" or dots[2].cmd ~= "applydisease" or dots[1].creature ~= m1.oid then
+			local names = {}
+			for _, d in ipairs(dots) do table.insert(names, d.cmd) end
+			fail("crewband: the medic threw " .. table.concat(names, ", ") .. ", expected a poison then a disease pack")
+		elseif dots[2].t - dots[1].t < 6000 then
+			fail("crewband: the packs came less than six seconds apart")
+		end
+		-- (one callout per bot per 20 s: the poison's, the disease's comes too soon)
+		local medicLines = entries(log.group, medic, t)
+		if not (anyLine(medicLines, "medic", "poisoned") or anyLine(medicLines, "medic", "diseased")) then
+			fail("crewband: the medic didn't call the packs out")
+		end
+		-- 1b. The creature dies and the leader aims at a fresh one (on nobody): the ranged bots hold fire where they kneel, and
+		-- neither walk in toward the leader nor stand up
+		slay(m1)
+		local m1b = makeMob("a kreetle", m1.x, m1.y, 1e7) -- (where the fight was)
+		m1b.hits = 0
+		attack(cameren, m1b) -- (the pull: the creature is on the leader until the tank takes it)
+		t = nowMs()
+		local stood, held = false, 0
+		for i = 1, 8 do
+			sim.run(0.5)
+			if #okCommands(tank, "taunt", t) > 0 then break end
+			held = held + 1
+			for _, b in ipairs({rifleman, medic, ranger}) do
+				if b.posture ~= "crouched" then stood = true end
+			end
+		end
+		if held == 0 then
+			fail("crewband: the tank had the fresh creature before the ranged bots could be watched holding")
+		end
+		if stood then
+			fail("crewband: a ranged bot stood up during the hold on a fresh pull")
+		end
+		local tauntAt = okCommands(tank, "taunt", t)[1]
+		for _, b in ipairs({rifleman, medic, ranger}) do
+			if #entries(log.moves, b, t) > 0 and entries(log.moves, b, t)[1].t < (tauntAt and tauntAt.t or math.huge) or #entries(log.follows, b, t) > 0 then
+				fail("crewband: the " .. b.role .. " walked during the hold on a fresh pull")
+			end
+		end
+		slay(m1b)
+		reset()
+
+		-- 3. A creature that goes for the rifleman: she backs off (away from it, toward the group) without firing, calls it,
+		-- and fights from where she is once it can't be kept off or is on the tank
+		local m3 = mobAt(70, 0)
+		m3.hits = 5
+		attack(cameren, m3)
+		sim.run(30)
+		t = nowMs()
+		local startX, startY = rifleman.x, rifleman.y
+		m3.noTaunt = true -- (the tank can't take it off her)
+		m3.aggro = rifleman.oid
+		startCombat(m3, rifleman)
+		m3.x, m3.y = rifleman.x + 18, rifleman.y
+		sim.run(12)
+		-- (her back-off steps are 10 m from where she stood)
+		local step1
+		for _, mv in ipairs(entries(log.moves, rifleman, t)) do
+			local from = math.sqrt((mv.x - startX) ^ 2 + (mv.y - startY) ^ 2)
+			if step1 == nil and from > 9 and from < 11 then step1 = mv end
+		end
+		if step1 == nil then
+			fail("crewband: the rifleman didn't back off from a creature on her at 18 m")
+		elseif math.sqrt((step1.x - (startX + 18)) ^ 2 + (step1.y - startY) ^ 2) <= 18 then
+			fail("crewband: the rifleman's back-off wasn't away from the creature")
+		end
+		if firedWalking(rifleman, t) > 0 then
+			fail("crewband: the rifleman fired while backing off")
+		end
+		local cleared = false
+		for _, e in ipairs(entries(log.targets, rifleman, t)) do
+			if e.target == 0 then cleared = true end
+		end
+		if not cleared then
+			fail("crewband: the rifleman kept her target while backing off")
+		end
+		if not anyLine(entries(log.group, rifleman, t), "rifleman", "backUp") then
+			fail("crewband: no 'backing up' call")
+		end
+		if not firstShot(rifleman, m3, t + 1) and #entries(log.targets, rifleman, t) < 2 then
+			fail("crewband: the rifleman never fired again")
+		end
+		local shotsAgain = 0
+		for _, e in ipairs(entries(log.targets, rifleman, t)) do
+			if e.engage and not e.moving then shotsAgain = shotsAgain + 1 end
+		end
+		if shotsAgain == 0 then
+			fail("crewband: the rifleman didn't stop and fire after backing off")
+		end
+		slay(m3)
+		reset()
+
+		-- 4. A lair where the rifleman would stand: she stands elsewhere in her band, and so does the ranger
+		local m4 = mobAt(80, 0)
+		local lx = m4.x - 48 -- the plain spot: on the leader's side of the creature, 48 m out
+		sim.lairs = {{oid = 777, x = lx, y = m4.y}}
+		t = nowMs()
+		attack(cameren, m4)
+		sim.run(35)
+		for _, role in ipairs({"rifleman", "ranger", "medic"}) do
+			local b = crew[role]
+			local d = math.sqrt((b.x - lx) ^ 2 + (b.y - m4.y) ^ 2)
+			if d < BotCrew.lairAvoid and role ~= "ranger" then
+				fail(string.format("crewband: the %s stands %.1f m from the lair", role, d))
+			end
+		end
+		local d = dist(rifleman, m4)
+		if d < 38 or d > 51 then
+			fail(string.format("crewband: the rifleman stands %.1f m from the creature with a lair in the way", d))
+		end
+		sim.lairs = {}
+		slay(m4)
+		reset()
+
+		-- 5. Heals first: someone hurt gets a stim before any pack; a creature that resisted twice isn't packed again;
+		-- one that can't be poisoned gets no poison
+		local m5 = mobAt(60, 0)
+		m5.resists, m5.immunePoison = 2, true
+		-- (big pools, so the specials' cost doesn't keep anyone under the heal line)
+		each(function(role, b)
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).base = b:pool(pool).base * 8 end
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).cur = b:getMaxHAM(pool) end
+		end)
+		cameren.noRegen = true
+		cameren:pool(HEALTH).cur = math.floor(cameren:getMaxHAM(HEALTH) * 0.3)
+		t = nowMs()
+		attack(cameren, m5)
+		sim.run(60)
+		local first
+		for _, c in ipairs(commands(medic, nil, t)) do
+			if c.cmd == "healdamage" or c.cmd == "applypoison" or c.cmd == "applydisease" then first = c.cmd break end
+		end
+		if first ~= "healdamage" then
+			fail("crewband: the medic's first move was " .. tostring(first) .. ", expected a heal")
+		end
+		local poisons, diseases = 0, 0
+		for _, d in ipairs(entries(log.dots, medic, t)) do
+			if d.cmd == "applypoison" then poisons = poisons + 1 else diseases = diseases + 1 end
+		end
+		if poisons ~= 0 or diseases ~= 2 then
+			fail("crewband: against a creature immune to poison and resisting disease the medic threw " .. poisons .. " poison and " ..
+				diseases .. " disease packs, expected 0 and 2")
+		end
+		cameren.noRegen = false
+		slay(m5)
+		reset()
+
+		realPrint(string.format("crewband %d packs thrown", #log.dots))
+		BotCrew.calloutChance = savedChance
+		sim.lairs = nil
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -4098,4 +4745,6 @@ return function(ctx)
 	table.insert(order, "crewharvest")
 	table.insert(order, "crewcreature")
 	table.insert(order, "crewhandover")
+	table.insert(order, "crewtactics")
+	table.insert(order, "crewband")
 end

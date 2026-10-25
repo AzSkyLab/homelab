@@ -325,8 +325,9 @@ BotRoster = {
 		-- Phase 5: the hunting crew, four looking-for-group regulars standing together on the open floor inside Chalmun's
 		-- front door (main room, east side, between the tables), each facing the middle of the group
 
-		-- Tank: Teras Kasi, Brawler and Medic masters (217 points); bone armor (a Trandoshan wears no boots or gloves),
-		-- fights unarmed
+		-- Tank: Teras Kasi, Brawler and Medic masters, Fencer accuracy 1-4 and speed 1-2 with Novice Fencer (246 points;
+		-- the Fencer boxes add +54 melee and ranged defense and +20 knockdown and posture-change defense); bone armor (a
+		-- Trandoshan wears no boots or gloves), fights unarmed
 		{
 			name = "Kragoth Ssival",
 			account = "bot_kragoth",
@@ -335,7 +336,7 @@ BotRoster = {
 			hair = "object/tangible/hair/trandoshan/hair_trandoshan_male_s07.iff",
 			job = "tank",
 			city = "mos_eisley",
-			skills = {"combat_unarmed_master", "combat_brawler_master", "science_medic_master"},
+			skills = {"combat_unarmed_master", "combat_brawler_master", "science_medic_master", "combat_1hsword_accuracy_04", "combat_1hsword_speed_02"},
 			outfit = {
 				"object/tangible/wearables/armor/bone/armor_bone_s01_chest_plate.iff",
 				"object/tangible/wearables/armor/bone/armor_bone_s01_leggings.iff",
@@ -347,7 +348,8 @@ BotRoster = {
 			},
 			station = {planet = "tatooine", x = 18.5, z = -0.895, y = -0.2, cell = 1082877, heading = 45},
 		},
-		-- Rifleman: Rifleman, Marksman and Carbineer masters (203 points); bounty hunter armor (a piece weighs
+		-- Rifleman: Rifleman, Marksman and Carbineer masters, Medic injury 1-4 and injury speed 1-4 with Novice Medic
+		-- (246 points; the medic boxes give better self-heals with stims, quickHeal at injury 4); bounty hunter armor (a piece weighs
 		-- 1 in encumbrance; a full composite set weighs about 1000 and no bot's secondary stats carry it), a T21 in hand and
 		-- an E-11 carbine in the pack
 		{
@@ -358,7 +360,7 @@ BotRoster = {
 			hair = "object/tangible/hair/human/hair_human_female_s31.iff",
 			job = "rifleman",
 			city = "mos_eisley",
-			skills = {"combat_rifleman_master", "combat_marksman_master", "combat_carbine_master"},
+			skills = {"combat_rifleman_master", "combat_marksman_master", "combat_carbine_master", "science_medic_injury_04", "science_medic_injury_speed_04"},
 			outfit = {
 				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_chest_plate.iff",
 				"object/tangible/wearables/armor/bounty_hunter/armor_bounty_hunter_leggings.iff",
@@ -374,8 +376,9 @@ BotRoster = {
 			carry = {"object/weapon/ranged/carbine/carbine_e11.iff"},
 			station = {planet = "tatooine", x = 20.6, z = -0.895, y = -0.2, cell = 1082877, heading = 315},
 		},
-		-- Medic: Combat Medic and Doctor masters (232 points); padded armor and a CDEF pistol (the one every species is
-		-- certified for: medics have no pistol line). The crew job stocks its stims and packs
+		-- Medic: Combat Medic and Doctor masters and Marksman rifle 1-4 with Novice Marksman (246 points; rifle accuracy
+		-- +50 and the certification for the E-11 rifle); padded armor and an E-11 rifle. The crew job stocks its stims
+		-- and packs
 		{
 			name = "Quillan Desh",
 			account = "bot_quillan",
@@ -384,7 +387,7 @@ BotRoster = {
 			hair = "",
 			job = "medic",
 			city = "mos_eisley",
-			skills = {"science_combatmedic_master", "science_doctor_master"},
+			skills = {"science_combatmedic_master", "science_doctor_master", "combat_marksman_rifle_04"},
 			outfit = {
 				"object/tangible/wearables/armor/padded/armor_padded_s01_chest_plate.iff",
 				"object/tangible/wearables/armor/padded/armor_padded_s01_leggings.iff",
@@ -396,7 +399,7 @@ BotRoster = {
 				"object/tangible/wearables/armor/padded/armor_padded_s01_gloves.iff",
 				"object/tangible/wearables/armor/padded/armor_padded_s01_helmet.iff",
 				"object/tangible/wearables/armor/padded/armor_padded_s01_belt.iff",
-				"object/weapon/ranged/pistol/pistol_cdef.iff",		-- CDEF pistol (held)
+				"object/weapon/ranged/rifle/rifle_e11.iff",		-- E-11 rifle (held)
 			},
 			station = {planet = "tatooine", x = 18.5, z = -0.895, y = 1.9, cell = 1082877, heading = 135},
 		},

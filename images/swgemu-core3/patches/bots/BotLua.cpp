@@ -312,7 +312,7 @@ int BotLua::botFace(lua_State* L) {
 
 // --- The doctor's checks and stock (BotItems, the factory's code) ---
 
-// botStockPack(pBot, template, uses, power, duration)
+// botStockPack(pBot, template, uses, power, duration[, potency, range]) (potency and range: poison and disease packs)
 int BotLua::botStockPack(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 	bool ok = false;
@@ -320,7 +320,7 @@ int BotLua::botStockPack(lua_State* L) {
 	if (bot != nullptr) {
 		Locker locker(bot);	// BotItems wants it locked; no-op if the caller's event already holds it
 
-		ok = BotItems::stockPack(bot, toString(L, 2), (int)toInteger(L, 3), (float)toNumber(L, 4), (int)toInteger(L, 5));
+		ok = BotItems::stockPack(bot, toString(L, 2), (int)toInteger(L, 3), (float)toNumber(L, 4), (int)toInteger(L, 5), (float)toNumber(L, 6), (float)toNumber(L, 7));
 	}
 
 	lua_pushboolean(L, ok);

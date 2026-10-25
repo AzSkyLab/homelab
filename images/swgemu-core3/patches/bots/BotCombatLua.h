@@ -17,6 +17,19 @@
  *   botDropDeadDefenders(pCreature) -> count   takes the dead from a creature's defender list (a player left in combat on
  *                                               a corpse something else killed); live defenders stay. Call it in an event on
  *                                               the creature
+ *   botWeaponRange(pBot) -> table|nil          the held weapon's ranges (unarmed: the default fists): {template, ranged,
+ *                                               pointBlankRange, pointBlankAccuracy, idealRange, idealAccuracy, maxRange,
+ *                                               maxAccuracy}. nil for a non-bot
+ *   botLairsNear(pBot, range) -> array of {oid, x, y}   the lairs within range metres (a scan: now and then, not every step)
+ *   botThreatOn(pBot, pCreature) -> table|nil   what a creature is on and how it can be taunted: {target (oid, 0 for
+ *                                               nobody), tauntable, taunted, tauntedBy, lockoutMs (until a taunt takes
+ *                                               effect again), poisoned, diseased, poisonImmune,
+ *                                               diseaseImmune, entries = {{oid, name, damage, aggro, heal, taunted}...}}.
+ *                                               nil when pCreature isn't an AiAgent. Call it in an event on the bot
+ *
+ * Dev table BotCombatDev (console: runLuaFunction BotCombatDev:<fn>:<args>, output in the pod log):
+ *   threat:<oid>   a creature's threat map (entries, damage, aggro, heal, state), its target, taunt lockout
+ *   range:<first>  a bot's held weapon and its ranges
  *
  * Also starts BotCombat's tick (its events: "incapacitated", "died", "revived", "cloned", "duel", "fightEnded").
  */
@@ -46,6 +59,9 @@ private:
 	static int botFindPack(lua_State* L);
 	static int botRecentIncaps(lua_State* L);
 	static int botDropDeadDefenders(lua_State* L);
+	static int botWeaponRange(lua_State* L);
+	static int botThreatOn(lua_State* L);
+	static int botLairsNear(lua_State* L);
 };
 
 } // namespace bot

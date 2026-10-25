@@ -309,6 +309,12 @@ BotLines.crew = {
 		"Swoop won't take. Catching up on foot.",
 		"No room for my bike here. Running.",
 	},
+	-- A ranged bot stepping back from a creature that came for it
+	backUp = {
+		"On me, backing up.",
+		"Coming back to you, backing up.",
+		"It's on me, backing up.",
+	},
 	-- The model can't answer and nothing was asked for: one of these, then a quiet minute
 	fallback = {
 		"Hm?",
@@ -321,9 +327,28 @@ BotLines.crew = {
 BotLines.tank = {
 	-- Opening a fight (group chat, now and then)
 	pull = {
+		"Pulling.",
 		"Pulling!",
 		"I've got its attention.",
 		"On it. Stay behind me.",
+	},
+	-- The creature turned on the tank after the taunt
+	got = {
+		"Got it.",
+		"Got it, it's on me.",
+		"It's on me.",
+	},
+	-- Taunting a creature that went for a group mate: {name} is that mate's first name
+	addGrab = {
+		"Add on {name}, grabbing it.",
+		"Add on {name}. Taking it.",
+		"Another one on {name}, I've got it.",
+	},
+	-- A creature on a group mate that can't be taunted yet (its taunt lockout is running)
+	tauntDown = {
+		"Taunt's down, watch yourselves.",
+		"Taunt's down. Watch yourselves.",
+		"Can't taunt it yet, keep an eye out.",
 	},
 	fallback = BotLines.crew.fallback,
 }
@@ -333,6 +358,15 @@ BotLines.rifleman = {
 }
 
 BotLines.medic = {
+	-- A poison or disease pack landed on the creature it is fighting
+	poisoned = {
+		"Poisoned it.",
+		"Poison's on it.",
+	},
+	diseased = {
+		"Disease is on.",
+		"Disease is on it.",
+	},
 	reviving = {
 		"Hang on, {name}, coming to get you up.",
 		"Hold on, {name}, rez incoming.",

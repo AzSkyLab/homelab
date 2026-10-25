@@ -37,8 +37,12 @@ public:
 	//   cure packs (medpack_cure_*) and revive packs (medpack_revive): one per template (extra copies are destroyed);
 	//   `power` is ignored for state packs, and 0 on a revive pack means a good crafted one (400). Pass the pack's oid (findPack) as the command's argument, e.g. to
 	//   "healdamage", when the bot carries more than one kind.
+	// - Poison and disease packs (medpack_poison_*, medpack_disease_*; Phase 7c, the combat medic's DoT packs): one per
+	//   template; `power` is the DoT's strength, `duration` its seconds, and `potency` (its chance to land, against the
+	//   creature's resistance) and `range` (metres, plus 14 at healing range 100) are set when above 0 and otherwise stay
+	//   the template's. Area packs are refused.
 	// The bot must be locked. Returns false if the pack can't be made.
-	static bool stockPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses, float power, int duration);
+	static bool stockPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency = 0, float range = 0);
 
 	// The oid of the first pack of `templateName` in the bot's inventory, or 0. The bot must be locked
 	static uint64 findPack(server::zone::objects::creature::CreatureObject* bot, const String& templateName);

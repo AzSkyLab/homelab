@@ -27,6 +27,10 @@
 #include "templates/params/ObserverEventType.h"
 #include "templates/params/creature/CreaturePosture.h"
 #include "templates/manager/TemplateManager.h"
+#include "server/zone/objects/creature/ai/AiAgent.h"
+#include "server/zone/objects/tangible/threat/ThreatStates.h"
+#include "server/zone/objects/scene/ObserverType.h"
+#include "templates/params/ObserverEventType.h"
 
 namespace {
 
@@ -1338,4 +1342,166 @@ int BotCombat::repairGear(CreatureObject* bot) {
 		combatLog().info(true) << bot->getFirstName() << " repaired " << count << " items";
 
 	return count;
+}
+
+// --- Tactics (Phase 7c) ---
+
+namespace {
+
+// ThreatMap keeps its cooldowns and lock protected, and a taunt's lockout is the cooldown it sets for the TAUNTED
+// state. Taking the member pointers through an explicit instantiation is the one place C++ lets us name them without
+// changing Core3's header
+template <typename Tag, typename Tag::type Member>
+struct Steal {
+	friend typename Tag::type steal(Tag) {
+		return Member;
+	}
+};
+
+struct ThreatCooldowns {
+	typedef CooldownTimerMap ThreatMap::*type;
+	friend type steal(ThreatCooldowns);
+};
+
+struct ThreatLock {
+	typedef Mutex ThreatMap::*type;
+	friend type steal(ThreatLock);
+};
+
+template struct Steal<ThreatCooldowns, &ThreatMap::cooldownTimerMap>;
+template struct Steal<ThreatLock, &ThreatMap::lockMutex>;
+
+}
+
+bool BotCombat::weaponRange(CreatureObject* bot, BotWeaponRange& out) {
+	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot))
+		return false;
+
+	Reference<WeaponObject*> weapon = bot->getWeapon();
+
+	if (weapon == nullptr)
+		return false;
+
+	out.ranged = weapon->isRangedWeapon();
+	out.pointBlankRange = weapon->getPointBlankRange();
+	out.pointBlankAccuracy = weapon->getPointBlankAccuracy();
+	out.idealRange = weapon->getIdealRange();
+	out.idealAccuracy = weapon->getIdealAccuracy();
+	out.maxRange = weapon->getMaxRange();
+	out.maxAccuracy = weapon->getMaxRangeAccuracy();
+
+	// A weapon the bot holds (not the default fists): its template
+	SceneObject* held = bot->getSlottedObject("hold_r");
+
+	out.templateName = held != nullptr && held == weapon.get() ? held->getObjectTemplate()->getFullTemplateString() : String();
+
+	return true;
+}
+
+bool BotCombat::threatOn(CreatureObject* bot, CreatureObject* creature, BotThreat& out) {
+	if (bot == nullptr || creature == nullptr || !creature->isAiAgent())
+		return false;
+
+	AiAgent* agent = creature->asAiAgent();
+
+	if (agent == nullptr)
+		return false;
+
+	// The bot is locked by the event this runs in (the lock is re-entrant); the creature's lock lets us read its map
+	Locker locker(bot);
+	Locker clocker(creature, bot);
+
+	out.tauntable = agent->isTauntable();
+	out.poisoned = creature->hasState(CreatureState::POISONED);
+	out.diseased = creature->hasState(CreatureState::DISEASED);
+
+	bool noDot = (agent->getCreatureBitmask() & ObjectFlag::NODOT) != 0;
+
+	out.poisonImmune = noDot || creature->hasDotImmunity(CreatureState::POISONED);
+	out.diseaseImmune = noDot || creature->hasDotImmunity(CreatureState::DISEASED);
+
+	SceneObject* defender = creature->getMainDefender();
+
+	out.target = defender != nullptr ? defender->getObjectID() : 0;
+
+	ThreatMap* threatMap = creature->getThreatMap();
+
+	if (threatMap == nullptr)
+		return true;
+
+	Mutex& mapLock = threatMap->*steal(ThreatLock());
+	Locker mlocker(&mapLock);
+
+	for (int i = 0; i < threatMap->size(); ++i) {
+		TangibleObject* attacker = threatMap->elementAt(i).getKey().get();
+
+		if (attacker == nullptr)
+			continue;
+
+		ThreatMapEntry& entry = threatMap->elementAt(i).getValue();
+		Reference<BotThreatEntry*> info = new BotThreatEntry();
+
+		info->oid = attacker->getObjectID();
+		info->name = attacker->getDisplayedName();
+		info->damage = entry.getTotalDamage();
+		info->aggro = entry.getAggroMod();
+		info->heal = entry.getHeal();
+		info->taunted = entry.hasState(ThreatStates::TAUNTED);
+
+		if (info->taunted) {
+			out.taunted = true;
+			out.tauntedBy = info->oid;
+		}
+
+		out.entries.add(info);
+	}
+
+	CooldownTimerMap& cooldowns = threatMap->*steal(ThreatCooldowns());
+	const Time* lockout = cooldowns.getTime(String::valueOf((uint64) ThreatStates::TAUNTED));
+
+	if (lockout != nullptr && !lockout->isPast()) {
+		Time now;
+
+		out.lockoutMs = (int) now.miliDifference(*lockout);
+	}
+
+	return true;
+}
+
+void BotCombat::lairsNear(CreatureObject* bot, float range, Vector<Reference<BotLairInfo*>>& out) {
+	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot))
+		return;
+
+	Zone* zone = bot->getZone();
+
+	if (zone == nullptr)
+		return;
+
+	SortedVector<ManagedReference<TreeEntry*>> nearby;
+	zone->getInRangeObjects(bot->getPositionX(), bot->getPositionZ(), bot->getPositionY(), range, &nearby, true, false);
+
+	for (int i = 0; i < nearby.size() && out.size() < 8; ++i) {
+		SceneObject* object = static_cast<SceneObject*>(nearby.get(i).get());
+
+		if (object == nullptr || object == bot || object->isCreatureObject())
+			continue;
+
+		if (object->getObserverCount(ObserverEventType::OBJECTDESTRUCTION) == 0 && object->getObserverCount(ObserverEventType::CREATUREDESPAWNED) == 0)
+			continue;
+
+		SortedVector<ManagedReference<Observer*>> observers = object->getObservers(ObserverEventType::OBJECTDESTRUCTION);
+		observers.addAll(object->getObservers(ObserverEventType::CREATUREDESPAWNED));
+
+		for (int j = 0; j < observers.size(); ++j) {
+			if (observers.get(j)->isObserverType(ObserverType::LAIR)) {
+				Reference<BotLairInfo*> lair = new BotLairInfo();
+
+				lair->oid = object->getObjectID();
+				lair->x = object->getWorldPositionX();
+				lair->y = object->getWorldPositionY();
+				out.add(lair);
+				break;
+			}
+		}
+	}
 }
