@@ -117,8 +117,40 @@ int devHarvest(lua_State* L) {
 	if (bot != nullptr) {
 		BotLoot::harvest(bot, toOid(L, 3), toString(L, 4), result);
 		devLog().info(true) << bot->getFirstName() << " harvest: ok " << (result.ok ? "yes" : "no") << ", " << result.amount << " units of "
-			<< result.kind << " (" << result.resource << "), error '" << result.error << "'";
+			<< result.kind << " (" << result.resource << ", spawn " << result.spawn << ", score " << result.score << ", lead " << result.lead << " "
+			<< result.leadValue << ", over " << result.altKind << " " << result.altScore << ", fallback " << (result.fallback ? "yes" : "no")
+			<< "), error '" << result.error << "'";
 	}
+
+	return 0;
+}
+
+int devHarvestChoice(lua_State* L) {
+	Reference<CreatureObject*> bot = devBot(L, 2);
+
+	if (bot == nullptr)
+		return 0;
+
+	Vector<Reference<BotHarvestOption*>> options;
+	String error;
+	StringBuffer text;
+
+	if (!BotLoot::harvestChoice(bot, toOid(L, 3), options, error)) {
+		devLog().info(true) << bot->getFirstName() << " harvestChoice: " << error;
+		return 0;
+	}
+
+	text << bot->getFirstName() << " harvestChoice " << options.size() << " kinds:";
+
+	for (int i = 0; i < options.size(); ++i) {
+		BotHarvestOption* o = options.get(i);
+
+		text << " [" << o->kind << " yield " << o->yield << (o->harvestable ? "" : " NO SPAWN") << " " << o->spawn << " / " << o->resource << " OQ "
+			<< o->oq << " SR " << o->sr << " UT " << o->ut << " MA " << o->ma << " DR " << o->dr << " FL " << o->fl << " PE " << o->pe << " score "
+			<< o->score << "]";
+	}
+
+	devLog().info(true) << text.toString();
 
 	return 0;
 }
@@ -195,7 +227,7 @@ int devMark(lua_State* L) {
 
 void registerDevTable(lua_State* L) {
 	static const luaL_Reg functions[] = {
-		{"loot", devLoot}, {"harvest", devHarvest}, {"goods", devGoods}, {"offer", devOffer}, {"cancel", devCancel}, {"mark", devMark},
+		{"loot", devLoot}, {"harvest", devHarvest}, {"harvestChoice", devHarvestChoice}, {"goods", devGoods}, {"offer", devOffer}, {"cancel", devCancel}, {"mark", devMark},
 		{nullptr, nullptr}
 	};
 
@@ -214,6 +246,7 @@ void registerDevTable(lua_State* L) {
 void BotLootLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botLootCorpse", botLootCorpse);
 	lua->registerFunction("botHarvest", botHarvest);
+	lua->registerFunction("botHarvestChoice", botHarvestChoice);
 	lua->registerFunction("botGoods", botGoods);
 	lua->registerFunction("botCorpsesNear", botCorpsesNear);
 	lua->registerFunction("botOfferGoods", botOfferGoods);
@@ -284,7 +317,7 @@ int BotLootLua::botCorpsesNear(lua_State* L) {
 	return 1;
 }
 
-// botHarvest(pBot, corpseOid[, kind]): {ok, kind, amount, resource, error}
+// botHarvest(pBot, corpseOid[, kind]): {ok, kind, amount, resource, spawn, score, fallback, lead, leadValue, stats, altKind, altScore, error}
 int BotLootLua::botHarvest(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 	BotHarvestResult result;
@@ -299,7 +332,50 @@ int BotLootLua::botHarvest(lua_State* L) {
 	setString(L, "kind", result.kind);
 	setInteger(L, "amount", result.amount);
 	setString(L, "resource", result.resource);
+	setString(L, "spawn", result.spawn);
+	setInteger(L, "score", result.score);
+	setBoolean(L, "fallback", result.fallback);
+	setString(L, "lead", result.lead);
+	setInteger(L, "leadValue", result.leadValue);
+	setString(L, "stats", result.stats);
+	setString(L, "altKind", result.altKind);
+	setInteger(L, "altScore", result.altScore);
 	setString(L, "error", result.error);
+
+	return 1;
+}
+
+// botHarvestChoice(pBot, corpseOid): array of {kind, spawn, resource, yield, oq, sr, ut, ma, dr, fl, pe, score, harvestable}
+// for each of the creature's meat, hide and bone; empty when there is no such corpse
+int BotLootLua::botHarvestChoice(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	Vector<Reference<BotHarvestOption*>> options;
+	String error;
+
+	if (bot != nullptr)
+		BotLoot::harvestChoice(bot, toOid(L, 2), options, error);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < options.size(); ++i) {
+		BotHarvestOption* o = options.get(i);
+
+		lua_newtable(L);
+		setString(L, "kind", o->kind);
+		setString(L, "spawn", o->spawn);
+		setString(L, "resource", o->resource);
+		setInteger(L, "yield", o->yield);
+		setInteger(L, "oq", o->oq);
+		setInteger(L, "sr", o->sr);
+		setInteger(L, "ut", o->ut);
+		setInteger(L, "ma", o->ma);
+		setInteger(L, "dr", o->dr);
+		setInteger(L, "fl", o->fl);
+		setInteger(L, "pe", o->pe);
+		setInteger(L, "score", o->score);
+		setBoolean(L, "harvestable", o->harvestable);
+		lua_rawseti(L, -2, i + 1);
+	}
 
 	return 1;
 }

@@ -18,6 +18,11 @@
 #include "server/zone/objects/tangible/terminal/mission/MissionTerminal.h"
 #include "server/zone/objects/waypoint/WaypointObject.h"
 #include "server/zone/managers/mission/MissionManager.h"
+#include "server/zone/managers/creature/CreatureTemplateManager.h"
+#include "server/zone/managers/creature/SpawnGroup.h"
+#include "server/zone/managers/creature/LairSpawn.h"
+#include "server/zone/objects/creature/ai/CreatureTemplate.h"
+#include "templates/mobile/LairTemplate.h"
 #include "server/zone/managers/stringid/StringIdManager.h"
 
 using namespace server::zone::managers::bot;
@@ -111,6 +116,101 @@ String targetText(const String& targetName) {
 	return text;
 }
 
+// A creature as the client names it ("womp rat"): the template's object name from the string table, else its custom name,
+// else the template's own name
+String creatureText(const String& mobile) {
+	CreatureTemplate* creatureTemplate = CreatureTemplateManager::instance()->getTemplate(mobile);
+	String text;
+
+	if (creatureTemplate != nullptr) {
+		String objectName = creatureTemplate->getObjectName();
+
+		if (!objectName.isEmpty())
+			text = targetText(objectName);
+
+		if (text.isEmpty())
+			text = creatureTemplate->getCustomName().toLowerCase();
+	}
+
+	if (text.isEmpty())
+		text = mobile.replaceAll("_", " ");
+
+	return text;
+}
+
+void addName(Vector<String>& out, const String& name) {
+	String text = name.trim().toLowerCase();
+
+	if (!text.isEmpty() && !out.contains(text))
+		out.add(text);
+}
+
+Mutex lairNamesMutex;
+VectorMap<String, Vector<String>> lairNames;	// lair template -> creatureNames of it (the templates don't change)
+
+void lairCreaturesRead(const String& lairName, Vector<String>& out);
+
+// The names of what lives in a lair: its mobiles and boss mobiles, by display name (the template names carry planet and
+// title words: "tatooine_mynock")
+void lairCreatures(const String& lairName, Vector<String>& out) {
+	{
+		Locker locker(&lairNamesMutex);
+
+		int pos = lairNames.find(lairName);
+
+		if (pos != -1) {
+			const Vector<String>& known = lairNames.elementAt(pos).getValue();
+
+			for (int i = 0; i < known.size(); ++i) {
+				if (!out.contains(known.get(i)))
+					out.add(known.get(i));
+			}
+
+			return;
+		}
+	}
+
+	Vector<String> found;
+
+	lairCreaturesRead(lairName, found);
+
+	{
+		Locker locker(&lairNamesMutex);
+
+		lairNames.put(lairName, found);
+	}
+
+	for (int i = 0; i < found.size(); ++i) {
+		if (!out.contains(found.get(i)))
+			out.add(found.get(i));
+	}
+}
+
+void lairCreaturesRead(const String& lairName, Vector<String>& out) {
+	LairTemplate* lair = CreatureTemplateManager::instance()->getLairTemplate(lairName.hashCode());
+
+	if (lair == nullptr)
+		return;
+
+	const VectorMap<String, int>* lists[2] = {lair->getMobiles(), lair->getBossMobiles()};
+
+	for (int l = 0; l < 2; ++l) {
+		const VectorMap<String, int>* list = lists[l];
+
+		if (list == nullptr)
+			continue;
+
+		for (int i = 0; i < list->size(); ++i) {
+			String mobile = list->elementAt(i).getKey();
+
+			addName(out, creatureText(mobile));
+		}
+	}
+}
+
+Mutex creaturesMutex;
+VectorMap<String, Vector<String>> creaturesByZone;	// zone -> creatureNames (computed once: the spawn groups are fixed at boot)
+
 MissionManager* missionManager(CreatureObject* bot) {
 	ZoneServer* zoneServer = bot->getZoneServer();
 
@@ -141,6 +241,10 @@ void fillInfo(BotMissionInfo* info, MissionObject* mission, float fromX, float f
 	info->planet = mission->getStartPlanet();
 	info->target = targetText(mission->getTargetName());
 	info->level = mission->getDifficultyDisplay();
+	info->lair = mission->getTargetOptionalTemplate();
+
+	if (!info->lair.isEmpty())
+		lairCreatures(info->lair, info->creatures);
 
 	// Core3 fails a destroy mission it can't find a lair spot for, and removes it as it does a done one: the lair having
 	// spawned (the objective has an observer on it) tells the two apart
@@ -525,6 +629,50 @@ int BotMission::abortAll(CreatureObject* bot, String& error) {
 		missionLog().info(true) << bot->getFirstName() << " aborted " << aborted << " mission(s)";
 
 	return aborted;
+}
+
+bool BotMission::creatures(CreatureObject* bot, Vector<String>& out) {
+	if (bot == nullptr || bot->getZone() == nullptr)
+		return false;
+
+	String zoneName = bot->getZone()->getZoneName();
+
+	{
+		Locker locker(&creaturesMutex);
+
+		int pos = creaturesByZone.find(zoneName);
+
+		if (pos != -1) {
+			out = creaturesByZone.elementAt(pos).getValue();
+			return true;
+		}
+	}
+
+	Vector<String> names;
+	SpawnGroup* group = CreatureTemplateManager::instance()->getDestroyMissionGroup(String(zoneName + "_destroy_missions").hashCode());
+
+	if (group != nullptr) {
+		const Vector<Reference<LairSpawn*>>& lairs = group->getSpawnList();
+
+		for (int i = 0; i < lairs.size(); ++i) {
+			LairSpawn* spawn = lairs.get(i);
+
+			if (spawn == nullptr)
+				continue;
+
+			const String& lairName = spawn->getLairTemplateName();
+
+			addName(names, targetText("@lair_n:" + lairName));
+			lairCreatures(lairName, names);
+		}
+	}
+
+	Locker locker(&creaturesMutex);
+
+	creaturesByZone.put(zoneName, names);
+	out = names;
+
+	return true;
 }
 
 bool BotMission::current(CreatureObject* bot, Vector<Reference<BotMissionInfo*>>& out) {

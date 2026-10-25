@@ -57,6 +57,8 @@ public:
 	String target;			// what the lair is, as the client shows it ("womp rat lair")
 	int level = 0;			// the difficulty shown to the player
 	bool lairUp = false;	// an accepted mission: its lair has spawned (the objective watches it)
+	String lair;			// the lair template's name, e.g. "tatooine_dragonet_dragonet_neutral_medium_boss_01"
+	Vector<String> creatures;	// what lives in it: its mobiles' and boss mobiles' names as the client shows them ("womp rat"), lowercase, no repeats
 };
 
 // A waypoint in a player's datapad
@@ -88,6 +90,11 @@ public:
 
 	// Aborts every mission the bot holds; returns how many went. error: "combat" if some could not
 	static int abortAll(server::zone::objects::creature::CreatureObject* bot, String& error);
+
+	// Every creature name that can appear in this planet's destroy-mission lairs (Core3's <planet>_destroy_missions spawn
+	// group): the lairs' display names ("womp rat lair") and their creatures' names, lowercase, no repeats. Cached per
+	// planet. Reads only
+	static bool creatures(server::zone::objects::creature::CreatureObject* bot, Vector<String>& out);
 
 	// The destroy missions the bot holds
 	static bool current(server::zone::objects::creature::CreatureObject* bot, Vector<Reference<BotMissionInfo*>>& out);

@@ -7,6 +7,14 @@
 -- missions" aborts them. A mission's waypoint is copied into the leader's datapad as "<Bot>: <lair>" and goes when the
 -- mission ends or the bot leaves the group (the C++ side, patches/bots/BotMission.*: botMissionSync).
 --
+-- By creature (Phase 7b): "janta missions", "grab two dragonet lairs east", "womp rat lairs north", "kreetle missions any
+-- direction". A creature name in the request (plurals and "lair", "nest", "camp" ignored) that lives in a destroy-mission
+-- lair on this planet (botMissionCreatures) keeps only the missions whose lair has it, among the lair's name and its
+-- creatures (botMissionList's creatures). With a direction, the best-paying within 45 degrees as always; with none, the best
+-- anywhere. Nothing on offer after the refreshes: it takes nothing and says so (missionNoneOf), no fall back to other
+-- creatures. Follow-ups ("search again", a bare direction) keep the creature, as they keep the direction. A word that is
+-- no creature of this planet leaves the request as it was (any creature).
+--
 -- One crew member answers the group's chat (as for orders) and sends the others the same errand; a bot that was
 -- named does its own. The errand is a chain of events on the bot (missionStep) that carries the bot's generation and
 -- the errand's number; its state lives in shared memory under bot:<oid>:crew:m*. The language model is not asked.
@@ -98,6 +106,166 @@ BotCrew.missionCfg = {
 	syncEvery = 5,    -- seconds between waypoint syncs
 }
 
+-- Creature talk
+
+-- Words that are never the creature: mission talk, counts, directions, chat
+local CREATURE_STOP = {}
+
+for word in ([[mission missions lair lairs nest nests camp camps grab get take accept fetch pick run find need want give
+	two one three a an the me us any direction directions anywhere nearby close closest nearest near please for of from to in at
+	and on my your our some all destroy destroying hunt hunting go up out down again search them it that this those these
+	north northeast east southeast south southwest west northwest n ne e se s sw w nw side way there here also then
+	tatooine naboo corellia dantooine dathomir endor lok rori talus yavin4 yavin planet]]):gmatch("%a+") do
+	CREATURE_STOP[word] = true
+end
+
+-- Words that name a kind of animal or person, not which: alone they are not a request for a creature
+local CREATURE_GENERIC = {}
+
+for word in ([[greater lesser giant young elder great small large little big wild desert mountain plains canyon dune
+	male female baby old leader captain soldier death clan rock sand spice pa lord king queen chief elder guard hunter warrior
+	scout champion master boss lieutenant commander sergeant officer apprentice acolyte assassin thug thief bandit]]):gmatch("%a+") do
+	CREATURE_GENERIC[word] = true
+end
+
+-- "womp rats" -> "womp rat", "wolves" -> "wolf"; the same on both sides, so it only has to be consistent
+local function singular(word)
+	if #word > 4 and word:sub(-3) == "ies" then
+		return word:sub(1, -4) .. "y"
+	elseif #word > 4 and word:sub(-3) == "ves" then
+		return word:sub(1, -4) .. "f"
+	elseif #word > 3 and word:sub(-1) == "s" and word:sub(-2) ~= "ss" and word:sub(-2) ~= "us" and word:sub(-2) ~= "is" then
+		return word:sub(1, -2)
+	end
+
+	return word
+end
+
+-- A name's words, singular, lowercase, without "lair", "nest" and "camp"
+local function nameWords(name)
+	local out = {}
+
+	for word in tostring(name or ""):lower():gmatch("%a+") do
+		if word ~= "lair" and word ~= "lairs" and word ~= "nest" and word ~= "nests" and word ~= "camp" and word ~= "camps" then
+			table.insert(out, singular(word))
+		end
+	end
+
+	return out
+end
+
+-- Per planet (the Lua state is the thread's own, and the spawn groups never change): every phrase of one or more
+-- consecutive words in a creature's or lair's name, "womp rat" and "womp", "rat" of it, except a lone generic word
+local vocabulary = {}
+
+function BotCrew:missionVocabulary(pBot)
+	local zone = SceneObject(pBot):getZoneName()
+
+	if vocabulary[zone] ~= nil then
+		return vocabulary[zone]
+	end
+
+	local names = bot("botMissionCreatures", pBot)
+
+	if names == nil or #names == 0 then
+		return nil
+	end
+
+	local phrases = {}
+
+	for _, name in ipairs(names) do
+		local words = nameWords(name)
+
+		for i = 1, #words do
+			for j = i, #words do
+				if i ~= j or not CREATURE_GENERIC[words[i]] then
+					phrases[table.concat(words, " ", i, j)] = true
+				end
+			end
+		end
+	end
+
+	vocabulary[zone] = phrases
+
+	return phrases
+end
+
+-- The creature a request names: the longest run of its words that is a phrase of this planet's destroy-mission creatures
+-- ("womp rat", "janta"); nil when there is none
+function BotCrew:missionCreatureOf(pBot, text)
+	local phrases = self:missionVocabulary(pBot)
+
+	if phrases == nil then
+		return nil
+	end
+
+	local words = {}
+
+	for word in tostring(text or ""):lower():gsub("'", ""):gmatch("%a+") do
+		if CREATURE_STOP[word] then
+			table.insert(words, false)
+		else
+			table.insert(words, singular(word))
+		end
+	end
+
+	local best, bestLength = nil, 0
+
+	for i = 1, #words do
+		local phrase = nil
+
+		for j = i, #words do
+			if words[j] == false then
+				break
+			end
+
+			phrase = phrase == nil and words[j] or (phrase .. " " .. words[j])
+
+			if phrases[phrase] and (j - i + 1 > bestLength or (j - i + 1 == bestLength and #phrase > #best)) and
+				not (i == j and (CREATURE_GENERIC[words[i]] or #words[i] < 3)) then
+				best, bestLength = phrase, j - i + 1
+			end
+		end
+	end
+
+	return best
+end
+
+-- Does the mission's lair, or a creature in it, have this creature in its name?
+function BotCrew:missionHas(m, creature)
+	local needle = " " .. creature .. " "
+	local names = {m.target}
+
+	for _, name in ipairs(m.creatures or {}) do
+		table.insert(names, name)
+	end
+
+	for _, name in ipairs(names) do
+		if (" " .. table.concat(nameWords(name), " ") .. " "):find(needle, 1, true) ~= nil then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- The missions of the list that have the creature (all of them with no creature asked)
+function BotCrew:missionFilter(missions, creature)
+	if creature == nil or creature == "" then
+		return missions
+	end
+
+	local out = {}
+
+	for _, m in ipairs(missions or {}) do
+		if self:missionHas(m, creature) then
+			table.insert(out, m)
+		end
+	end
+
+	return out
+end
+
 -- Mission talk
 
 -- No direction asked: any (the best paying), or the nearest. Stored as the mission's direction
@@ -142,7 +310,7 @@ end
 -- What a group chat line asks of the missions: nil, {kind = "drop"} or {kind = "take", dir = <degrees, ANY or NEAR, or
 -- nil>, name = <direction name>, count = 1 or 2}. A take with no direction only counts when it says to take (grab, get,
 -- ...). With loose, no word "mission" is needed (a retry), and only a direction, "any" or "nearby" makes a take.
-function BotCrew:missionRequest(text, loose)
+function BotCrew:missionRequest(text, loose, creature)
 	local t = tostring(text or ""):lower():gsub("'", "")
 
 	t = t:gsub("north[%s%-]+east", "northeast"):gsub("north[%s%-]+west", "northwest"):gsub("south[%s%-]+east", "southeast")
@@ -164,6 +332,12 @@ function BotCrew:missionRequest(text, loose)
 		if name ~= nil and direction == nil then
 			direction = name
 		end
+	end
+
+	-- "grab two dragonet lairs east": a lair or a nest is a mission when a creature is asked for with a take verb (talk
+	-- about a lair on a hunt, "kill that womp rat lair", isn't)
+	if not mission and take and creature ~= nil and (t:find("%f[%a]lairs?%f[%A]") or t:find("%f[%a]nests?%f[%A]")) then
+		mission = true
 	end
 
 	if not mission and not loose then
@@ -188,7 +362,8 @@ function BotCrew:missionRequest(text, loose)
 		return {kind = "take", dir = ANY, name = ANY_NAME, count = count}
 	end
 
-	if take and mission then
+	-- ("janta missions": the creature asks, with or without a verb; with no direction it means anywhere)
+	if (take or creature ~= nil) and mission then
 		return {kind = "take", count = count}
 	end
 
@@ -322,20 +497,62 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 
 	local now = os.time()
 	local forGroup = readData(ckey(oid, "forGroup")) == 1
-	local request = self:missionRequest(text)
+	local retryable = self:missionRetryable(g, oid, forGroup, now)
+	local lower = tostring(text or ""):lower()
+	local creature = nil
+	local saysMission = lower:find("mission", 1, true) ~= nil
+
+	-- Orders to fight and move are the crew's own talk ("kill that womp rat lair", "get over to the lair east"), unless the
+	-- line asks for missions in so many words
+	if not saysMission then
+		local intent = self:intentFor(text, nil)
+
+		if intent == "attack" or intent == "follow" or intent == "stay" or intent == "home" then
+			return false
+		end
+	end
+
+	-- (only a line about missions, lairs or nests, or a follow-up soon after an errand, can name a creature)
+	if retryable or lower:find("mission", 1, true) or lower:find("lair", 1, true) or lower:find("nest", 1, true) then
+		creature = self:missionCreatureOf(pBot, text)
+	end
+
+	local request = self:missionRequest(text, false, creature)
+	local followUp = false
+
+	-- A lair line without "missions" (grab two dragonet lairs east) is for a mission terminal: with none by, it is hunting talk
+	if request ~= nil and not saysMission and not self:missionTerminalNear(pBot, g) then
+		return false
+	end
 
 	-- Not about missions, but soon after the crew was asked for some and is short: "search again", "get them", "any"
 	if request == nil then
-		if not self:missionRetryable(g, oid, forGroup, now) then
+		if not retryable then
 			return false
 		end
 
 		request = self:missionRetry(text)
 
+		-- ("just the janta", said right after the terminal had none of them; or "get the kreetles" with a take verb)
+		if request == nil and creature ~= nil and not questionLike(text) and not tostring(text):find("?", 1, true) and
+			select(2, leadless(text):gsub("%S+", "")) <= 4 and
+			(self:missionNoneRecently(g, oid, forGroup, now) or self:missionTakeVerb(text)) then
+			request = {kind = "take", count = 2}
+		end
+
 		if request == nil then
 			return false
 		end
+
+		followUp = true
 	end
+
+	-- A follow-up keeps the creature it was asked for; a new order with none asks for any
+	if creature == nil and followUp then
+		creature = self:missionLastCreature(g, oid, forGroup, now)
+	end
+
+	request.creature = creature
 
 	local name = self:firstName(pSpeaker)
 
@@ -348,7 +565,10 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 			-- A question about missions is the brain's; an order with no direction takes the last one asked
 			local last = not questionLike(text) and self:missionLastName(g, oid, forGroup, now) or nil
 
-			if last ~= nil then
+			if creature ~= nil and not questionLike(text) and (not followUp or last == nil) then
+				-- "janta missions": a creature and no direction means anywhere
+				request.name, request.dir = ANY_NAME, ANY
+			elseif last ~= nil then
 				request.name, request.dir = last, self:missionDirOf(last)
 			elseif questionLike(text) then
 				return false
@@ -367,7 +587,7 @@ function BotCrew:missionHeard(pBot, oid, pSpeaker, channel, text)
 		for i, m in ipairs(g.crew) do
 			if m.oid ~= oid then
 				createEvent(500 * i, "BotCrew", "missionGroup", m.p,
-					packArgs(readData(key(m.oid, "gen")), request.kind, request.name or "-", request.count or 2))
+					packArgs(readData(key(m.oid, "gen")), request.kind, request.name or "-", request.count or 2, creature or "-"))
 			end
 		end
 	end
@@ -385,6 +605,43 @@ function BotCrew:missionRetryable(g, oid, forGroup, now)
 	end
 
 	return false
+end
+
+-- Does the line have a verb that takes missions (grab, get, take, ...)?
+function BotCrew:missionTakeVerb(text)
+	for word in tostring(text or ""):lower():gmatch("%a+") do
+		if TAKE_WORDS[word] then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Did this bot (said to it alone) or the crew (said to the group) just say it found none of the creature asked for?
+function BotCrew:missionNoneRecently(g, oid, forGroup, now)
+	for _, m in ipairs(g.crew) do
+		if (forGroup or m.oid == oid) and now - readData(ckey(m.oid, "mNoneAt")) <= self.missionAsked and readData(ckey(m.oid, "mNoneAt")) ~= 0 then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Is there a general mission terminal by the bot, or by the group's leader?
+function BotCrew:missionTerminalNear(pBot, g)
+	local terminals = bot("botMissionTerminals", pBot, self.missionCfg.range)
+
+	if terminals ~= nil and #terminals > 0 then
+		return true
+	end
+
+	if g ~= nil and g.leader ~= nil then
+		terminals = bot("botMissionTerminals", g.leader.p, self.missionCfg.range)
+	end
+
+	return terminals ~= nil and #terminals > 0
 end
 
 -- The direction last asked of this bot (or, said to the group, of a crew mate), if that was lately
@@ -408,6 +665,25 @@ function BotCrew:missionLastName(g, oid, forGroup, now)
 	return nil
 end
 
+-- The creature last asked of this bot (or, said to the group, of a crew mate), if that was lately; "" when it was none
+function BotCrew:missionLastCreature(g, oid, forGroup, now)
+	if now - readData(ckey(oid, "mAskAt")) <= self.missionAsked and readData(ckey(oid, "mLastSet")) == 1 then
+		return readStringData(ckey(oid, "mLastCreature")) ~= "" and readStringData(ckey(oid, "mLastCreature")) or nil
+	end
+
+	if forGroup then
+		for _, m in ipairs(g.crew) do
+			if now - readData(ckey(m.oid, "mAskAt")) <= self.missionAsked and readData(ckey(m.oid, "mLastSet")) == 1 then
+				local last = readStringData(ckey(m.oid, "mLastCreature"))
+
+				return last ~= "" and last or nil
+			end
+		end
+	end
+
+	return nil
+end
+
 function BotCrew:missionGroup(pBot, args)
 	local a = unpackArgs(args)
 
@@ -420,7 +696,8 @@ function BotCrew:missionGroup(pBot, args)
 	local pLeader = g ~= nil and g.humans[1] ~= nil and g.humans[1].p or nil
 
 	self:missionOrder(pBot, oid, {kind = a[2], name = a[3] ~= "-" and a[3] or nil, dir = self:missionDirOf(a[3]),
-		count = num(a[4]) or 2}, pLeader ~= nil and self:firstName(pLeader) or "friend")
+		count = num(a[4]) or 2, creature = a[5] ~= nil and a[5] ~= "-" and a[5] or nil},
+		pLeader ~= nil and self:firstName(pLeader) or "friend")
 end
 
 function BotCrew:missionOrder(pBot, oid, request, name)
@@ -452,6 +729,10 @@ function BotCrew:missionClear(oid)
 	deleteStringData(ckey(oid, "mName"))
 	deleteStringData(ckey(oid, "mDirName"))
 	deleteStringData(ckey(oid, "mLastName"))
+	deleteStringData(ckey(oid, "mCreature"))
+	deleteStringData(ckey(oid, "mLastCreature"))
+	deleteData(ckey(oid, "mLastSet"))
+	deleteData(ckey(oid, "mNoneAt"))
 	deleteData(ckey(oid, "mAskAt"))
 end
 
@@ -509,6 +790,9 @@ function BotCrew:missionStart(pBot, oid, request, name)
 	writeStringData(ckey(oid, "mName"), (tostring(name or "friend"):gsub("%%", "")))
 	writeStringData(ckey(oid, "mDirName"), request.name)
 	writeStringData(ckey(oid, "mLastName"), request.name)
+	writeStringData(ckey(oid, "mCreature"), (tostring(request.creature or ""):gsub("%%", "")))
+	writeStringData(ckey(oid, "mLastCreature"), (tostring(request.creature or ""):gsub("%%", "")))
+	put(ckey(oid, "mLastSet"), 1)
 	put(ckey(oid, "mStartAt"), os.time())
 	put(ckey(oid, "mDir"), request.dir)
 	put(ckey(oid, "mNeed"), need)
@@ -520,7 +804,8 @@ function BotCrew:missionStart(pBot, oid, request, name)
 	put(ckey(oid, "mTries"), 0)
 	put(ckey(oid, "mRetry"), 0)
 
-	print("BotJobs: " .. self:name(oid) .. " goes for " .. need .. " destroy mission(s) " .. request.name .. ", terminal " ..
+	print("BotJobs: " .. self:name(oid) .. " goes for " .. need .. " destroy mission(s) " .. request.name ..
+		(request.creature ~= nil and (" (" .. request.creature .. ")") or "") .. ", terminal " ..
 		t.oid .. " " .. string.format("%.0f", t.distance) .. " m away")
 
 	self:standUp(pBot, oid)
@@ -608,12 +893,19 @@ function BotCrew:missionStep(pBot, args)
 	local tries = readData(ckey(oid, "mTries")) + 1
 	local need = readData(ckey(oid, "mNeed"))
 	local dir = readData(ckey(oid, "mDir"))
+	local creature = readStringData(ckey(oid, "mCreature"))
+	local offered = #missions
+
+	-- Asked for a creature: only its lairs count (none of the others, however well they pay)
+	missions = self:missionFilter(missions, creature)
+
 	local picks = self:missionPick(missions, dir, need, cfg.arc)
 
 	put(ckey(oid, "mTries"), tries)
 
 	-- One line a list, for the log: what the terminal offered, and how much of it lies the way it was asked
-	print("BotJobs: " .. self:name(oid) .. " reads list " .. tries .. ": " .. #missions .. " destroy, " ..
+	print("BotJobs: " .. self:name(oid) .. " reads list " .. tries .. ": " .. offered .. " destroy, " ..
+		(creature ~= "" and (#missions .. " " .. creature .. ", ") or "") ..
 		#self:missionPick(missions, dir, #missions, cfg.arc) .. " " .. readStringData(ckey(oid, "mDirName")) ..
 		" (" .. #self:missionPick(missions, dir, #missions, cfg.wideArc) .. " within " .. cfg.wideArc .. " degrees)")
 
@@ -660,9 +952,16 @@ function BotCrew:missionTake(pBot, oid, terminal, picks, now, widened)
 	end
 
 	local anyDirection = readData(ckey(oid, "mDir")) < 0
+	local creature = readStringData(ckey(oid, "mCreature"))
 
 	if #taken == 0 then
-		self:groupSay(pBot, oid, anyDirection and "missionNoneAny" or "missionNone", name, {dir = dirName, tries = tostring(tries)})
+		if creature ~= "" then
+			put(ckey(oid, "mNoneAt"), os.time())
+			self:groupSay(pBot, oid, "missionNoneOf", name, {creature = creature, dir = dirName, tries = tostring(tries)})
+		else
+			self:groupSay(pBot, oid, anyDirection and "missionNoneAny" or "missionNone", name, {dir = dirName, tries = tostring(tries)})
+		end
+
 		return
 	end
 
@@ -1042,19 +1341,26 @@ end
 
 function BotCrew:devMissionAsk(first, text)
 	local pBot = botGetCreature ~= nil and botGetCreature(first or "") or nil
-	local request = self:missionRequest((text or ""):gsub("_", " "))
+	local line = (text or ""):gsub("_", " ")
+	local creature = pBot ~= nil and self:missionCreatureOf(pBot, line) or nil
+	local request = self:missionRequest(line, false, creature)
 
 	if pBot == nil or request == nil then
 		print("BotCrew: usage devMissionAsk:<first>:<text with _ for spaces> (a missions line); got " .. tostring(text))
 		return
 	end
 
-	createEvent(10, "BotCrew", "devMissionNow", pBot, packArgs(request.kind, request.name or "-", request.count or 2))
+	if request.dir == nil and creature ~= nil then
+		request.name = ANY_NAME
+	end
+
+	createEvent(10, "BotCrew", "devMissionNow", pBot, packArgs(request.kind, request.name or "-", request.count or 2, creature or "-"))
 end
 
 function BotCrew:devMissionNow(pBot, args)
 	local a = unpackArgs(args)
+	local name = a[2] ~= "-" and a[2] or nil
 
-	self:missionOrder(pBot, SceneObject(pBot):getObjectID(), {kind = a[1], name = a[2] ~= "-" and a[2] or nil,
-		dir = DIRECTIONS[a[2] or ""], count = num(a[3]) or 2}, "Tester")
+	self:missionOrder(pBot, SceneObject(pBot):getObjectID(), {kind = a[1], name = name, dir = self:missionDirOf(name),
+		count = num(a[3]) or 2, creature = a[4] ~= nil and a[4] ~= "-" and a[4] or nil}, "Tester")
 end

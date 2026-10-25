@@ -106,6 +106,16 @@ void pushMissions(lua_State* L, const Vector<Reference<BotMissionInfo*>>& missio
 		setInteger(L, "level", info->level);
 		lua_pushboolean(L, info->lairUp);
 		lua_setfield(L, -2, "lairUp");
+		setString(L, "lair", info->lair);
+
+		lua_newtable(L);
+
+		for (int c = 0; c < info->creatures.size(); ++c) {
+			lua_pushstring(L, info->creatures.get(c).toCharArray());
+			lua_rawseti(L, -2, c + 1);
+		}
+
+		lua_setfield(L, -2, "creatures");
 
 		lua_rawseti(L, -2, i + 1);
 	}
@@ -118,6 +128,7 @@ void BotMissionLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botMissionList", botMissionList);
 	lua->registerFunction("botMissionAccept", botMissionAccept);
 	lua->registerFunction("botMissionAbort", botMissionAbort);
+	lua->registerFunction("botMissionCreatures", botMissionCreatures);
 	lua->registerFunction("botMissions", botMissions);
 	lua->registerFunction("botPlayerMissions", botPlayerMissions);
 	lua->registerFunction("botMissionDone", botMissionDone);
@@ -202,6 +213,24 @@ int BotMissionLua::botMissionAbort(lua_State* L) {
 	lua_pushstring(L, error.toCharArray());
 
 	return 2;
+}
+
+// botMissionCreatures(pBot): array of lowercase names (the lairs' and their creatures') of this planet's destroy missions
+int BotMissionLua::botMissionCreatures(lua_State* L) {
+	CreatureObject* bot = toCreature(L, 1);
+	Vector<String> names;
+
+	if (bot != nullptr)
+		BotMission::creatures(bot, names);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < names.size(); ++i) {
+		lua_pushstring(L, names.get(i).toCharArray());
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
 }
 
 // botMissions(pBot)

@@ -31,6 +31,12 @@
 -- trade, and ends. BotTrade opens one trade at a time to a player (a few seconds after the last one closed), so bots
 -- handing over together go one after the other; each says its line when its own trade opens. A handover that is
 -- cancelled while other bots hold goods too is offered once more before it gives up.
+-- The 2005 client sometimes loses a trade window opened close to other activity (a group that has just disbanded): so
+-- a bot leaving the group waits offerLeaveDelayMs before it offers, a window that closed on its own before the player
+-- touched it ("bundleLost" from BotTrade) is offered once more offerRetryMs later, and a second loss makes the bot say
+-- handoverRetryAsk and wait offerWaitSeconds nearby for "trade me" before it heads home.
+-- Out of the group: "hand it over" said out loud to the bot, or by tell, works too. A bot that has gone home answers a
+-- tell with where it is (handoverWhere) and offers when the player comes within wantRange (BotCrew:lootWantTick).
 -- The goods are never sold, dropped or kept for the bot: a cancelled trade leaves them in its pack for the next ask.
 
 BotCrew.lootEvery = 2           -- seconds between a bot's loot and harvest actions
@@ -51,6 +57,10 @@ BotCrew.offerRoomMs = 5000        -- how often it looks again for room in the pl
 BotCrew.offerRequestSeconds = 60   -- an asked-for handover gives up after this long
 BotCrew.offerLeaveSeconds = 75     -- a handover before heading home
 BotCrew.offerRetryMs = 8000        -- a cancelled handover is offered once more after this, when others hold goods too
+BotCrew.offerLeaveDelayMs = 4000   -- a bot that has left the group waits this before it offers (the client is busy with the disband)
+BotCrew.offerWaitSeconds = 120     -- after two lost windows it waits this long, nearby, for "trade me"
+BotCrew.wantSeconds = 600          -- a tell "hand it over" to a bot at home stands this long
+BotCrew.wantRange = 30             -- ...and the bot offers once the player is within this
 BotCrew.handoverWords = {"hand it over", "hand it all over", "hand over", "give me the loot", "give me my loot",
 	"give me the goods", "give me what you", "trade me", "give me the hides", "give me the resources", "hand me the loot",
 	"hand me the goods", "hand me what you", "hand me my loot", "give it over", "give me your loot", "give me everything"}
@@ -116,6 +126,10 @@ end
 
 local function putInt(k, v)
 	writeData(k, math.floor(tonumber(v) or 0))
+end
+
+local function putString(k, v)
+	writeStringData(k, (tostring(v or ""):gsub("%%", "")))
 end
 
 -- Kills
@@ -611,6 +625,24 @@ function BotCrew:lootApproach(pBot, oid, c, reach, now)
 	return false, dist
 end
 
+-- The leader of the bot's group (the harvest choice, the hunt and the kind asked for live under it)
+function BotCrew:harvestLeader(pBot, oid)
+	local g = self:group(pBot)
+
+	if g ~= nil and g.leader ~= nil then
+		return g.leader.oid
+	end
+
+	return readData(lkey(oid, "leader"))
+end
+
+-- "hide" -> "Hide"
+local function capital(word)
+	return (tostring(word or ""):gsub("^%l", string.upper))
+end
+
+-- The ranger's own harvest, or the kind it was asked for ("hide", "meat", "bone"; "" for its own pick: the resource
+-- with the best crafting score on this planet today, botHarvest)
 function BotCrew:harvestStep(pBot, oid, c, now)
 	if now - readData(lkey(oid, "lootAt")) < self.lootEvery then
 		return true
@@ -633,13 +665,15 @@ function BotCrew:harvestStep(pBot, oid, c, now)
 	putInt(lkey(oid, "lootAt"), now)
 	self:stopMoving(pBot)
 
-	local r = botHarvest(pBot, c.oid)
+	local leaderOid = self:harvestLeader(pBot, oid)
+	local asked = leaderOid ~= 0 and readStringData(gkey(leaderOid, "harvestKind")) or ""
+	local r = botHarvest(pBot, c.oid, asked)
 
 	if r ~= nil and r.ok then
 		putInt(corpseKey(c.oid, "harv"), 1)
 		putInt(corpseKey(c.oid, "harvOk"), 1)
 		self:goodsOf(pBot, oid)
-		self:lootNoteHarvest(oid, SceneObject(c.p):getDisplayedName(), r.amount, r.resource)
+		self:harvestDone(pBot, oid, leaderOid, asked, r, SceneObject(c.p):getDisplayedName())
 		self:huntTallyAdd(pBot, "harvested", 1)
 	elseif r ~= nil and r.error == "too far" then
 		-- Not yet: another step
@@ -649,6 +683,111 @@ function BotCrew:harvestStep(pBot, oid, c, now)
 	end
 
 	return true
+end
+
+-- What a harvest gave, for the lines: noted for the short line, remembered for "what are you harvesting?", and the
+-- reasons said once: why this pick (own pick: the first carcass of a hunt, then whenever the spawn or the kind changes),
+-- or that the creature had none of the kind asked for (once a hunt)
+function BotCrew:harvestDone(pBot, oid, leaderOid, asked, r, creature)
+	local resource = (r.resource ~= nil and r.resource ~= "") and r.resource or tostring(r.kind)
+	local spawn = r.spawn or ""
+	local what = spawn ~= "" and (resource .. " (" .. spawn .. ")") or resource
+
+	self:lootNoteHarvest(oid, creature, r.amount, what)
+
+	if leaderOid == 0 then
+		return
+	end
+
+	writeStringData(gkey(leaderOid, "harvestLast"), clean(r.kind) .. "|" .. clean(resource) .. "|" .. clean(spawn) .. "|" .. clean(r.stats))
+
+	if r.fallback then
+		if readData(gkey(leaderOid, "harvestNoKindSaid")) ~= 1 then
+			putInt(gkey(leaderOid, "harvestNoKindSaid"), 1)
+			self:groupSay(pBot, oid, "harvestNoKind", nil, {asked = asked, Asked = capital(asked), kind = tostring(r.kind), Kind = capital(r.kind)})
+		end
+
+		return
+	end
+
+	if asked ~= "" then
+		return
+	end
+
+	local sig = tostring(r.kind) .. "|" .. spawn
+
+	if readStringData(gkey(leaderOid, "harvestSaid")) == sig then
+		return
+	end
+
+	writeStringData(gkey(leaderOid, "harvestSaid"), sig)
+
+	local stats, alt = "no stats worth the name, so it's the biggest yield", ""
+
+	if (r.lead or "") ~= "" then
+		stats = r.lead .. " " .. tostring(r.leadValue)
+	end
+
+	if (r.altKind or "") ~= "" then
+		if (r.altScore or 0) * 2 <= (r.score or 0) then
+			alt = "The " .. r.altKind .. "'s junk."
+		elseif (r.altScore or 0) < (r.score or 0) then
+			alt = "Better than the " .. r.altKind .. "."
+		end
+	end
+
+	self:groupSay(pBot, oid, "harvestWhy", nil, {kind = tostring(r.kind), Kind = capital(r.kind), what = what, stats = stats, alt = alt})
+end
+
+-- Forget the hunt's harvest choice (the group broke up, or a new hunt began)
+function BotCrew:harvestClear(leaderOid)
+	deleteStringData(gkey(leaderOid, "harvestKind"))
+	deleteStringData(gkey(leaderOid, "harvestSaid"))
+	deleteStringData(gkey(leaderOid, "harvestLast"))
+	deleteData(gkey(leaderOid, "harvestNoKindSaid"))
+end
+
+-- What the crew is harvesting, in words: for "what are you harvesting?" and the brain
+function BotCrew:harvestState(leaderOid)
+	local asked = leaderOid ~= 0 and readStringData(gkey(leaderOid, "harvestKind")) or ""
+	local kind, resource, spawn, stats = readStringData(gkey(leaderOid or 0, "harvestLast")):match("^([^|]*)|([^|]*)|([^|]*)|(.*)$")
+	local last = nil
+
+	if kind ~= nil and kind ~= "" then
+		last = resource .. (spawn ~= "" and (" (" .. spawn .. ")") or "") .. (stats ~= "" and (", " .. stats) or "")
+	end
+
+	return asked, kind, last
+end
+
+-- The brain's fact: what the ranger is harvesting
+function BotCrew:harvestFacts(leaderOid)
+	local asked, kind, last = self:harvestState(leaderOid)
+	local text = asked ~= "" and ("you were asked for " .. asked .. " only") or "you choose the resource with the best crafting stats yourself"
+
+	if last ~= nil then
+		text = text .. "; the last carcass gave " .. kind .. ": " .. last
+	else
+		text = text .. "; nothing harvested yet this hunt"
+	end
+
+	return text
+end
+
+-- "what are you harvesting?": the ranger says whether it was asked for a type, and what it is taking
+function BotCrew:harvestAnswer(pBot, oid, playerOid, channel, name)
+	local asked, kind, last = self:harvestState(self:harvestLeader(pBot, oid))
+	local text
+
+	if asked ~= "" then
+		text = capital(asked) .. " only, as you asked." .. (last ~= nil and (" Last was " .. last .. ".") or " Nothing skinned yet.")
+	elseif last ~= nil then
+		text = "My own pick, by the stats. Last was " .. kind .. ": " .. last .. "."
+	else
+		text = "Nothing skinned yet. I go for the best stats on the planet today, whichever the creature has."
+	end
+
+	self:say(pBot, oid, playerOid, channel, "harvestStatus", name, {what = text})
 end
 
 function BotCrew:lootStep(pBot, oid, c, now)
@@ -871,9 +1010,16 @@ function BotCrew:lootHolding(oid)
 	return readData(lkey(oid, "offerFor")) ~= 0 and os.time() <= readData(lkey(oid, "offerUntil"))
 end
 
--- Starts the chain: opener is the line kind for the first offer ("lootFull" and so on), or nil for the usual
-function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener)
+-- Starts the chain: opener is the line kind for the first offer ("lootFull" and so on), or nil for the usual; delayMs
+-- is the wait before the first step (a bot that has just left the group gives the client a moment). Already handing
+-- over to this player: nothing new starts, but one that is waiting for "trade me" (two windows lost) offers at once
+function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener, delayMs)
 	if self:lootHolding(oid) and readData(lkey(oid, "offerFor")) == playerOid then
+		if readData(lkey(oid, "offerWait")) == 1 then
+			putInt(lkey(oid, "offerWait"), 0)
+			putInt(lkey(oid, "offerUntil"), math.max(readData(lkey(oid, "offerUntil")), os.time() + self.offerRequestSeconds))
+		end
+
 		return
 	end
 
@@ -881,12 +1027,15 @@ function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener)
 
 	putInt(lkey(oid, "offerSeq"), seq)
 	putInt(lkey(oid, "offerFor"), playerOid)
-	putInt(lkey(oid, "offerUntil"), os.time() + seconds)
+	putInt(lkey(oid, "offerUntil"), os.time() + seconds + math.floor((delayMs or 0) / 1000))
 	putInt(lkey(oid, "offerOpen"), 0)
 	putInt(lkey(oid, "offerTries"), 0)
 	putInt(lkey(oid, "offerBatches"), 0)
 	putInt(lkey(oid, "offerSaid"), 0)
 	putInt(lkey(oid, "offerRetried"), 0)
+	putInt(lkey(oid, "offerLost"), 0)
+	putInt(lkey(oid, "offerWait"), 0)
+	putInt(lkey(oid, "offerHold"), 0)
 	deleteStringData(lkey(oid, "offerLineKind"))
 
 	if opener ~= nil then
@@ -895,7 +1044,7 @@ function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener)
 		putInt(lkey(oid, "offerOpener"), 0)
 	end
 
-	createEvent(300, "BotCrew", "lootOfferStep", pBot, packArgs(readData(key(oid, "gen")), seq))
+	createEvent(math.max(delayMs or 0, 300), "BotCrew", "lootOfferStep", pBot, packArgs(readData(key(oid, "gen")), seq))
 end
 
 local function splitArgs(args)
@@ -913,7 +1062,17 @@ function BotCrew:lootEndOffer(pBot, oid, why)
 	putInt(lkey(oid, "offerFor"), 0)
 	putInt(lkey(oid, "offerOpen"), 0)
 
-	if readStringData(lkey(oid, "mode")) == "leaving" then
+	-- (the mode is in the crew's own key: crew.lua's ckey is lkey)
+	local mode = readStringData(lkey(oid, "mode"))
+
+	-- A bot at home that walked out to the player goes back to its station
+	if mode == "home" and not CreatureObject(pBot):isGrouped() then
+		putString(lkey(oid, "mode"), "leaving")
+		putInt(lkey(oid, "leavingAt"), os.time())
+		mode = "leaving"
+	end
+
+	if mode == "leaving" then
 		createEvent(1500, "BotCrew", "goHome", pBot, tostring(readData(key(oid, "gen"))))
 	end
 
@@ -960,6 +1119,18 @@ function BotCrew:lootOfferStep(pBot, args)
 
 	if pPlayer == nil then
 		self:lootEndOffer(pBot, oid, "the player is gone")
+		return
+	end
+
+	-- A window just closed: a few seconds before the next (the client takes a moment)
+	if now < readData(lkey(oid, "offerHold")) then
+		again()
+		return
+	end
+
+	-- Two windows lost: it waits (offerWait is cleared by "trade me", lootStartOffer; the time is offerUntil)
+	if readData(lkey(oid, "offerWait")) == 1 then
+		again()
 		return
 	end
 
@@ -1052,7 +1223,7 @@ end
 
 -- BotTrade's events for a handover (BotCrew:onEvent "trade")
 function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
-	if detail ~= "bundleDone" and detail ~= "bundleCancelled" and detail ~= "bundleOpened" then
+	if detail ~= "bundleDone" and detail ~= "bundleCancelled" and detail ~= "bundleOpened" and detail ~= "bundleLost" then
 		return
 	end
 
@@ -1090,13 +1261,46 @@ function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
 		print("BotJobs: " .. self:name(oid) .. " handed its goods over (" .. count .. " left)")
 
 		if count > 0 and readData(lkey(oid, "offerFor")) ~= 0 then
-			-- The rest in another trade, once the player has room
-			createEvent(1500, "BotCrew", "lootOfferStep", pBot,
-				packArgs(readData(key(oid, "gen")), readData(lkey(oid, "offerSeq"))))
+			-- The rest in another trade, once the player has room: the chain that waited for this one goes on (a second
+			-- chain on the same offer would only double the steps)
+			putInt(lkey(oid, "offerHold"), os.time() + 1)
 		else
 			if readData(lkey(oid, "offerFor")) ~= 0 then
 				self:lootEndOffer(pBot, oid, "done")
 			end
+		end
+	elseif detail == "bundleLost" then
+		-- The window closed before the player touched it (the client lost it): once more, then ask and wait
+		local lost = readData(lkey(oid, "offerLost")) + 1
+
+		print("BotJobs: " .. self:name(oid) .. "'s handover window was lost (" .. count .. " held, lost " .. lost .. " time(s))")
+
+		if readData(lkey(oid, "offerFor")) == 0 then
+			return
+		end
+
+		if count == 0 then
+			self:lootEndOffer(pBot, oid, "nothing left")
+			return
+		end
+
+		putInt(lkey(oid, "offerLost"), lost)
+
+		-- (the window never counted: the next is still the first trade)
+		putInt(lkey(oid, "offerBatches"), math.max(readData(lkey(oid, "offerBatches")) - 1, 0))
+
+		if lost == 1 then
+			putInt(lkey(oid, "offerUntil"), math.max(readData(lkey(oid, "offerUntil")), os.time() + 60))
+			putInt(lkey(oid, "offerHold"), os.time() + math.ceil(self.offerRetryMs / 1000))
+			print("BotJobs: " .. self:name(oid) .. " will offer again")
+		else
+			putInt(lkey(oid, "offerWait"), 1)
+			putInt(lkey(oid, "offerUntil"), os.time() + self.offerWaitSeconds)
+
+			local member = pOther ~= nil and self:lootMember(pBot, playerOid) or nil
+
+			self:say(pBot, oid, playerOid, member ~= nil and "group" or "spatial", "handoverRetryAsk", pOther ~= nil and self:firstName(pOther) or nil)
+			print("BotJobs: " .. self:name(oid) .. " waits for 'trade me'")
 		end
 	else
 		print("BotJobs: " .. self:name(oid) .. "'s handover was cancelled (" .. count .. " held)")
@@ -1106,9 +1310,8 @@ function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
 			-- Others were handing over too: once more, after them, before giving up
 			putInt(lkey(oid, "offerRetried"), 1)
 			putInt(lkey(oid, "offerUntil"), math.max(readData(lkey(oid, "offerUntil")), os.time() + 60))
+			putInt(lkey(oid, "offerHold"), os.time() + math.ceil(self.offerRetryMs / 1000))
 			print("BotJobs: " .. self:name(oid) .. " will offer again after the others")
-			createEvent(self.offerRetryMs, "BotCrew", "lootOfferStep", pBot,
-				packArgs(readData(key(oid, "gen")), readData(lkey(oid, "offerSeq"))))
 
 			return
 		end
@@ -1122,6 +1325,101 @@ function BotCrew:lootTradeEvent(pBot, oid, pOther, detail)
 
 			self:lootEndOffer(pBot, oid, "cancelled")
 		end
+	end
+end
+
+-- Out of the group
+
+-- "Hand it over", said out loud to a bot or by tell, to a bot that isn't grouped (it left the group holding goods, and
+-- may be home by now). A human asks: with goods held and the player within wantRange the bot offers at once; farther,
+-- by tell, it says where it is and offers when the player comes within range (lootWantTick). Returns true when the
+-- line was handled
+function BotCrew:handoverUngrouped(pBot, oid, pSpeaker, channel, text)
+	if pSpeaker == nil or not self:handoverWanted(text) or not self:human(pSpeaker) then
+		return false
+	end
+
+	local playerOid = SceneObject(pSpeaker):getObjectID()
+	local name = self:firstName(pSpeaker)
+	local goods, count = self:goodsOf(pBot, oid)
+
+	if count == 0 then
+		self:say(pBot, oid, playerOid, channel, "handoverNone", name)
+		return true
+	end
+
+	local dist = BotJobs:distance(pBot, pSpeaker)
+
+	print("BotJobs: " .. self:name(oid) .. " is asked for the loot by " .. name .. " out of the group (" .. count .. " item(s), " ..
+		(dist ~= nil and (math.floor(dist) .. " m away") or "elsewhere") .. ")")
+
+	if dist ~= nil and dist <= self.wantRange then
+		putInt(lkey(oid, "wantBy"), 0)
+		self:lootHoldHome(pBot, oid)
+		self:lootStartOffer(pBot, oid, playerOid, self.offerRequestSeconds, nil)
+	else
+		-- Where it is; it hands over when the player comes by (it keeps going home meanwhile)
+		putInt(lkey(oid, "wantBy"), playerOid)
+		putInt(lkey(oid, "wantUntil"), os.time() + self.wantSeconds)
+		self:say(pBot, oid, playerOid, channel, readStringData(lkey(oid, "mode")) == "home" and "handoverWhere" or "handoverWhereBound",
+			name, {place = self.place})
+	end
+
+	return true
+end
+
+-- A bot on its way home stops, to hand over first (its chain sends it home again)
+function BotCrew:lootHoldHome(pBot, oid)
+	if readStringData(lkey(oid, "mode")) == "walkingHome" then
+		self:stopMoving(pBot)
+		putString(lkey(oid, "mode"), "leaving")
+		putInt(lkey(oid, "leavingAt"), os.time())
+	end
+end
+
+-- Out loud, naming nobody ("trade me"), from the player this bot is offering to or was asked by, within offerRange: an
+-- ungrouped bot hears it as it would a grouped one (BotJobs:heard asks, after spatialGroup)
+function BotCrew:spatialHandover(pBot, pSpeaker, text)
+	if CreatureObject(pBot):isGrouped() or not self:handoverWanted(text) or not self:human(pSpeaker) then
+		return false
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local playerOid = SceneObject(pSpeaker):getObjectID()
+	local mine = (self:lootHolding(oid) and readData(lkey(oid, "offerFor")) == playerOid) or
+		(readData(lkey(oid, "wantBy")) == playerOid and os.time() <= readData(lkey(oid, "wantUntil")))
+	local dist = BotJobs:distance(pBot, pSpeaker)
+
+	return mine and dist ~= nil and dist <= self.offerRange
+end
+
+-- From BotCrew:tick (every 5 s): a bot that was asked for its goods by tell offers them once the player comes near
+function BotCrew:lootWantTick(pBot, oid, now)
+	local playerOid = readData(lkey(oid, "wantBy"))
+
+	if playerOid == 0 then
+		return
+	end
+
+	if now > readData(lkey(oid, "wantUntil")) or CreatureObject(pBot):isGrouped() then
+		putInt(lkey(oid, "wantBy"), 0)
+		return
+	end
+
+	local pPlayer = getSceneObject(playerOid)
+	local dist = pPlayer ~= nil and BotJobs:distance(pBot, pPlayer) or nil
+
+	if dist == nil or dist > self.wantRange or self:lootHolding(oid) or CreatureObject(pBot):isDead() then
+		return
+	end
+
+	local _, count = self:goodsOf(pBot, oid)
+
+	putInt(lkey(oid, "wantBy"), 0)
+
+	if count > 0 then
+		self:lootHoldHome(pBot, oid)
+		self:lootStartOffer(pBot, oid, playerOid, self.offerRequestSeconds, nil)
 	end
 end
 
@@ -1145,7 +1443,7 @@ function BotCrew:lootBeforeHome(pBot, oid, now)
 
 	if count > 0 then
 		print("BotJobs: " .. self:name(oid) .. " hands " .. count .. " item(s) over before heading home")
-		self:lootStartOffer(pBot, oid, leaderOid, self.offerLeaveSeconds, nil)
+		self:lootStartOffer(pBot, oid, leaderOid, self.offerLeaveSeconds, nil, self.offerLeaveDelayMs)
 	end
 end
 
@@ -1171,7 +1469,7 @@ end
 
 function BotCrew:lootClear(oid)
 	for _, field in ipairs({"offerFor", "offerUntil", "offerOpen", "offerTries", "offerBatches", "offerOpener", "offerRemaining",
-		"offerSaid", "offerRetried", "lootAt", "lootSayAt", "victims", "goodsN", "hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
+		"offerSaid", "offerRetried", "offerLost", "offerWait", "offerHold", "wantBy", "wantUntil", "lootAt", "lootSayAt", "victims", "goodsN", "hvN", "ltN", "ltItems", "ltCredits", "sayFirstAt"}) do
 		deleteData(lkey(oid, field))
 	end
 

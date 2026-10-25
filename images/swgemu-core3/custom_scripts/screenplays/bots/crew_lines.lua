@@ -115,6 +115,22 @@ BotLines.crew = {
 		"Searched {n} bodies, nothing worth taking{credits}.",
 		"{n} bodies and nothing on them{credits}.",
 	},
+	-- A harvest type asked for ({kind} "hide", "meat" or "bone"; {Kind} capitalised), and "anything" again
+	harvestKind = {
+		"{Kind} only, from now on.",
+		"All {kind}, then.",
+		"{Kind} it is.",
+		"Understood: {kind} off everything.",
+	},
+	harvestAny = {
+		"My pick again, then.",
+		"Back to choosing for myself.",
+		"Whatever's best, then.",
+	},
+	-- What the crew is harvesting, asked ({what} says it; it comes from the ranger's state)
+	harvestStatus = {
+		"{what}",
+	},
 	-- Asked to loot or harvest ({n} corpses found in reach, {name} the player)
 	lootAsk = {
 		"On it, {n} bodies to go through.",
@@ -175,6 +191,23 @@ BotLines.crew = {
 		"Alright, I'll hang on to it.",
 		"No trade? I'll keep it safe until you want it.",
 	},
+	-- The trade window closed on its own twice, before the player touched it: the bot waits for "trade me"
+	handoverRetryAsk = {
+		"Trade didn't take? Say 'trade me' when you're ready.",
+		"The window keeps closing on us. Say 'trade me' when you're ready, {name}.",
+		"No luck with the trade. Tell me 'trade me' when you're set, {name}.",
+	},
+	-- A tell to a bot that is still on its way home with goods
+	handoverWhereBound = {
+		"On my way back to the {place}, {name}. Catch me there and I'll hand it over.",
+		"Heading home to the {place}. Stop in and I'll give it to you, {name}.",
+	},
+	-- A tell to a bot that has gone home with goods: where it is
+	handoverWhere = {
+		"Back at the {place}, come and get it, {name}.",
+		"I'm at the {place}. Come by and I'll hand it over.",
+		"Still holding it at the {place}. Stop in and say the word, {name}.",
+	},
 	-- Now and then in the cantina, with someone near, while looking for a group
 	lfg = {
 		"Anyone heading out to hunt? Looking for a group.",
@@ -206,6 +239,12 @@ BotLines.crew = {
 	missionNoneAny = {
 		"That terminal has no destroy missions for me, {name}. Tried {tries} lists.",
 		"Nothing on offer at all after {tries} refreshes, {name}.",
+	},
+	-- Asked for a creature ({creature} "dragonet", "womp rat") and the terminal had none of its lairs
+	missionNoneOf = {
+		"No {creature} lairs on this terminal, {name}. Tried {tries} lists.",
+		"The terminal's got no {creature} lairs for me after {tries} refreshes.",
+		"No {creature} lair on offer, {name}. Not taking anything else.",
 	},
 	missionNone = {
 		"Nothing worth taking {dir} on that terminal. Tried {tries} lists.",
@@ -330,6 +369,21 @@ BotLines.ranger = {
 		"Harvested {n} of them: {what}.",
 		"That's {n} carcasses worked: {what}.",
 	},
+	-- The ranger's own pick, said at the first carcass of a hunt and whenever the pick changes: {kind}, {what} (the
+	-- resource and its spawn), {stats} (its best stat and value: "OQ 870") and {alt} (the one it passed over: "The
+	-- meat's junk." or nothing)
+	harvestWhy = {
+		"Taking {kind} today: {what}, {stats}. {alt}",
+		"{Kind} it is: {what}, {stats}. {alt}",
+		"Going for the {kind}: {what}, {stats}. {alt}",
+	},
+	-- Asked for a type the creature hasn't got ({asked}), so it took its own pick ({kind})
+	harvestNoKind = {
+		"No {asked} on these. Taking the {kind}.",
+		"These have no {asked}, so it's the {kind}.",
+		"Nothing in the way of {asked} on this one. {Kind} instead.",
+	},
+
 	campUp = {
 		"Camp's up. Sit by the fire a while.",
 		"There, a fire. Rest up.",
