@@ -161,6 +161,9 @@ def swearing(r):
 # smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger; Phase 8: squadleader, entertainer, commando).
 # Phase 6: a player city's mayor and citizens.
 CREW = ("join", "follow", "stay", "home", "harvest", "loot", "attack")
+# ...and (Phase 8) "call": the player wants the whole crew to come to them, wherever it is. First in the list: its words are
+# the more particular ("crew, to me" is not a "follow")
+CREW_CALL = ("call",) + CREW
 CREW_JOBS = ("tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando")
 CITY_JOBS = ("mayor", "citizen")
 BOT_PLACES = {
@@ -174,8 +177,8 @@ BOT_PLACES = {
 # The order matters when the model left out a request that names two: the job's own work comes first
 BOT_ACTIONS = {
     "doctor": ("buff", "wounds"), "dancer": ("bufftarget",), "musician": ("bufftarget",), "smuggler": (),
-    "tank": CREW, "rifleman": CREW, "medic": ("buff", "wounds") + CREW, "ranger": ("camp", "track") + CREW,
-    "squadleader": CREW, "entertainer": CREW, "commando": CREW,
+    "tank": CREW_CALL, "rifleman": CREW_CALL, "medic": ("buff", "wounds") + CREW_CALL, "ranger": ("camp", "track") + CREW_CALL,
+    "squadleader": CREW_CALL, "entertainer": CREW_CALL, "commando": CREW_CALL,
     "mayor": (), "citizen": (),
 }
 # What the model may call an action -> the job's action
@@ -183,7 +186,10 @@ _DOCTOR = {"buff": "buff", "buffs": "buff", "enhance": "buff", "enhancements": "
            "wounds": "wounds", "wound": "wounds", "heal": "wounds", "healwound": "wounds", "heal wounds": "wounds"}
 _ENTERTAINER = {"bufftarget": "bufftarget", "buff": "bufftarget", "buffs": "bufftarget", "buff target": "bufftarget",
                 "mind buff": "bufftarget", "mindbuff": "bufftarget"}
-_CREW = {"join": "join", "group": "join", "invite": "join", "join group": "join", "follow": "follow",
+_CREW = {"call": "call", "call the crew": "call", "call crew": "call", "gather": "call", "gather the crew": "call",
+         "assemble": "call", "meet": "call", "meet me": "call", "meet up": "call", "rally": "call", "come to me": "call",
+         "get the crew": "call", "bring the crew": "call", "summon": "call", "get together": "call",
+         "join": "join", "group": "join", "invite": "join", "join group": "join", "follow": "follow",
          "follow me": "follow", "come": "follow", "stay": "stay", "wait": "stay", "hold": "stay", "back off": "stay",
          "home": "home", "go home": "home", "leave": "home", "dismiss": "home", "loot": "loot", "loot bodies": "loot",
          "loot corpses": "loot", "loot all": "loot", "loot them": "loot", "looting": "loot", "harvest": "harvest",
@@ -203,12 +209,26 @@ ACTION_ALIASES = {
     "ranger": dict(_CREW, **_RANGER),
 }
 
+# "crew", "the boys", "everyone"... and what is asked of them: come, meet, get together, gather
+_CALL_WHO = (r"(crew|team|guys|gang|everyone|everybody|all of you|the boys|boys|squad|you all|y'?all|you lot|the group|"
+             r"the rest|the others|you guys)")
+_CALL_WHAT = (r"(come to me|come over|come here|come meet|come and meet|coming to me|meet (me|up|us)|get over|get here|"
+              r"get together|get it together|join me|to me|together|assemble|gather|rally|report to me|head (over|to me)|"
+              r"bring (it|them) (over|here))")
+CALL_WORDS = (r"\b(" + _CALL_WHO + r"\b[^.!?;]{0,48}?\b" + _CALL_WHAT + r"\b|(come to me|meet me|meet up with me|"
+              r"come meet me|get over here|come over to me|come and meet me)\b|"
+              r"(gather|assemble|rally|summon|call|bring|round up) (up )?(the |all |all the |my |your |everyone|everybody)?"
+              + _CALL_WHO + r"\b)")
+
 # Player words for each action. A model's action stands only if the player's words (or the exchange just before)
 # mention it; a plain request in these words gets the action even when the model left it out.
 WORDS = {
     "buff": re.compile(r"\b(bu+f+\w*|buf|enh\w*|enchance\w*|the works|full set)\b", re.I),
     "wounds": re.compile(r"\b(wound\w*|heal(s|z|ing)?|patch(ed)? (me |us )?up|fix (me |us )?up)\b", re.I),
     "bufftarget": re.compile(r"\b(bu+f+\w*|buf|buff target)\b", re.I),
+    # "crew, come to me", "get the crew together and meet me at the terminal", "everyone meet me here", "meet me", "come to me":
+    # the whole crew asked to come to the player, or the player asking to be met (never "come with me", "follow me", "wanna hunt")
+    "call": re.compile(CALL_WORDS, re.I),
     # "wanna hunt?", "lfg?", "join me", "can I invite you?", "need a tank"
     "join": re.compile(
         r"\b(group(ed|ing)? ?(up|with)|group\?|grp|invite\w*|inv|join\w*(?!\s+(the |a |an )?(empire|imperials?|"
@@ -725,6 +745,12 @@ class Bridge:
             elif target:
                 who += f" The player's current target is {target}."
             crew_actions = (
+                '"call" when they want the whole crew to come to where THEY are, wherever the crew is, in any words: '
+                'asking you all to meet them, come over, get together, gather, assemble or join them at a place or '
+                'right here ("come to me", "crew to me", "meet me at the mission terminal", "get the crew together and '
+                'meet me at the terminal", "everyone meet me at the starport", "bring the boys over"); the crew '
+                'then arrives from wherever it is, so say you are passing the word and coming, not that you will '
+                'rouse anyone later; '
                 '"join" when they ask you to group up or come hunting with them, in any words ("wanna hunt?", '
                 '"lfg?", "join me", "can I invite you?", "need a tank"); "follow" when they tell you to follow them or '
                 'come along, or to back off and fall back to them ("follow me", "on me", "let\'s go", "back off"); '
@@ -1025,6 +1051,17 @@ class Bridge:
         def ok(action):
             return not aside(action) and not negated(action) and (action != "attack" or asking(action)) and \
                 not (action == "harvest" and harvest_asked(text))
+
+        # The whole crew asked to come to the player (Phase 8): their words, or the model's judgment of what they meant ("meet me
+        # at the mission terminal"), unless the words are another command's ("follow me", "wanna hunt?")
+        # (a question in the same breath, "where are you all? come meet me", doesn't make it an aside)
+        if "call" in allowed and not negated("call") and not (THANKS.search(text) or INSULT.search(text) or
+                                                              REFUSAL.search(text) or PRAISE.search(text)):
+            if mentioned("call", text):
+                return "call"
+
+            if proposed == "call" and not any(commanded(a) for a in ("follow", "join", "stay", "home", "attack") if a in allowed):
+                return "call"
 
         if proposed in allowed and ok(proposed):
             # A short reply carries the action on from the exchange before, unless it asks for something else itself

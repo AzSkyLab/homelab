@@ -235,8 +235,26 @@ CASES = [
     # them into another action
     C("commando", "group", "make room", "make room for my friend", NONE, grouped=1),
     C("commando", "tell", "make room", "make room please", NONE),
-    C("squadleader", "tell", "call", "crew, come to me", NONE),
-    C("entertainer", "group", "call", "crew, come to me", NONE, grouped=1),
+    # Calling the crew (Phase 8), tells from wherever the player is: the model should pick "call" for any wording
+    C("squadleader", "tell", "call", "crew, come to me", {"call"}),
+    C("tank", "tell", "call", "get the crew together and meet me at mission terminal", {"call"}),
+    C("tank", "tell", "call", "come to me", {"call"}),
+    C("tank", "tell", "call", "crew to me", {"call"}),
+    C("rifleman", "tell", "call", "everyone meet me at the starport", {"call"}),
+    C("medic", "tell", "call", "hey, can you all head over to Anchorhead? I'm at the shuttleport", {"call"}),
+    C("ranger", "tell", "call", "I need the crew at the bank, now", {"call"}),
+    C("commando", "tell", "call", "bring the boys over, we're hunting near Bestine", {"call"}),
+    C("entertainer", "tell", "call", "gather up everybody and come find me at the terminal", {"call"}),
+    C("squadleader", "tell", "call", "squad, assemble on me at the mission terminal", {"call"}),
+    C("tank", "tell", "call", "I'm at Mos Espa, can you get everyone down here?", {"call"}),
+    C("rifleman", "tell", "call", "come meet me at the cantina in Theed, bring the others", {"call"}),
+    C("medic", "tell", "call", "I'm outside, meet me at the starport", {"call"}),
+    C("tank", "tell", "no call", "follow me", {"follow"}),
+    C("tank", "tell", "no call", "wanna hunt?", {"join"}),
+    C("rifleman", "tell", "no call", "come with me to the cantina", {"join", "follow"}),
+    C("medic", "tell", "no call", "we're done for tonight, you can go home", {"home"}),
+    C("ranger", "tell", "no call", "nice work out there, all of you", NONE),
+    C("entertainer", "group", "call", "crew, come to me", {"call"}, grouped=1),
     C("entertainer", "group", "music", "play something", NONE, grouped=1),
     C("entertainer", "group", "dance", "dance for us", NONE, grouped=1),
     C("entertainer", "group", "fatigue", "can you heal my battle fatigue?", NONE, grouped=1),
@@ -379,7 +397,24 @@ CHECKS = [
     ("commando", "go home", "none", "home"), ("commando", "attack my target", "none", "attack"),
     ("commando", "make room for my friend", "none", ""), ("commando", "make room", "none", ""),
     ("entertainer", "play something", "none", ""), ("entertainer", "dance for us", "none", ""),
-    ("entertainer", "can you heal my battle fatigue?", "none", ""), ("squadleader", "crew, come to me", "none", ""),
+    ("entertainer", "can you heal my battle fatigue?", "none", ""), ("squadleader", "crew, come to me", "none", "call"),
+    # Phase 8: calling the crew. The creator's own wordings (the first two went to the model and did nothing), the words the
+    # bridge knows, and the model's judgment for the rest ("call" proposed: it stands unless the words are another command's)
+    ("tank", "get the crew together and meet me at mission terminal", "none", "call"),
+    ("tank", "get the crew together and meet me at mission terminal", "follow", "call"),
+    ("tank", "come to me", "none", "call"), ("tank", "come to me", "follow", "call"), ("tank", "crew to me", "none", "call"),
+    ("rifleman", "everyone meet me at the starport", "none", "call"), ("rifleman", "guys, get over here", "none", "call"),
+    ("medic", "team, assemble at the bank", "none", "call"), ("medic", "all of you come to me", "none", "call"),
+    ("ranger", "I need the crew at the shuttleport", "call", "call"), ("ranger", "meet me outside the cantina", "none", "call"),
+    ("commando", "bring the boys over to the terminal", "call", "call"), ("commando", "gather the crew, I'm at Anchorhead", "none", "call"),
+    ("entertainer", "everybody get together at the mission terminal", "none", "call"),
+    ("squadleader", "squad, rally here", "none", "call"), ("squadleader", "where are you all? come meet me", "none", "call"),
+    ("tank", "can you all come to me please?", "none", "call"), ("tank", "meet me at the terminal when you can", "call", "call"),
+    # ...and what is not a call: the cantina's invite, follow, stay, home, and the model asking for one by mistake
+    ("tank", "wanna hunt?", "call", "join"), ("tank", "follow me", "call", "follow"), ("tank", "come with me to the cantina", "call", "join"),
+    ("rifleman", "lfg? need a rifle", "call", "join"), ("medic", "stay here", "call", "stay"), ("ranger", "go home", "call", "home"),
+    ("tank", "don't come to me, I'll find you", "call", ""), ("tank", "nice shooting everyone", "call", ""),
+    ("tank", "thanks for coming to me yesterday", "call", ""),
     ("ranger", "what are you harvesting?", "harvest", ""), ("ranger", "what are we skinning for?", "harvest", ""),
     ("ranger", "harvesting what?", "harvest", ""), ("ranger", "are you harvesting hide?", "harvest", ""),
     ("ranger", "don't harvest hide", "harvest", ""), ("ranger", "I need some hide for armor", "harvest", ""),
@@ -536,12 +571,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="the bridge's checks alone, no model")
     parser.add_argument("--jobs", default="", help="only these jobs (comma list)")
+    parser.add_argument("--kinds", default="", help="only cases of these kinds (comma list, e.g. call,no call)")
     args = parser.parse_args()
     if args.check:
         return check()
     jobs = {j.strip() for j in args.jobs.split(",") if j.strip()}
-    cases = [c for c in CASES if not jobs or c["job"] in jobs]
-    talks = [t for t in TALKS if not jobs or t[0] in jobs]
+    kinds = {k.strip() for k in args.kinds.split(",") if k.strip()}
+    cases = [c for c in CASES if (not jobs or c["job"] in jobs) and (not kinds or c["kind"] in kinds)]
+    talks = [t for t in TALKS if (not jobs or t[0] in jobs) and not kinds]
     bridge = talk_bridge.Bridge(talk_bridge.load_facts())
     # Note what the model proposed and judged before the bridge's checks, to show what the checks change
     proposals, judged = [], []
