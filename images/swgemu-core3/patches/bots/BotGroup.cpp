@@ -613,6 +613,58 @@ bool BotGroup::isBotPlayer(SceneObject* object) {
 	return object != nullptr && object->isPlayerCreature() && BotManager::instance()->isBotOid(object->getObjectID());
 }
 
+bool BotGroup::isSquadLeaderBot(SceneObject* object) {
+	return isBotPlayer(object) && object->asCreatureObject()->hasSkill("outdoors_squadleader_novice");
+}
+
+CreatureObject* BotGroup::squadLeaderBotIn(GroupObject* group) {
+	if (group == nullptr)
+		return nullptr;
+
+	for (int i = 0; i < group->getGroupSize(); ++i) {
+		CreatureObject* member = group->getGroupMember(i);
+
+		if (member != nullptr && isSquadLeaderBot(member))
+			return member;
+	}
+
+	return nullptr;
+}
+
+bool BotGroup::groupInfo(CreatureObject* creature, BotGroupInfo& out) {
+	if (creature == nullptr)
+		return false;
+
+	uint64 groupId = creature->getGroupID();
+
+	if (groupId == 0)
+		return false;
+
+	ZoneServer* zoneServer = creature->getZoneServer();
+	ManagedReference<SceneObject*> object = zoneServer != nullptr ? zoneServer->getObject(groupId) : nullptr;
+	GroupObject* group = object != nullptr ? dynamic_cast<GroupObject*>(object.get()) : nullptr;
+
+	if (group == nullptr)
+		return false;
+
+	out.id = groupId;
+
+	for (int i = 0; i < group->getGroupSize(); ++i) {
+		CreatureObject* member = group->getGroupMember(i);
+
+		if (member != nullptr)
+			out.members.add(member->getObjectID());
+	}
+
+	out.leader = out.members.size() > 0 ? out.members.get(0) : 0;
+
+	return true;
+}
+
+bool BotGroup::mayCallSquadLeader(CreatureObject* caster, GroupObject* group) {
+	return group != nullptr && isSquadLeaderBot(caster) && group->hasMember(caster);
+}
+
 namespace {
 
 Mutex doneMutex;

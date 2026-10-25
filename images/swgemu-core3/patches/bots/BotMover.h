@@ -27,6 +27,8 @@
  *   together as a client's DataTransform does (the rider's position, then updateZone carries the vehicle and sends its
  *   transform), at the rider's run speed, which is the vehicle's. Catching up, appearing behind, stopping and going to
  *   a point work as on foot, outdoors only.
+ * - Called (Phase 8): callTo puts the bot near a player at once, on any planet and from any distance, about 10 m behind
+ *   them outdoors (or beside them in a building it may enter): a forced version of the leap above, for "crew, come to me".
  * - Moved by someone else (a teleport, cloning): the trail is dropped; a follower more than 64 m from its leader
  *   waits until the leader is back within 64 m or Lua calls botFollow again.
  *
@@ -84,6 +86,10 @@ public:
 	// outdoors means the floor there. pace PACE_AUTO walks a short way and runs a long one (over 30 m). False if there
 	// is no way there (the path is worked out here, once)
 	static bool moveTo(server::zone::objects::creature::CreatureObject* bot, float x, float z, float y, uint64 cellOid, int pace);
+
+	// Phase 8: the bot appears near `player` (a leap, whatever the distance or planet). The bot must be locked (the binding
+	// locks it). False for an offline, dead or loading bot, or a player who isn't in the world
+	static bool callTo(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* player);
 
 	// For botMoveState. False if `bot` isn't an online bot
 	static bool getStatus(server::zone::objects::creature::CreatureObject* bot, BotMoveStatus& out);

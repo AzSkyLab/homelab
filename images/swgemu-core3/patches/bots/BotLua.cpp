@@ -98,6 +98,8 @@ void BotLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botEmote", botEmote);
 	lua->registerFunction("botFace", botFace);
 	lua->registerFunction("botStockPack", botStockPack);
+	lua->registerFunction("botStockItem", botStockItem);
+	lua->registerFunction("botFindItem", botFindItem);
 	lua->registerFunction("botGetWounds", botGetWounds);
 	lua->registerFunction("botGetShockWounds", botGetShockWounds);
 	lua->registerFunction("botGetBuffs", botGetBuffs);
@@ -312,7 +314,7 @@ int BotLua::botFace(lua_State* L) {
 
 // --- The doctor's checks and stock (BotItems, the factory's code) ---
 
-// botStockPack(pBot, template, uses, power, duration[, potency, range]) (potency and range: poison and disease packs)
+// botStockPack(pBot, template, uses, power, duration[, potency, range, area]) (potency, range and area: poison and disease packs)
 int BotLua::botStockPack(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
 	bool ok = false;
@@ -320,10 +322,42 @@ int BotLua::botStockPack(lua_State* L) {
 	if (bot != nullptr) {
 		Locker locker(bot);	// BotItems wants it locked; no-op if the caller's event already holds it
 
-		ok = BotItems::stockPack(bot, toString(L, 2), (int)toInteger(L, 3), (float)toNumber(L, 4), (int)toInteger(L, 5), (float)toNumber(L, 6), (float)toNumber(L, 7));
+		ok = BotItems::stockPack(bot, toString(L, 2), (int)toInteger(L, 3), (float)toNumber(L, 4), (int)toInteger(L, 5), (float)toNumber(L, 6), (float)toNumber(L, 7), (float)toNumber(L, 8));
 	}
 
 	lua_pushboolean(L, ok);
+
+	return 1;
+}
+
+// botStockItem(pBot, template, uses) -> oid or 0: a grenade (object/weapon/ranged/grenade/*) with at least `uses` uses
+int BotLua::botStockItem(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	uint64 oid = 0;
+
+	if (bot != nullptr) {
+		Locker locker(bot);
+
+		oid = BotItems::stockItem(bot, toString(L, 2), (int)toInteger(L, 3));
+	}
+
+	lua_pushinteger(L, (lua_Integer) oid);
+
+	return 1;
+}
+
+// botFindItem(pBot, template) -> oid or 0
+int BotLua::botFindItem(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	uint64 oid = 0;
+
+	if (bot != nullptr) {
+		Locker locker(bot);
+
+		oid = BotItems::findItem(bot, toString(L, 2));
+	}
+
+	lua_pushinteger(L, (lua_Integer) oid);
 
 	return 1;
 }

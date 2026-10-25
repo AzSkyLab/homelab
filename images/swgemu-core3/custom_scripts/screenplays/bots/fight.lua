@@ -60,7 +60,7 @@ BotFight = ScreenPlay:new {
 	homeDelayMs = 6000,
 	returnSeconds = 120,
 	-- Jobs that look after their own death (the crew revives or clones itself); others are cloned here and go home
-	selfReviving = {tank = true, rifleman = true, medic = true, ranger = true},
+	selfReviving = {tank = true, rifleman = true, medic = true, ranger = true, squadleader = true, entertainer = true, commando = true},
 	cloneDelayMs = 10000,
 	homeAfterCloneMs = 20000,
 }

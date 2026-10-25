@@ -89,8 +89,14 @@ String BotFactory::getStartingProfession(const String& job) {
 	if (job == "medic")
 		return "science_medic";
 
-	if (job == "ranger")
+	if (job == "ranger" || job == "squadleader")
 		return "outdoors_scout";
+
+	if (job == "entertainer")
+		return "social_entertainer";
+
+	if (job == "commando")
+		return "combat_marksman";
 
 	if (job == "mayor" || job == "citizen")
 		return "crafting_artisan";
@@ -254,7 +260,7 @@ bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accep
 	}
 
 	if (getStartingProfession(entry.job).isEmpty()) {
-		reason = "unknown job '" + entry.job + "' (doctor, dancer, musician, smuggler, tank, rifleman, medic, ranger, mayor or citizen)";
+		reason = "unknown job '" + entry.job + "' (doctor, dancer, musician, smuggler, tank, rifleman, medic, ranger, squadleader, entertainer, commando, mayor or citizen)";
 		return false;
 	}
 

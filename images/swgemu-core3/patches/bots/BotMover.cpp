@@ -35,6 +35,7 @@ const float CATCH_UP_DIST = 80.0f;
 const float CATCH_UP_BEHIND = 10.0f;
 const float OFF_TRAIL_DIST = 8.0f;		// the next breadcrumb is in another cell and this far: the bot isn't on the trail
 const float NO_WAY_SNAP_DIST = 12.0f;	// no path to a leader in another room or building: appear beside it from this far
+const float CALL_BEHIND = 10.0f;		// a called bot appears this far behind the player (callTo)
 const float TOGETHER_DIST = 64.0f;		// within this the bot is with the leader, and follows it across a leap
 const float MOVED_AWAY_DIST = 5.0f;		// further than this from where the mover put it: someone else moved it
 const float ARRIVE_DIST = 0.3f;
@@ -1692,6 +1693,92 @@ bool BotMover::follow(CreatureObject* bot, CreatureObject* leader, float nearDis
 
 	moverLog().info(true) << "BotMover: " << bot->getFirstName() << " follows " << leader->getDisplayedName() << " at "
 		<< followDist << " m, side " << side;
+
+	return true;
+}
+
+// Where a called bot appears: outdoors about CALL_BEHIND metres behind the player on the floor there; in a building the
+// bot may enter, beside the player; else outdoors by the building
+static void callSpot(CreatureObject* bot, CreatureObject* player, const BotMovePoint& seen, Zone* zone, float side, BotMovePoint& out) {
+	if (seen.cell == nullptr) {
+		float heading = player->getDirection()->getRadians();
+		float x = seen.local.getX() - sin(heading) * CALL_BEHIND + cos(heading) * side;
+		float y = seen.local.getY() - cos(heading) * CALL_BEHIND - sin(heading) * side;
+		float z = CollisionManager::getWorldFloorCollision(x, y, seen.local.getZ() + 0.5f, zone, false);
+
+		out.cell = nullptr;
+		out.jump = false;
+		out.local = Vector3(x, y, z);
+		out.world = out.local;
+
+		return;
+	}
+
+	if (canEnter(bot, seen.cell)) {
+		spotNear(player, seen, side, zone, out);
+
+		return;
+	}
+
+	// A building it may not enter: outdoors just beyond it
+	ManagedReference<SceneObject*> root = seen.cell->getRootParent();
+	Vector3 base = root != nullptr ? root->getWorldPosition() : seen.world;
+	float reach = root != nullptr ? root->getBoundingRadius() + 6.f : CALL_BEHIND;
+	float x = base.getX();
+	float y = base.getY() - reach;
+
+	out.cell = nullptr;
+	out.jump = false;
+	out.local = Vector3(x, y, CollisionManager::getWorldFloorCollision(x, y, base.getZ() + 0.5f, zone, false));
+	out.world = out.local;
+}
+
+bool BotMover::callTo(CreatureObject* bot, CreatureObject* player) {
+	if (!readyBot(bot) || player == nullptr || player == bot || bot->isDead() || bot->isIncapacitated())
+		return false;
+
+	Zone* playerZone = player->getZone();
+	Reference<PlayerObject*> playerGhost = player->getPlayerObject();
+	Reference<PlayerObject*> ghost = bot->getPlayerObject();
+
+	if (playerZone == nullptr || ghost == nullptr || ghost->isOnLoadScreen() || ghost->isTeleporting())
+		return false;
+
+	if (playerGhost != nullptr && (!playerGhost->isOnline() || playerGhost->isOnLoadScreen()))
+		return false;
+
+	BotMovePoint seen;
+
+	if (!samplePosition(player, seen))
+		return false;
+
+	Reference<BotMoveJob*> job = getJob(bot, true);
+	Zone* zone = bot->getZone();
+	BotMovePoint spot;
+
+	callSpot(bot, player, seen, playerZone, job->side, spot);
+
+	job->trail.removeAll();
+	job->lastSeenValid = false;
+	job->leapPending = false;
+
+	if (zone == playerZone) {
+		teleportTo(job, bot, spot);
+	} else {
+		if (job->moving) {
+			bot->setCurrentSpeed(0);
+			bot->updateLocomotion();
+			job->moving = false;
+		}
+
+		bot->switchZone(playerZone->getZoneName(), spot.local.getX(), spot.local.getZ(), spot.local.getY(),
+				spot.cell != nullptr ? spot.cell->getObjectID() : 0);
+
+		job->placedValid = false;
+	}
+
+	moverLog().info(true) << "BotMover: " << bot->getFirstName() << " called to " << player->getFirstName() << " on " << playerZone->getZoneName()
+		<< " " << (int)spot.world.getX() << " " << (int)spot.world.getY() << (spot.cell != nullptr ? " in cell " + String::valueOf(spot.cell->getObjectID()) : String(""));
 
 	return true;
 }

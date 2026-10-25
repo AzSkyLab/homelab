@@ -103,6 +103,12 @@ BotLines = {
 			"Come by the cantina in {city} and watch me, I'll set you up.",
 			"I'm dancing in the {city} cantina. Come watch and I'll buff you.",
 		},
+		-- The band: the musician was asked for a buff (or the dancer was, and the musician has said its piece): the dancer joins in
+		band = {
+			"Watch me too, {name}. The dance and his music together, that's the full set.",
+			"And watch me while you listen to him, {name}. You'll get both.",
+			"I've got you as well, {name}: watch me, and listen to the music.",
+		},
 		-- Asked about battle fatigue or healing while the model can't answer
 		watchHint = {
 			"Just watch me a while, that'll clear the fatigue.",

@@ -8,6 +8,7 @@
 #include "BotManager.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
+#include "server/zone/objects/tangible/TangibleObject.h"
 #include "server/ServerCore.h"
 
 using namespace server::zone::managers::bot;
@@ -140,8 +141,62 @@ int devRange(lua_State* L) {
 	return 0;
 }
 
+String templatePath(SceneObject* object) {
+	SharedObjectTemplate* objectTemplate = object != nullptr ? object->getObjectTemplate() : nullptr;
+
+	return objectTemplate != nullptr ? objectTemplate->getFullTemplateString() : String("?");
+}
+
+// gear:<first>: what the bot wears or holds, and what its inventory holds (templates, use counts)
+int devGear(lua_State* L) {
+	Reference<CreatureObject*> bot = BotManager::instance()->getOnlineBot(toString(L, 2));
+
+	if (bot == nullptr) {
+		devLog().info(true) << "gear: no online bot called " << toString(L, 2);
+		return 0;
+	}
+
+	StringBuffer text;
+
+	text << "gear: " << bot->getFirstName() << " wears";
+
+	for (int i = 0; i < bot->getSlottedObjectsSize(); ++i) {
+		Reference<SceneObject*> object = bot->getSlottedObject(i);
+
+		if (object == nullptr)
+			continue;
+
+		String path = templatePath(object);
+
+		if (path.contains("/wearables/") || path.contains("/weapon/") || path.contains("/instrument/"))
+			text << " " << path.subString(path.lastIndexOf('/') + 1);
+	}
+
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	text << "; pack:";
+
+	for (int i = 0; inventory != nullptr && i < inventory->getContainerObjectsSize(); ++i) {
+		SceneObject* object = inventory->getContainerObject(i);
+
+		if (object == nullptr)
+			continue;
+
+		String path = templatePath(object);
+
+		text << " " << path.subString(path.lastIndexOf('/') + 1);
+
+		if (object->isTangibleObject())
+			text << "x" << object->asTangibleObject()->getUseCount();
+	}
+
+	devLog().info(true) << text.toString();
+
+	return 0;
+}
+
 void registerDevTable(lua_State* L) {
-	static const luaL_Reg functions[] = {{"threat", devThreat}, {"range", devRange}, {nullptr, nullptr}};
+	static const luaL_Reg functions[] = {{"threat", devThreat}, {"range", devRange}, {"gear", devGear}, {nullptr, nullptr}};
 
 	lua_newtable(L);
 
@@ -168,6 +223,8 @@ void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botDropDeadDefenders", botDropDeadDefenders);
 	lua->registerFunction("botWeaponRange", botWeaponRange);
 	lua->registerFunction("botThreatOn", botThreatOn);
+	lua->registerFunction("botResists", botResists);
+	lua->registerFunction("botCreaturesNear", botCreaturesNear);
 	lua->registerFunction("botLairsNear", botLairsNear);
 
 	registerDevTable(lua->getLuaState());
@@ -297,6 +354,62 @@ int BotCombatLua::botWeaponRange(lua_State* L) {
 	setIntField(L, "idealAccuracy", range.idealAccuracy);
 	setIntField(L, "maxRange", range.maxRange);
 	setIntField(L, "maxAccuracy", range.maxAccuracy);
+
+	return 1;
+}
+
+// botCreaturesNear(pBot, range) -> {{oid, x, y, radius, target}, ...}
+int BotCombatLua::botCreaturesNear(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	Vector<Reference<BotCreatureInfo*>> found;
+
+	if (bot != nullptr)
+		BotCombat::creaturesNear(bot, (float) lua_tonumber(L, 2), found);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < found.size(); ++i) {
+		const BotCreatureInfo& info = *found.get(i);
+
+		lua_newtable(L);
+		setIntField(L, "oid", (lua_Integer) info.oid);
+		lua_pushnumber(L, info.x);
+		lua_setfield(L, -2, "x");
+		lua_pushnumber(L, info.y);
+		lua_setfield(L, -2, "y");
+		lua_pushnumber(L, info.radius);
+		lua_setfield(L, -2, "radius");
+		setIntField(L, "target", (lua_Integer) info.target);
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
+}
+
+// botResists(pCreature) -> {kinetic, energy, blast, heat, cold, electricity, acid, stun, lightsaber} or nil
+int BotCombatLua::botResists(lua_State* L) {
+	CreatureObject* creature = toCreature(L, 1);
+	BotResists resists;
+
+	if (creature == nullptr || !BotCombat::resists(creature, resists)) {
+		lua_pushnil(L);
+
+		return 1;
+	}
+
+	lua_newtable(L);
+
+	const struct {
+		const char* name;
+		float value;
+	} fields[] = {{"kinetic", resists.kinetic}, {"energy", resists.energy}, {"blast", resists.blast}, {"heat", resists.heat},
+		{"cold", resists.cold}, {"electricity", resists.electricity}, {"acid", resists.acid}, {"stun", resists.stun},
+		{"lightsaber", resists.lightsaber}};
+
+	for (const auto& field : fields) {
+		lua_pushnumber(L, field.value);
+		lua_setfield(L, -2, field.name);
+	}
 
 	return 1;
 }

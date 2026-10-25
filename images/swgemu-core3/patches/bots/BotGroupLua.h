@@ -18,6 +18,11 @@
  *                                      type 0 (default) animals, 1 NPCs, 2 players. nil and why if it can't
  *   botPeopleNear(pObject, range)      array of {name, oid, kind ("player" or "npc")}: the players (bots too) and people NPCs
  *                                      (the crowd, vendors; no animals) around it, for who a spoken line might be for
+ *   botHumansOnline()                  array of the oids of the players online with a client (never a bot): the crew's
+ *                                      group cap leaves a slot for the other human (Phase 8)
+ *   botGroupInfo(pCreature)            nil when it has no group, else {id, leader, members = {oid, ...}} (group order, the leader
+ *                                      first). Lock-free: use it for another creature's group (a human, another bot), never
+ *                                      getGroupSize / getGroupMember, which lock that creature and then its group (Phase 8)
  * Group chat from humans reaches BotJobs:onHeard(pBot, pSpeaker, text, "group") (BotGroup, patches/0003).
  *
  * Development (console):
@@ -57,6 +62,8 @@ private:
 	static int botTrack(lua_State* L);
 	static int botAttackers(lua_State* L);
 	static int botPeopleNear(lua_State* L);
+	static int botHumansOnline(lua_State* L);
+	static int botGroupInfo(lua_State* L);
 };
 
 } // namespace bot

@@ -7,6 +7,8 @@
  *   hooks are in ChatManagerImplementation::handleGroupChat and handleChatRoomMessage (patches/0003).
  * - The ranger: a real camp from a camp kit (Core3's CampKitMenuComponent, as the kit's "use" radial runs it), and
  *   tracking, the area track's own scan (its results go only to a client window).
+ * - Squad leader (patches/0009): a bot squad leader calls the squad leader commands in a group a human leads, and gives
+ *   the aura.
  * - Fairness (patches/0007): bots take no share of the credit split, random loot, the loot lottery or mission rewards,
  *   and their damage isn't an XP share of its own, so the humans get the XP they'd get alone, plus the group bonus.
  */
@@ -30,6 +32,9 @@ namespace threat {
 class ThreatMap;
 }
 }
+namespace group {
+class GroupObject;
+}
 }
 
 namespace managers {
@@ -45,6 +50,15 @@ public:
 	uint64 oid = 0;
 	String kind;			// "animal", "npc" or "player"
 	int level = 0;
+};
+
+// A creature's group as the crew's Lua reads it (Phase 8): lock-free, through the group's @dirty getters, so that asking after
+// another creature from a bot's event never locks that creature (LuaCreatureObject::getGroupSize does, then the group)
+class BotGroupInfo : public Object {
+public:
+	uint64 id = 0;
+	uint64 leader = 0;
+	Vector<uint64> members;		// in group order, the leader first
 };
 
 class BotGroup {
@@ -95,6 +109,16 @@ public:
 	// way was dropped, failed or expired). Remembers the last few; wasMissionDone asks. Thread-safe
 	static void missionDone(uint64 missionOid);
 	static bool wasMissionDone(uint64 missionOid);
+
+	// The creature's group: false when it has none. Reads only, no creature is locked
+	static bool groupInfo(server::zone::objects::creature::CreatureObject* creature, BotGroupInfo& out);
+
+	// Squad leader (patches/0009): a bot with Novice Squad Leader in a group it doesn't lead may call the six commands
+	// (steady aim, rally, volley, form up, boost morale, retreat) for it, and gives the group its aura (the passive
+	// group defense, burst run and slope move) when the leader has no squad leader skills of its own. We lead, it calls.
+	static bool isSquadLeaderBot(server::zone::objects::scene::SceneObject* object);
+	static bool mayCallSquadLeader(server::zone::objects::creature::CreatureObject* caster, server::zone::objects::group::GroupObject* group);
+	static server::zone::objects::creature::CreatureObject* squadLeaderBotIn(server::zone::objects::group::GroupObject* group);
 
 	// True if object is a bot left out of `reward` (logged with Core3.BotManager.DevLogRewards = true)
 	static bool skipReward(server::zone::objects::scene::SceneObject* object, const char* reward);

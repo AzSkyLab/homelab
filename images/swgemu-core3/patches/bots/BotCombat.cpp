@@ -1398,6 +1398,28 @@ bool BotCombat::weaponRange(CreatureObject* bot, BotWeaponRange& out) {
 	return true;
 }
 
+bool BotCombat::resists(CreatureObject* creature, BotResists& out) {
+	if (creature == nullptr || !creature->isAiAgent())
+		return false;
+
+	AiAgent* agent = creature->asAiAgent();
+
+	if (agent == nullptr)
+		return false;
+
+	out.kinetic = agent->getKinetic();
+	out.energy = agent->getEnergy();
+	out.blast = agent->getBlast();
+	out.heat = agent->getHeat();
+	out.cold = agent->getCold();
+	out.electricity = agent->getElectricity();
+	out.acid = agent->getAcid();
+	out.stun = agent->getStun();
+	out.lightsaber = agent->getLightSaber();
+
+	return true;
+}
+
 bool BotCombat::threatOn(CreatureObject* bot, CreatureObject* creature, BotThreat& out) {
 	if (bot == nullptr || creature == nullptr || !creature->isAiAgent())
 		return false;
@@ -1466,6 +1488,66 @@ bool BotCombat::threatOn(CreatureObject* bot, CreatureObject* creature, BotThrea
 	}
 
 	return true;
+}
+
+void BotCombat::creaturesNear(CreatureObject* bot, float range, Vector<Reference<BotCreatureInfo*>>& out) {
+	if (bot == nullptr || !BotManager::instance()->isOnlineBot(bot))
+		return;
+
+	Zone* zone = bot->getZone();
+
+	if (zone == nullptr)
+		return;
+
+	SortedVector<ManagedReference<TreeEntry*>> nearby;
+	zone->getInRangeObjects(bot->getPositionX(), bot->getPositionZ(), bot->getPositionY(), range, &nearby, true, false);
+
+	Vector3 here = bot->getWorldPosition();
+	Vector<Reference<BotCreatureInfo*>> found;
+
+	for (int i = 0; i < nearby.size(); ++i) {
+		SceneObject* object = static_cast<SceneObject*>(nearby.get(i).get());
+
+		if (object == nullptr || object == bot || !object->isCreatureObject() || object->isPlayerCreature())
+			continue;
+
+		CreatureObject* creature = object->asCreatureObject();
+
+		if (creature == nullptr || creature->isPet() || creature->isDead() || creature->isIncapacitated() || !creature->isAttackableBy(bot))
+			continue;
+
+		Reference<BotCreatureInfo*> info = new BotCreatureInfo();
+
+		info->oid = creature->getObjectID();
+		info->x = creature->getWorldPositionX();
+		info->y = creature->getWorldPositionY();
+		info->radius = creature->getTemplateRadius();
+
+		SceneObject* defender = creature->getMainDefender();
+
+		info->target = defender != nullptr ? defender->getObjectID() : 0;
+
+		found.add(info);
+	}
+
+	// Nearest first, the first 40
+	for (int n = 0; n < 40 && found.size() > 0; ++n) {
+		int best = 0;
+		float bestDist = 1e9;
+
+		for (int i = 0; i < found.size(); ++i) {
+			float dx = found.get(i)->x - here.getX(), dy = found.get(i)->y - here.getY();
+			float d = dx * dx + dy * dy;
+
+			if (d < bestDist) {
+				bestDist = d;
+				best = i;
+			}
+		}
+
+		out.add(found.get(best));
+		found.remove(best);
+	}
 }
 
 void BotCombat::lairsNear(CreatureObject* bot, float range, Vector<Reference<BotLairInfo*>>& out) {

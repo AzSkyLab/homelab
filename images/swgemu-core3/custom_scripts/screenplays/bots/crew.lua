@@ -1,11 +1,12 @@
--- Bot players (Phase 5): the hunting crew. Four bots wait in the Mos Eisley cantina like players looking for a group:
--- a tank (Teras Kasi), a rifleman, a medic (combat medic and doctor) and a ranger. Invite one (or ask "wanna hunt?")
+-- Bot players (Phase 5): the hunting crew. Seven bots wait in the Mos Eisley cantina like players looking for a group:
+-- a tank (Teras Kasi), a rifleman, a medic (combat medic and doctor), a ranger, and (Phase 8) a squad leader, an
+-- entertainer and a commando. Invite one (or ask "wanna hunt?")
 -- and it joins, follows its leader's trail (BotMover), fights what the leader fights or whatever attacks the group,
 -- heals, revives, camps and tracks, and goes home when dismissed. It never leads: a group it ends up leading is handed
 -- to the player. Spec: ~/github/swgemu/specs/2026-10-23-bot-group-mates/ (the contract is
 -- specs/2026-10-23-bot-players/interfaces.md, "Phases 4-6").
 --
--- A job module (the interface is at the top of bot_jobs.lua), registered as tank, rifleman, medic and ranger. While a
+-- A job module (the interface is at the top of bot_jobs.lua), registered for each role in CREW. While a
 -- crew bot is grouped, fighting or dead it runs its own loop of events on itself (every 1.5 s in a fight, 2.5 s out of
 -- one); at home BotJobs' 5 s tick idles it. Lua state is per thread, so its state lives in shared memory under
 -- bot:<oid>:crew:*, and every chain carries the bot's generation and its loop number. Other creatures are only read
@@ -28,6 +29,12 @@
 --   runLuaFunction BotCrew:devEquip:<first>:<template>         a bot holds a weapon (a leader bot needs a gun to open a fight)
 --   runLuaFunction BotCombatDev:threat:<oid>                   a creature's threat map, target, taunt lockout, DoTs (C++)
 --   runLuaFunction BotCrew:devState:<first>                    a crew bot's state
+--   runLuaFunction BotCrew:devCall:<first>:<to>                a bot is called to another bot or player (botCallTo)
+--   runLuaFunction BotCrew:devStock:<first>                    stock an area poison pack and a grenade, log their oids
+--   runLuaFunction BotCrew:devResists:<oid>                    a creature's resistances (botResists)
+--   runLuaFunction BotCrew:devSpawnBy:<bot>:<oid>:<template>   a creature 1.5 m from another creature
+--   runLuaFunction BotCrew:devField:<first>                    the creatures around a grouped crew bot, pulled or not, as the area attacks see them
+--   runLuaFunction BotCombatDev:gear:<first>                   what a bot wears, holds and carries (C++)
 
 includeFile("../custom_scripts/screenplays/bots/crew_lines.lua")
 includeFile("../custom_scripts/screenplays/bots/crew_swoop.lua")
@@ -39,7 +46,7 @@ local CROUCHED = 1
 local STATES = {0x1000, 0x2000, 0x4000, 0x8000} -- stunned, blinded, dizzy, intimidated: what healstate cures
 local POISONED, DISEASED = 0x800000, 0x2000000
 
-local CREW = {tank = true, rifleman = true, medic = true, ranger = true}
+local CREW = {tank = true, rifleman = true, medic = true, ranger = true, squadleader = true, entertainer = true, commando = true}
 local MED = "object/tangible/medicine/crafted/"
 
 BotCrew = ScreenPlay:new {
@@ -57,6 +64,11 @@ BotCrew = ScreenPlay:new {
 		-- The poison and disease packs, at what a master crafter makes (Core3's template limits): strength of the DoT,
 		-- seconds, the chance to land (against resistance) and the throw range in metres (+14 at healing range 100)
 		dotPower = 250, dotDuration = 240, dotPotency = 150, dotRange = 30},
+
+	-- The group cap (Phase 8): the crew keeps a group to this many (Core3's own is 20). One of us takes all seven crew; with
+	-- both, the commando joins only while there is a slot left for the other human
+	groupCap = 8,
+	capEvery = 10,
 
 	-- Fighting
 	engageRange = 80,     -- a target further than this is left alone
@@ -113,6 +125,83 @@ BotCrew = ScreenPlay:new {
 	calloutChance = 33,
 	calloutGap = 20,
 
+	-- The squad leader (Phase 8) calls the fight with Core3's squad leader commands, though we lead. It needs this share of
+	-- each of its pools (a command costs about 130 of each); a call in group chat at most every slCallGap seconds. Rally at the
+	-- start of a fight with slRallyCreatures or more creatures or a lair (at most every slRallyGap s); volley fire on the tank's
+	-- target when slVolleyMembers or more of the group fight it (every slVolleyGap s); form up when a member is stunned or
+	-- dizzy; steady aim outdoors again every slAimEvery s (its 300 s); boost morale after a fight when one member carries over
+	-- slMoraleShare of at least slMoraleWounds wounds. Retreat when the fight is lost (the tank down and two members under
+	-- retreatLow of their health, or three members down), at most every retreatBlock s: the crew breaks off and follows the
+	-- leader for retreatFor s, or until nothing has chased for retreatMin s; then it holds fire retreatHold s
+	slHamFloor = 0.45,
+	slPay = 170,
+	slCallGap = 20,
+	slRallyCreatures = 2,
+	slRallyGap = 45,
+	slVolleyMembers = 3,
+	slVolleyGap = 20,
+	slFormUpGap = 8,
+	slAimEvery = 295,
+	townRadius = 450,
+	slMoraleShare = 0.6,
+	slMoraleWounds = 300,
+	slMoraleGap = 90,
+	retreatLow = 0.3,
+	retreatBlock = 60,
+	retreatFor = 30,
+	retreatMin = 6,
+	retreatHold = 4,
+
+	-- Calling the crew (Phase 8): "crew, come to me" (a tell to any crew bot, or group chat). Each crew bot that is free (at home,
+	-- or in the caller's group; not in someone else's) is put near the caller after callDelay seconds, about 10 m behind
+	-- them, unless it is already within callNear metres. One that isn't grouped then waits calledWait seconds for an invite
+	-- (the first to arrive sends one, as at the cantina; the others ask for one), and goes home if none comes
+	callDelay = {5, 10},
+	callNear = 40,
+	calledWait = 600,
+	callInviteWindow = 120,
+
+	-- The medic's area packs (Phase 8): instead of a single pack when areaMin or more creatures of the group (on the tank, when
+	-- there is one) stand within areaRadius of its target, and nothing that isn't fighting the group within areaSafe of it
+	-- (the pack hits every attackable creature there, and makes the medic a defender of each)
+	areaMin = 3,
+	areaRadius = 10,
+	areaSafe = 11,
+
+	-- The entertainer (Phase 8): in a camp it dances (a flourish every perfFlourish seconds, a dance that stopped is started
+	-- again after perfRestart), or plays when asked; its action is topped up below perfActionFloor percent, as the town
+	-- dancer's is
+	perfFlourish = {20, 40},
+	perfRestart = 15,
+	perfActionFloor = 30,
+
+	-- The commando (Phase 8). Flame thrower and acid rifle specials reach 16 m (single shots too), so it stands 12-15 m from
+	-- the fight (commandoBand), and fires a cone (45 degrees, so 22.5 to each side) when coneMin or more creatures of the
+	-- group stand in it, else a single shot. A grenade (10 m blast) at a clump of grenadeMin or more creatures on the tank,
+	-- within grenadeClump of each other and grenadeRange of the commando, at most every grenadeGap s. No cone or grenade
+	-- when a creature that isn't fighting the group stands in its area, which is checked a little wider (coneSafeRange and
+	-- coneSafeHalf, grenadeSafe). The weapon with the better expected damage against the target's armor is held (the flame
+	-- thrower's 480-840 against the acid rifle's 60-160 on average, flameAvg and acidAvg), with a margin, and not swapped
+	-- more often than every swapGap s.
+	commandoBand = {12, 15},
+	coneRange = 15.5,
+	coneHalf = 22.5,
+	coneMin = 2,
+	coneSafeRange = 18,
+	coneSafeHalf = 30,
+	grenadeMin = 3,
+	grenadeClump = 9,
+	grenadeRange = 40,
+	grenadeSafe = 11,
+	grenadeGap = 15,
+	grenadeStock = 5,
+	flameAvg = 660,
+	acidAvg = 110,
+	swapMargin = 1.15,
+	swapGap = 10,
+	grenade = "object/weapon/ranged/grenade/grenade_fragmentation.iff",
+	acidRifle = "object/weapon/ranged/rifle/rifle_acid_beam.iff",
+
 	-- Specials by role: the first a bot has of each family is used, picked by weight. Taunt and lunge are the
 	-- tank's own (below); the medic heals instead.
 	specials = {
@@ -151,6 +240,19 @@ BotCrew = ScreenPlay:new {
 			{cmd = "legshot1", skill = "combat_marksman_carbine_01", weight = 1, family = "leg"},
 		},
 		medic = {},
+		-- Phase 8. The squad leader fights with a carbine like the ranger (set below); the entertainer with a pistol; the
+		-- commando with a flame thrower (single shots here, the cones are its own turn)
+		entertainer = {
+			{cmd = "bodyshot3", skill = "combat_pistol_accuracy_03", weight = 4, family = "body"},
+			{cmd = "bodyshot2", skill = "combat_marksman_pistol_03", weight = 4, family = "body"},
+			{cmd = "bodyshot1", skill = "combat_marksman_pistol_01", weight = 4, family = "body"},
+			{cmd = "healthshot2", skill = "combat_pistol_novice", weight = 3, family = "health"},
+			{cmd = "healthshot1", skill = "combat_marksman_pistol_04", weight = 3, family = "health"},
+		},
+		commando = {
+			{cmd = "flamesingle2", skill = "combat_commando_thrownweapon_04", weight = 4, family = "single"},
+			{cmd = "flamesingle1", skill = "combat_commando_thrownweapon_01", weight = 4, family = "single"},
+		},
 	},
 	-- What a bot can do besides specials, by the skill box that grants it (Core3's skills.iff)
 	abilities = {
@@ -168,6 +270,16 @@ BotCrew = ScreenPlay:new {
 		cureDisease = "science_doctor_wound_speed_04",
 		enhance = "science_doctor_wound_02",
 		revive = "science_doctor_wound_04",
+		-- Phase 8: the squad leader's six commands (each from its own box) and the commando's cones and grenades
+		steadyAim = "outdoors_squadleader_offense_01",
+		volley = "outdoors_squadleader_offense_03",
+		formUp = "outdoors_squadleader_defense_01",
+		boostMorale = "outdoors_squadleader_defense_04",
+		rally = "outdoors_squadleader_support_01",
+		retreat = "outdoors_squadleader_support_03",
+		flameCone = "combat_commando_thrownweapon_02",
+		acidCone = "combat_commando_support_02",
+		grenade = "combat_commando_novice",
 	},
 
 	-- Healing. Reaches are half a metre inside Core3's (stims 7 m, ranged stims 30 m + healing_range 14 m, healstate
@@ -193,6 +305,9 @@ BotCrew = ScreenPlay:new {
 		-- What the combat medic throws (single-target, the best potency): poison then disease on the tank's target
 		dotPoison = MED .. "medpack_poison_health_c.iff",
 		dotDisease = MED .. "medpack_disease_health_c.iff",
+		-- ...and the area versions (Phase 8)
+		dotPoisonArea = MED .. "medpack_poison_area_health_c.iff",
+		dotDiseaseArea = MED .. "medpack_disease_area_health_c.iff",
 	},
 	restockEvery = 300,
 
@@ -242,6 +357,18 @@ BotCrew = ScreenPlay:new {
 
 	-- The words (intent): checked in this order; matched anywhere in the lowercased text
 	words = {
+		-- Phase 8: the entertainer's: music, dancing, stopping, and battle fatigue (which a camp can't heal)
+		music = {"play something", "play some music", "play us something", "play a song", "play us a song", "some music",
+			"play music", "play a tune", "play us a tune", "play for us", "play for me"},
+		dance = {"dance for us", "dance for me", "start dancing", "back to dancing", "go back to dancing", "dance again", "dance please",
+			"do a dance", "dance something"},
+		call = {"crew come to me", "crew to me", "crew come here", "crew get over here", "i need the crew", "need the crew",
+			"crew on me", "crew over here", "crew join me"},
+		perfstop = {"stop playing", "stop dancing", "stop the music", "enough music", "stop the dance"},
+		fatigue = {"battle fatigue", "fatigue", "shock wound"},
+		-- Phase 8: the commando gives up its place for the other human
+		makeroom = {"make room", "make some room", "make a slot", "free up a slot", "free a slot", "need a slot", "room for my friend",
+			"room for him", "room for her", "room for another", "room for one more"},
 		home = {"go home", "head home", "you can go", "dismissed", "call it a day", "go back to the cantina", "leave the group",
 			"drop group", "go away", "you're done", "youre done", "that's all for today", "thats all for today"},
 		follow = {"follow", "stay with me", "stay close", "on me", "with me", "come on", "let's go", "lets go", "move out",
@@ -286,7 +413,8 @@ BotCrew = ScreenPlay:new {
 			"search the corpse", "search them", "search the carcass", "loot bodies", "loot corpses"},
 	},
 	-- Work that is one crew member's: in group chat, that member answers it
-	owners = {camp = "ranger", track = "ranger", buff = "medic", wounds = "medic", harvest = "ranger"},
+	owners = {camp = "ranger", track = "ranger", buff = "medic", wounds = "medic", harvest = "ranger", makeroom = "commando",
+		music = "entertainer", dance = "entertainer", perfstop = "entertainer", fatigue = "entertainer"},
 	-- Work any crew member may answer (the first in earshot does)
 	anyone = {loot = true, harvest = true, attack = true},
 	affirmative = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please", "do it", "go ahead", "sounds good",
@@ -302,6 +430,9 @@ BotCrew = ScreenPlay:new {
 	kit = "fighter",
 	place = "cantina",
 }
+
+-- The squad leader fights with a carbine as the ranger does (Master Carbineer and Marksman: the same specials)
+BotCrew.specials.squadleader = BotCrew.specials.ranger
 
 -- Helpers
 
@@ -647,13 +778,14 @@ function BotCrew:clear(oid)
 		"invited", "invitedAt", "specialCount", "forGroup", "leader", "groupedAt", "focus", "chatty", "calloutAt",
 		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "backSince", "backBlock",
 		"stepAt", "kneelAt", "bandNear", "bandFar", "bandMax", "bandOk", "lairsAt", "dotReady", "dotOid", "pT", "dT", "pA", "dA",
-		"pP", "dP", "pS", "dS"}) do
+		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
+		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "capAt"}) do
 		deleteData(ckey(oid, field))
 	end
 
 	self:tankDrop(oid)
 
-	for _, field in ipairs({"mode", "order", "heard", "campTried", "lairs"}) do
+	for _, field in ipairs({"mode", "order", "heard", "campTried", "lairs", "song", "dance", "flameCone", "flameSingle", "acidCone", "acidSingle"}) do
 		deleteStringData(ckey(oid, field))
 	end
 
@@ -684,6 +816,24 @@ function BotCrew:learn(pBot, oid, role)
 		if creature:hasSkill(skill) then
 			table.insert(can, ability)
 		end
+	end
+
+	-- The commando's cones and singles: the best the skills give, for each of its two weapons
+	if role == "commando" then
+		local function best(...)
+			for _, option in ipairs({...}) do
+				if creature:hasSkill(option[2]) then
+					return option[1]
+				end
+			end
+
+			return ""
+		end
+
+		putString(ckey(oid, "flameCone"), best({"flamecone2", "combat_commando_master"}, {"flamecone1", "combat_commando_thrownweapon_02"}))
+		putString(ckey(oid, "flameSingle"), best({"flamesingle2", "combat_commando_thrownweapon_04"}, {"flamesingle1", "combat_commando_thrownweapon_01"}))
+		putString(ckey(oid, "acidCone"), best({"fireacidcone2", "combat_commando_master"}, {"fireacidcone1", "combat_commando_support_02"}))
+		putString(ckey(oid, "acidSingle"), best({"fireacidsingle2", "combat_commando_support_04"}, {"fireacidsingle1", "combat_commando_support_01"}))
 	end
 
 	table.sort(can)
@@ -732,8 +882,24 @@ function BotCrew:restock(pBot, oid)
 			self:setting("dotPotency"), self:setting("dotRange"))
 	end
 
+	-- The area packs (the template's own area)
+	if self:can(oid, "poisonPack") then
+		botStockPack(pBot, self.packs.dotPoisonArea, uses, self:setting("dotPower"), self:setting("dotDuration"),
+			self:setting("dotPotency"), self:setting("dotRange"))
+	end
+
+	if self:can(oid, "diseasePack") then
+		botStockPack(pBot, self.packs.dotDiseaseArea, uses, self:setting("dotPower"), self:setting("dotDuration"),
+			self:setting("dotPotency"), self:setting("dotRange"))
+	end
+
 	if self:can(oid, "enhance") and BotDoctor ~= nil then
 		BotDoctor:restock(pBot)
+	end
+
+	-- The commando's grenades (a thrown one is used up)
+	if self:role(oid) == "commando" and self:can(oid, "grenade") then
+		bot("botStockItem", pBot, self.grenade, self.grenadeStock)
 	end
 
 	put(ckey(oid, "restockAt"), os.time())
@@ -767,6 +933,7 @@ function BotCrew:equip(pBot, oid)
 		bot("botEquip", pBot, template)
 	end
 
+	deleteData(ckey(oid, "held"))
 	self:readBand(pBot, oid)
 end
 
@@ -813,12 +980,20 @@ function BotCrew:tick(pBot, oid, now)
 		self:restock(pBot, oid)
 	end
 
+	if self:role(oid) == "entertainer" and readData(ckey(oid, "inCamp")) ~= 1 then
+		self:perfPistol(pBot, oid)
+	end
+
 	if mode == "leaving" and now - readData(ckey(oid, "leavingAt")) > 30 then
 		self:goHome(pBot, tostring(readData(key(oid, "gen"))))
 	elseif mode == "walkingHome" and now - readData(ckey(oid, "homeAt")) > self.walkHomeTimeout then
 		self:teleportHome(pBot, oid)
 	elseif mode == "home" and not creature:isGrouped() and not creature:isInCombat() then
 		self:idle(pBot, oid, now)
+	elseif mode == "called" and not creature:isGrouped() and not creature:isInCombat() and now > readData(ckey(oid, "calledUntil")) then
+		-- Called and nobody invited it: back to the station
+		print("BotJobs: " .. self:name(oid) .. " wasn't invited, going home")
+		self:leaveForHome(pBot, oid, now)
 	end
 
 	-- Asked for its goods by tell, and the player has come near
@@ -1008,6 +1183,13 @@ function BotCrew:step(pBot, oid, now)
 		end
 
 		put(ckey(oid, "leader"), SceneObject(pLeader):getObjectID())
+
+		-- The commando gives its place up when the group is full and another human is waiting outside it (however the group
+		-- came to be: the invite check only sees the order they came in)
+		if self:role(oid) == "commando" and self:overCap(pBot, oid, g, pLeader, now) then
+			return self.groupMs
+		end
+
 		self:scanHumans(g, oid)
 		self:missionWatchHumans(g)
 		BotCrewSwoop:tick(pBot, oid, pLeader, now, g)
@@ -1030,6 +1212,16 @@ function BotCrew:step(pBot, oid, now)
 	-- The ranger's rescue is a command, not a shot: it can go while the ranger holds fire or walks
 	if g ~= nil and role == "ranger" and ownFight == 0 and CreatureObject(pBot):getQueueSize() == 0 and
 		self:can(oid, "rescue") and self:rescueTurn(pBot, oid, g, now) then
+		return self.fightMs
+	end
+
+	-- The squad leader calls the fight (rally, volley, form up, steady aim, boost morale, retreat)
+	if g ~= nil and pLeader ~= nil and role == "squadleader" and ownFight == 0 and self:slTurn(pBot, oid, g, pLeader, now) then
+		return self.fightMs
+	end
+
+	-- A retreat in force: break off and follow the leader
+	if g ~= nil and pLeader ~= nil and ownFight == 0 and self:retreatStep(pBot, oid, g, pLeader, now) then
 		return self.fightMs
 	end
 
@@ -1075,6 +1267,59 @@ end
 
 -- Grouping
 
+-- The humans online (oids): real players, and in the dev tests the bots standing in for one (devLead lists them)
+function BotCrew:humansOnline()
+	local out, seen = {}, {}
+
+	for _, humanOid in ipairs(bot("botHumansOnline") or {}) do
+		if not seen[humanOid] then
+			seen[humanOid] = true
+			table.insert(out, humanOid)
+		end
+	end
+
+	for _, humanOid in ipairs(oidList(readStringData("crew:pretendList"))) do
+		local pHuman = getSceneObject(humanOid)
+
+		if not seen[humanOid] and pHuman ~= nil and SceneObject(pHuman):getZoneName() ~= "" then
+			seen[humanOid] = true
+			table.insert(out, humanOid)
+		end
+	end
+
+	return out
+end
+
+-- The group cap (Phase 8): only the commando holds a place for someone. Would it, joining this human's group, leave no
+-- slot for another human who is online and not in the group? (the second one to log in can always be invited)
+function BotCrew:noRoom(oid, pInviter)
+	if self:role(oid) ~= "commando" then
+		return false
+	end
+
+	-- (the inviter's group through botGroupInfo: getGroupSize and getGroupMember would lock the inviter, a player, from this bot's event)
+	local size, inGroup = 1, {[SceneObject(pInviter):getObjectID()] = true}
+	local info = bot("botGroupInfo", pInviter)
+
+	if info ~= nil then
+		size = math.max(1, #info.members)
+
+		for _, memberOid in ipairs(info.members) do
+			inGroup[memberOid] = true
+		end
+	end
+
+	local waiting = 0
+
+	for _, humanOid in ipairs(self:humansOnline()) do
+		if not inGroup[humanOid] then
+			waiting = waiting + 1
+		end
+	end
+
+	return size + 1 + waiting > self.groupCap
+end
+
 -- An invite (the "groupInvite" event, or the inviter seen by the tick): join a player's group
 function BotCrew:invited(pBot, oid, pInviter, now)
 	if pInviter == nil then
@@ -1095,6 +1340,13 @@ function BotCrew:invited(pBot, oid, pInviter, now)
 	if creature:isGrouped() or creature:isDead() or not self:human(pInviter) then
 		print("BotJobs: " .. self:name(oid) .. " declines " .. tostring(self:firstName(pInviter)) .. "'s invite")
 		botEnqueue(pBot, "decline", 0, "")
+		return
+	end
+
+	if self:noRoom(oid, pInviter) then
+		print("BotJobs: " .. self:name(oid) .. " sits out " .. self:firstName(pInviter) .. "'s group: no slot would be left for the other player")
+		botEnqueue(pBot, "decline", 0, "")
+		self:sitOut(pBot, oid, pInviter, "spatial")
 		return
 	end
 
@@ -1152,6 +1404,11 @@ function BotCrew:leftGroup(pBot, oid, now)
 end
 
 function BotCrew:leaveForHome(pBot, oid, now)
+	if self:role(oid) == "entertainer" then
+		self:perfStop(pBot, oid, true)
+		deleteData(ckey(oid, "perf"))
+	end
+
 	self:missionLeft(pBot, oid)
 	BotCrewSwoop:release(pBot, oid)
 	putString(ckey(oid, "mode"), "leaving")
@@ -1479,6 +1736,11 @@ function BotCrew:pickBase(pBot, oid, g, pLeader, now)
 	end
 
 	if now < readData(ckey(oid, "holdUntil")) then
+		return nil
+	end
+
+	-- Just retreated: nobody picks the fight up again at once
+	if pLeader ~= nil and now < readData(gkey(SceneObject(pLeader):getObjectID(), "retreatHold")) then
 		return nil
 	end
 
@@ -1954,6 +2216,898 @@ function BotCrew:rescueTurn(pBot, oid, g, now)
 	return false
 end
 
+
+-- Calling the crew (Phase 8). The call comes in a tell to any crew bot, or in group chat; whichever bot heard it works out who
+-- is free and sets each one's arrival. The leap itself is BotMover's callTo (any planet, from any distance).
+
+function BotCrew:callWanted(text)
+	return hasAny(wordsOf(text), self.words.call)
+end
+
+-- Is this crew bot free to come to the caller? "free" (at home, called, or on its way home), "with" (in the caller's group),
+-- "busy" (in someone else's group, or fighting, or down) -- and the leader's name for "busy" when it has one
+function BotCrew:callState(pBot, pCaller)
+	local creature = CreatureObject(pBot)
+
+	if creature:isDead() or creature:isIncapacitated() or creature:isInCombat() then
+		return "busy", nil
+	end
+
+	if not creature:isGrouped() then
+		return "free", nil
+	end
+
+	local callerGroup = CreatureObject(pCaller):getGroupID()
+
+	if callerGroup ~= 0 and creature:getGroupID() == callerGroup then
+		return "with", nil
+	end
+
+	local info = bot("botGroupInfo", pBot)
+	local pLeader = info ~= nil and getSceneObject(info.leader) or nil
+
+	return "busy", pLeader ~= nil and self:firstName(pLeader) or nil
+end
+
+function BotCrew:crewCall(pBot, oid, pCaller, channel)
+	local callerOid = SceneObject(pCaller):getObjectID()
+	local name = self:firstName(pCaller)
+	local coming = 0
+
+	for _, entry in ipairs(bot("botList") or {}) do
+		if entry.online and CREW[entry.job] and entry.oid ~= 0 then
+			local pOther = getSceneObject(entry.oid)
+
+			if pOther ~= nil then
+				local state, leaderName = self:callState(pOther, pCaller)
+
+				if state == "busy" then
+					-- (the bot that was asked says why; the rest keep quiet)
+					if entry.oid == oid and leaderName ~= nil then
+						self:say(pBot, oid, callerOid, channel == "group" and "group" or "tell", "callBusy", name, {leader = leaderName})
+					end
+				else
+					local delay = between(self.callDelay) * 1000
+
+					createEvent(delay, "BotCrew", "callArrive", pOther, packArgs(readData(key(entry.oid, "gen")), callerOid, state))
+					coming = coming + 1
+				end
+			end
+		end
+	end
+
+	print("BotJobs: " .. self:name(oid) .. " hears " .. name .. " call the crew: " .. coming .. " coming")
+
+	if coming > 0 then
+		self:say(pBot, oid, callerOid, channel == "group" and "group" or "tell", "callOn", name)
+	end
+end
+
+function BotCrew:callArrive(pBot, args)
+	local a = unpackArgs(args)
+
+	if not BotJobs:current(pBot, a[1]) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local pCaller = getSceneObject(num(a[2]) or 0)
+	local now = os.time()
+
+	-- (a minute later it may have gone off with someone else, or died)
+	if pCaller == nil or SceneObject(pCaller):getZoneName() == "" or self:callState(pBot, pCaller) == "busy" then
+		return
+	end
+
+	local state = self:callState(pBot, pCaller)
+	local dist = BotJobs:distance(pBot, pCaller)
+
+	self:standUp(pBot, oid)
+
+	if dist == nil or dist > self.callNear then
+		if not bot("botCallTo", pBot, pCaller) then
+			print("BotJobs: " .. self:name(oid) .. " couldn't be called to " .. self:firstName(pCaller))
+			return
+		end
+
+		print("BotJobs: " .. self:name(oid) .. " arrives beside " .. self:firstName(pCaller))
+		-- (it may have been sitting where it stood)
+		botEnqueue(pBot, "stand", 0, "")
+	end
+
+	if state == "with" then
+		deleteData(ckey(oid, "followAt"))
+		self:ensureFollow(pBot, oid, pCaller, now)
+		return
+	end
+
+	-- Not grouped: it waits for an invite; the first to arrive sends one (a bot never leads), the rest ask for one
+	putString(ckey(oid, "mode"), "called")
+	putString(ckey(oid, "order"), "follow")
+	put(ckey(oid, "calledUntil"), now + self.calledWait)
+	self:stopMoving(pBot)
+
+	local callerOid = SceneObject(pCaller):getObjectID()
+	local marker = "crew:call:" .. callerOid
+
+	if CreatureObject(pCaller):isGrouped() or (now < readData(marker .. ":until") and readData(marker .. ":bot") ~= oid) then
+		local kind = (self:role(oid) == "commando" and self:noRoom(oid, pCaller)) and "sitOut" or "askInvite"
+
+		self:say(pBot, oid, callerOid, "spatial", kind, self:firstName(pCaller))
+	else
+		put(marker .. ":until", now + self.callInviteWindow)
+		put(marker .. ":bot", oid)
+		self:join(pBot, oid, pCaller, "spatial", nil)
+	end
+end
+
+-- The entertainer (Phase 8). In a camp it dances for the group (Core3 heals mind wounds of the patrons watching, and the
+-- group gets the dancer's mind buff, which lands when they stop watching after a minute); "play something" has it play its
+-- instrument instead (focus and willpower), "dance" brings the dance back. One performance at a time, as Core3 allows.
+-- Battle fatigue isn't healed in a camp (Core3 needs a cantina or a theater for it).
+
+-- The instrument it carries (roster carry)
+function BotCrew:instrumentOf(oid)
+	local entry = BotJobs:entry(readStringData(key(oid, "first"))) or {}
+
+	for _, template in ipairs(entry.carry or {}) do
+		if template:find("/instrument/", 1, true) ~= nil then
+			return template
+		end
+	end
+
+	return nil
+end
+
+-- Keeps its action up while it performs (a performance costs some every loop), as BotDancer does
+function BotCrew:perfTopUp(pBot)
+	local creature = CreatureObject(pBot)
+	local full = creature:getMaxHAM(ACTION) - (botGetWounds(pBot, ACTION) or 0)
+
+	if full > 0 and creature:getHAM(ACTION) * 100 < full * self.perfActionFloor then
+		creature:setHAM(ACTION, full)
+	end
+end
+
+-- 1 dance, 2 music: what it is asked for (dancing, until asked otherwise)
+function BotCrew:perform(pBot, oid, now)
+	local creature = CreatureObject(pBot)
+	local want = readData(ckey(oid, "perf"))
+
+	if want == 0 then
+		want = 1
+	end
+
+	self:standUp(pBot, oid)
+	self:perfTopUp(pBot)
+
+	if now - readData(ckey(oid, "perfAt")) < 3 then
+		return
+	end
+
+	if want == 1 then
+		if creature:isPlayingMusic() then
+			put(ckey(oid, "perfAt"), now)
+			botEnqueue(pBot, "stopmusic", 0, "")
+			return
+		end
+
+		if not creature:isDancing() then
+			if now - readData(ckey(oid, "perfStart")) >= self.perfRestart then
+				put(ckey(oid, "perfStart"), now)
+				put(ckey(oid, "perfAt"), now)
+				putString(ckey(oid, "dance"), BotDancer ~= nil and BotDancer:pickDance("") or "exotic4")
+				botEnqueue(pBot, "startdance", 0, readStringData(ckey(oid, "dance")))
+				print("BotJobs: " .. self:name(oid) .. " dances for the camp")
+			end
+
+			return
+		end
+	else
+		if creature:isDancing() then
+			put(ckey(oid, "perfAt"), now)
+			botEnqueue(pBot, "stopdance", 0, "")
+			return
+		end
+
+		-- The instrument in hand (the pistol goes to the pack), then the song
+		if readData(ckey(oid, "instrument")) ~= 1 then
+			local template = self:instrumentOf(oid)
+
+			if template == nil then
+				put(ckey(oid, "perf"), 1)
+				return
+			end
+
+			put(ckey(oid, "instrument"), 1)
+			put(ckey(oid, "perfAt"), now)
+			bot("botEquip", pBot, template)
+			return
+		end
+
+		if not creature:isPlayingMusic() then
+			if now - readData(ckey(oid, "perfStart")) >= self.perfRestart then
+				put(ckey(oid, "perfStart"), now)
+				put(ckey(oid, "perfAt"), now)
+				putString(ckey(oid, "song"), BotMusician ~= nil and BotMusician:pickSong("") or "virtuoso")
+				botEnqueue(pBot, "startmusic", 0, readStringData(ckey(oid, "song")))
+				print("BotJobs: " .. self:name(oid) .. " plays for the camp")
+			end
+
+			return
+		end
+	end
+
+	-- Performing: a flourish now and then builds the group's buff
+	if now >= readData(ckey(oid, "perfNext")) then
+		if readData(ckey(oid, "perfNext")) ~= 0 then
+			botEnqueue(pBot, "flourish", 0, tostring(getRandomNumber(1, 8)))
+			put(ckey(oid, "flourishes"), readData(ckey(oid, "flourishes")) + 1)
+		end
+
+		put(ckey(oid, "perfNext"), now + between(self.perfFlourish))
+	end
+end
+
+-- Stop performing; with `pistol`, and an instrument in hand, take the pistol back
+function BotCrew:perfStop(pBot, oid, pistol)
+	local creature = CreatureObject(pBot)
+
+	if creature:isDancing() then
+		botEnqueue(pBot, "stopdance", 0, "")
+	end
+
+	if creature:isPlayingMusic() then
+		botEnqueue(pBot, "stopmusic", 0, "")
+	end
+
+	deleteData(ckey(oid, "perfNext"))
+	deleteData(ckey(oid, "perfStart"))
+
+	if pistol then
+		self:perfPistol(pBot, oid)
+	end
+end
+
+-- The pistol back in hand once the performance is over (a song has a 15 s outro in which Core3 still counts it as playing); until
+-- then the flag stays, and the next steps and the tick ask again
+function BotCrew:perfPistol(pBot, oid)
+	if readData(ckey(oid, "instrument")) ~= 1 then
+		return
+	end
+
+	local creature = CreatureObject(pBot)
+
+	if creature:isDancing() or creature:isPlayingMusic() then
+		return
+	end
+
+	deleteData(ckey(oid, "instrument"))
+	self:equip(pBot, oid)
+	print("BotJobs: " .. self:name(oid) .. " takes its pistol back")
+end
+
+-- The nearest town's name, for "the closest cantina"
+function BotCrew:nearestTown(pBot)
+	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+	local best, bestDist
+
+	for _, town in ipairs(self.towns[SceneObject(pBot):getZoneName()] or {}) do
+		local d = math.sqrt((x - town[2]) ^ 2 + (y - town[3]) ^ 2)
+
+		if bestDist == nil or d < bestDist then
+			best, bestDist = town[1], d
+		end
+	end
+
+	return best or "the nearest city"
+end
+
+-- What the entertainer was asked (spoken to it, by tell or in group chat), answered here without the model. true if it was
+-- one of these.
+function BotCrew:entertainerAsk(pBot, oid, pSpeaker, channel, text)
+	local t = wordsOf(text)
+	local name = self:firstName(pSpeaker)
+	local speakerOid = SceneObject(pSpeaker):getObjectID()
+	local g = self:group(pBot)
+	local member = g ~= nil and g.byOid[speakerOid] or nil
+
+	if hasAny(t, self.words.fatigue) then
+		if (CreatureObject(pBot):getSkillMod("private_med_battle_fatigue") or 0) > 0 then
+			self:say(pBot, oid, speakerOid, channel, "fatigueHere", name)
+		else
+			self:say(pBot, oid, speakerOid, channel, "fatigueNo", name, {town = self:nearestTown(pBot)})
+		end
+
+		return true
+	end
+
+	local kind = hasAny(t, self.words.perfstop) and "perfstop" or (hasAny(t, self.words.music) and "music") or
+		((hasAny(t, self.words.dance) or t:find("^ dance ")) and "dance") or nil
+
+	if kind == nil then
+		return false
+	end
+
+	-- (a stranger asking in the cantina gets the model's chat)
+	if member == nil or not member.human then
+		return false
+	end
+
+	local camp = self:activeCamp(g, self:leaderOf(pBot, oid, g, os.time()))
+
+	if kind == "perfstop" then
+		put(ckey(oid, "perf"), 0)
+		self:perfStop(pBot, oid, true)
+		self:say(pBot, oid, speakerOid, channel, "perfStop", name)
+	elseif camp == nil then
+		self:say(pBot, oid, speakerOid, channel, "noCamp", name)
+	else
+		put(ckey(oid, "perf"), kind == "music" and 2 or 1)
+		self:say(pBot, oid, speakerOid, channel, kind == "music" and "musicOn" or "danceOn", name)
+	end
+
+	return true
+end
+
+-- The squad leader (Phase 8, specs/2026-10-25-full-group/). It calls the six squad leader commands in a group we lead
+-- (patches/0009 lets Core3 take them from a bot in the group), one per turn with its queue empty and its pools above
+-- slHamFloor, and says each call in group chat as a player squad leader did.
+
+local function creatureName(pCreature)
+	return ((SceneObject(pCreature):getDisplayedName() or "it"):gsub("^[Aa]n? ", ""):gsub("^[Tt]he ", ""))
+end
+
+-- All three pools above this share of their maximum
+function BotCrew:hamAbove(pBot, share)
+	local creature = CreatureObject(pBot)
+
+	for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+		local max = creature:getMaxHAM(pool)
+
+		if max > 0 and creature:getHAM(pool) < max * share then
+			return false
+		end
+	end
+
+	return true
+end
+
+-- A call in group chat, at most one every slCallGap seconds whatever it is (the command goes either way); "Fall back!" is
+-- always said
+function BotCrew:slCall(pBot, oid, kind, fill, now)
+	if now - readData(ckey(oid, "slCallAt")) < self.slCallGap and kind ~= "retreat" then
+		return
+	end
+
+	put(ckey(oid, "slCallAt"), now)
+	self:say(pBot, oid, 0, "group", kind, nil, fill)
+end
+
+function BotCrew:slCommand(pBot, oid, command, target, field, now)
+	botEnqueue(pBot, command, target, "")
+	put(ckey(oid, field), now)
+	print("BotJobs: " .. self:name(oid) .. " (squad leader) " .. command .. (target ~= 0 and (" " .. target) or ""))
+end
+
+-- The creature the group fights: the tank's target, else the leader's
+function BotCrew:slTarget(pBot, oid, g, pLeader)
+	local tank = self:tankFor(oid, g)
+	local pTarget = tank ~= nil and self:validTarget(pBot, getSceneObject(readData(ckey(tank.oid, "target"))), g, false) or nil
+
+	if pTarget == nil and pLeader ~= nil and CreatureObject(pLeader):isInCombat() then
+		pTarget = self:validTarget(pBot, getSceneObject(CreatureObject(pLeader):getTargetID()), g, false)
+	end
+
+	return pTarget
+end
+
+-- Is a human of the group fighting something that isn't a creature (a lair)?
+function BotCrew:lairFight(g, now)
+	for _, m in ipairs(g.humans) do
+		local base = "crew:human:" .. m.oid
+		local defender = now - readData(base .. ":at") <= self.attackerFresh and readData(base .. ":defender") or 0
+		local pDefender = defender ~= 0 and getSceneObject(defender) or nil
+
+		if pDefender ~= nil and not SceneObject(pDefender):isCreatureObject() then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- The lairs we know of, less the one the group is fighting (a human's main defender that isn't a creature): a second lair nearby
+-- is not part of the fight, and a cone, grenade or area pack that reached it would pull it
+function BotCrew:lairsExcludingFight(pBot, oid, g, now)
+	local lairs = self:lairsOf(pBot, oid, now)
+	local fought = {}
+
+	for _, m in ipairs(g.humans) do
+		local base = "crew:human:" .. m.oid
+		local defender = now - readData(base .. ":at") <= self.attackerFresh and readData(base .. ":defender") or 0
+		local pDefender = defender ~= 0 and getSceneObject(defender) or nil
+
+		if pDefender ~= nil and not SceneObject(pDefender):isCreatureObject() then
+			table.insert(fought, {x = SceneObject(pDefender):getWorldPositionX(), y = SceneObject(pDefender):getWorldPositionY()})
+		end
+	end
+
+	if #fought == 0 then
+		return lairs
+	end
+
+	local out = {}
+
+	for _, lair in ipairs(lairs) do
+		local isFought = false
+
+		-- (lairsOf keeps whole metres)
+		for _, f in ipairs(fought) do
+			if math.abs(lair.x - f.x) <= 2 and math.abs(lair.y - f.y) <= 2 then
+				isFought = true
+			end
+		end
+
+		if not isFought then
+			table.insert(out, lair)
+		end
+	end
+
+	return out
+end
+
+-- Is this creature in or by a town (within townRadius of the centre of the nearest main town)?
+function BotCrew:inTown(pCreature)
+	local x, y = SceneObject(pCreature):getWorldPositionX(), SceneObject(pCreature):getWorldPositionY()
+
+	for _, town in ipairs(self.towns[SceneObject(pCreature):getZoneName()] or {}) do
+		if math.sqrt((x - town[2]) ^ 2 + (y - town[3]) ^ 2) <= self.townRadius then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Is the fight lost? The tank down and two members under retreatLow of their health, or three members down.
+function BotCrew:fightLost(g)
+	local down, low, tankDown = 0, 0, false
+
+	for _, m in ipairs(g.members) do
+		if m.player then
+			local c = CreatureObject(m.p)
+
+			if c:isDead() or c:isIncapacitated() then
+				down = down + 1
+
+				if m.job == "tank" then
+					tankDown = true
+				end
+			elseif self:ratio(m.p, HEALTH) < self.retreatLow then
+				low = low + 1
+			end
+		end
+	end
+
+	return down >= 3 or (tankDown and low >= 2)
+end
+
+-- How many of the group fight this creature (it is their main defender, as last noted)
+function BotCrew:fightingIt(g, coid, now)
+	local n = 0
+
+	for _, m in ipairs(g.crew) do
+		if now - readData(ckey(m.oid, "defenderAt")) <= self.attackerFresh and readData(ckey(m.oid, "defender")) == coid then
+			n = n + 1
+		end
+	end
+
+	for _, m in ipairs(g.humans) do
+		if now - readData("crew:human:" .. m.oid .. ":at") <= self.attackerFresh and readData("crew:human:" .. m.oid .. ":defender") == coid then
+			n = n + 1
+		end
+	end
+
+	return n
+end
+
+-- Wounds of the group: the total and the most one member carries
+function BotCrew:groupWounds(g)
+	local total, most, members = 0, 0, 0
+
+	for _, m in ipairs(g.members) do
+		if m.player and not CreatureObject(m.p):isDead() then
+			local sum = 0
+
+			for pool = 0, 8 do
+				sum = sum + (botGetWounds(m.p, pool) or 0)
+			end
+
+			total = total + sum
+			most = math.max(most, sum)
+			members = members + 1
+		end
+	end
+
+	return total, most, members
+end
+
+-- Does the bot have the points for a squad leader command (about 130 of each pool, in a group of eight)?
+function BotCrew:slCanPay(pBot)
+	local creature = CreatureObject(pBot)
+
+	for _, pool in ipairs({HEALTH, ACTION, MIND}) do
+		if creature:getHAM(pool) < self.slPay then
+			return false
+		end
+	end
+
+	return true
+end
+
+function BotCrew:slTurn(pBot, oid, g, pLeader, now)
+	-- (a command costs about slPay of each pool; below that nothing goes. The share slHamFloor keeps the rest from draining it)
+	if not self:slCanPay(pBot) then
+		return false
+	end
+
+	-- (a retreat goes into the queue behind whatever it is shooting; the others wait for an empty queue)
+	local queueEmpty = CreatureObject(pBot):getQueueSize() == 0
+	local roomy = self:hamAbove(pBot, self.slHamFloor)
+	local leaderOid = SceneObject(pLeader):getObjectID()
+	local fighting = CreatureObject(pBot):isInCombat() or self:groupFighting(g)
+
+	-- Retreat: the fight is lost (whatever the squad leader's pools, as long as it can pay). Not with the leader down: there is
+	-- nobody to run with, and the crew would stand about it
+	local leaderDown = CreatureObject(pLeader):isDead() or CreatureObject(pLeader):isIncapacitated()
+
+	if fighting and not leaderDown and self:can(oid, "retreat") and now - readData(gkey(leaderOid, "retreatAt")) >= self.retreatBlock and self:fightLost(g) then
+		put(gkey(leaderOid, "retreatAt"), now)
+		put(gkey(leaderOid, "retreatUntil"), now + self.retreatFor)
+		self:slCommand(pBot, oid, "retreat", 0, "slRetreatAt", now)
+		self:slCall(pBot, oid, "retreat", nil, now)
+		print("BotJobs: " .. self:name(oid) .. " calls the retreat")
+		return true
+	end
+
+	if not roomy or not queueEmpty then
+		return false
+	end
+
+	-- Form up: someone in the group is stunned or dizzy
+	if self:can(oid, "formUp") and now - readData(ckey(oid, "slFormUpAt")) >= self.slFormUpGap then
+		for _, m in ipairs(g.members) do
+			if m.player and not CreatureObject(m.p):isDead() and (hasState(m.p, 0x1000) or hasState(m.p, 0x4000)) then
+				self:slCommand(pBot, oid, "formup", 0, "slFormUpAt", now)
+				self:slCall(pBot, oid, "formUp", nil, now)
+				return true
+			end
+		end
+	end
+
+	local pTarget = fighting and self:slTarget(pBot, oid, g, pLeader) or nil
+
+	-- Rally: a fight with two or more creatures, or a lair
+	if fighting and self:can(oid, "rally") and now - readData(ckey(oid, "slRallyAt")) >= self.slRallyGap then
+		local creatures = #self:groupCreatures(pBot, g, now, pTarget)
+
+		if creatures >= self.slRallyCreatures or self:lairFight(g, now) then
+			self:slCommand(pBot, oid, "rally", 0, "slRallyAt", now)
+			self:slCall(pBot, oid, "rally", nil, now)
+			return true
+		end
+	end
+
+	-- Steady aim: only while hunting (in a fight, or out in the wild on the way out), again when its five minutes are over
+	if self:can(oid, "steadyAim") and now >= readData(ckey(oid, "slAimAt")) and SceneObject(pLeader):getParentID() == 0 and
+		SceneObject(pBot):getParentID() == 0 and (fighting or not self:inTown(pLeader)) then
+		self:slCommand(pBot, oid, "steadyaim", 0, "slAimAt", now)
+		put(ckey(oid, "slAimAt"), now + self.slAimEvery)
+		self:slCall(pBot, oid, "steadyAim", nil, now)
+		return true
+	end
+
+	-- Volley fire on the tank's target when three or more of the group are fighting it
+	if pTarget ~= nil and self:can(oid, "volley") and now - readData(ckey(oid, "slVolleyAt")) >= self.slVolleyGap then
+		local coid = SceneObject(pTarget):getObjectID()
+		local dist = BotJobs:distance(pBot, pTarget)
+
+		if dist ~= nil and dist <= self.engageRange and self:fightingIt(g, coid, now) >= self.slVolleyMembers then
+			self:slCommand(pBot, oid, "volleyfire", coid, "slVolleyAt", now)
+			self:slCall(pBot, oid, "volley", {creature = creatureName(pTarget)}, now)
+			return true
+		end
+	end
+
+	-- Boost morale after a fight: one member carries most of the group's wounds
+	if not fighting and self:can(oid, "boostMorale") and now - readData(ckey(oid, "slMoraleAt")) >= self.slMoraleGap then
+		local total, most, members = self:groupWounds(g)
+
+		if members >= 2 and total >= self.slMoraleWounds and most >= total * self.slMoraleShare then
+			self:slCommand(pBot, oid, "boostmorale", 0, "slMoraleAt", now)
+			self:slCall(pBot, oid, "boostMorale", nil, now)
+			return true
+		end
+	end
+
+	return false
+end
+
+-- A retreat in force (the squad leader called it): the crew breaks off and follows the leader, until retreatFor seconds are
+-- over or nothing has chased the group for retreatMin. True while this bot's turn is spent on it.
+function BotCrew:retreatStep(pBot, oid, g, pLeader, now)
+	local leaderOid = SceneObject(pLeader):getObjectID()
+	local until_ = readData(gkey(leaderOid, "retreatUntil"))
+
+	if until_ == 0 then
+		return false
+	end
+
+	local started = readData(gkey(leaderOid, "retreatAt"))
+
+	-- (the leader went down meanwhile: the retreat is over, the crew fights or heals as before)
+	if now >= until_ or CreatureObject(pLeader):isDead() or CreatureObject(pLeader):isIncapacitated() or (now - started >= self.retreatMin and #self:groupCreatures(pBot, g, now, nil) == 0) then
+		put(gkey(leaderOid, "retreatUntil"), 0)
+		put(gkey(leaderOid, "retreatHold"), now + self.retreatHold)
+		print("BotJobs: the retreat of " .. self:firstName(pLeader) .. "'s group is over")
+		return false
+	end
+
+	if readData(ckey(oid, "retreatSeen")) ~= started then
+		put(ckey(oid, "retreatSeen"), started)
+		deleteData(ckey(oid, "focus"))
+		putString(ckey(oid, "order"), "follow")
+		deleteData(ckey(oid, "followAt"))
+
+		if readData(ckey(oid, "target")) ~= 0 or CreatureObject(pBot):isInCombat() then
+			self:endFight(pBot, oid, now)
+		end
+
+		print("BotJobs: " .. self:name(oid) .. " falls back")
+	end
+
+	-- (the medic's heals came before this; a ranged bot walking to a band stops)
+	deleteData(ckey(oid, "moveSince"))
+	deleteData(ckey(oid, "backSince"))
+	self:ensureFollow(pBot, oid, pLeader, now)
+
+	return true
+end
+
+-- The commando (Phase 8)
+
+local function angleBetween(ax, ay, bx, by)
+	local d = math.abs(math.atan(ay, ax) - math.atan(by, bx))
+
+	if d > math.pi then
+		d = 2 * math.pi - d
+	end
+
+	return math.deg(d)
+end
+
+-- The creatures around the commando, each marked pulled when it fights the group: it is in the group's threat picture or
+-- its main defender is a member. {oid, x, y, r, pulled, target}
+function BotCrew:creatureField(pBot, g, now, pFirst, range)
+	local pulled = {}
+
+	for _, c in ipairs(self:groupCreatures(pBot, g, now, pFirst)) do
+		pulled[c.oid] = true
+	end
+
+	local out = {}
+
+	for _, c in ipairs(bot("botCreaturesNear", pBot, range) or {}) do
+		table.insert(out, {oid = c.oid, x = c.x, y = c.y, r = c.radius, target = c.target,
+			pulled = pulled[c.oid] == true or (c.target ~= 0 and g.byOid[c.target] ~= nil)})
+	end
+
+	return out
+end
+
+-- Does a creature that isn't fighting the group (or a lair that isn't the fight) stand in this cone? Checked wider than Core3's
+function BotCrew:coneUnsafe(bx, by, tx, ty, field, lairs)
+	for _, e in ipairs(field) do
+		if not e.pulled and math.sqrt((e.x - bx) ^ 2 + (e.y - by) ^ 2) - e.r <= self.coneSafeRange and
+			angleBetween(e.x - bx, e.y - by, tx - bx, ty - by) <= self.coneSafeHalf then
+			return true
+		end
+	end
+
+	for _, lair in ipairs(lairs) do
+		if math.sqrt((lair.x - bx) ^ 2 + (lair.y - by) ^ 2) <= self.coneSafeRange + 4 and
+			angleBetween(lair.x - bx, lair.y - by, tx - bx, ty - by) <= self.coneSafeHalf then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Does a creature that isn't fighting the group (or a lair) stand within the blast of a grenade (or an area pack) at x, y?
+function BotCrew:blastUnsafe(x, y, radius, field, lairs)
+	for _, e in ipairs(field) do
+		if not e.pulled and math.sqrt((e.x - x) ^ 2 + (e.y - y) ^ 2) - e.r <= radius then
+			return true
+		end
+	end
+
+	for _, lair in ipairs(lairs) do
+		if math.sqrt((lair.x - x) ^ 2 + (lair.y - y) ^ 2) <= radius + 4 then
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Hold the flame thrower (1) or the acid rifle (2)
+function BotCrew:commandoHold(pBot, oid, which, now)
+	put(ckey(oid, "held"), which)
+	put(ckey(oid, "swapAt"), now)
+
+	local template = which == 2 and self.acidRifle or self:weapon(oid)
+
+	if template ~= nil then
+		bot("botEquip", pBot, template)
+	end
+
+	self:readBand(pBot, oid)
+	print("BotJobs: " .. self:name(oid) .. " (commando) holds the " .. (which == 2 and "acid rifle" or "flame thrower"))
+end
+
+-- The weapon that does more against this creature's armor (a margin keeps it from swapping back and forth). True if it swapped.
+function BotCrew:commandoSwap(pBot, oid, pTarget, now)
+	if not self:can(oid, "acidCone") or now - readData(ckey(oid, "swapAt")) < self.swapGap then
+		return false
+	end
+
+	local resists = bot("botResists", pTarget)
+
+	if resists == nil then
+		return false
+	end
+
+	-- (-1 is vulnerable: no armor at all)
+	local flame = self.flameAvg * (1 - math.max(resists.heat, 0) / 100)
+	local acid = self.acidAvg * (1 - math.max(resists.acid, 0) / 100)
+	local held = readData(ckey(oid, "held"))
+
+	if held ~= 2 and acid > flame * self.swapMargin then
+		self:commandoHold(pBot, oid, 2, now)
+		return true
+	elseif held == 2 and flame > acid / self.swapMargin then
+		self:commandoHold(pBot, oid, 1, now)
+		return true
+	end
+
+	return false
+end
+
+-- An area attack held back for a creature that isn't fighting the group (logged at most every 10 s)
+function BotCrew:areaHeld(oid, what, now)
+	if now - readData(ckey(oid, "coneAt")) >= 10 then
+		put(ckey(oid, "coneAt"), now)
+		print("BotJobs: " .. self:name(oid) .. " (commando) holds the " .. what .. ": a creature that isn't fighting the group stands in its area")
+	end
+end
+
+function BotCrew:commandoTurn(pBot, oid, pTarget, g, dist, now)
+	if self:commandoSwap(pBot, oid, pTarget, now) then
+		return true
+	end
+
+	if not self:hamOk(pBot) then
+		return false
+	end
+
+	local acid = readData(ckey(oid, "held")) == 2
+	local bx, by = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+	local coneCmd = readStringData(ckey(oid, acid and "acidCone" or "flameCone"))
+	local singleCmd = readStringData(ckey(oid, acid and "acidSingle" or "flameSingle"))
+	local wantGrenade = self:can(oid, "grenade") and now - readData(ckey(oid, "grenadeAt")) >= self.grenadeGap
+	local wantCone = coneCmd ~= "" and dist <= self.coneRange + 12
+
+	if not (wantGrenade or wantCone) and singleCmd == "" then
+		return false
+	end
+
+	-- The creatures around, once (a scan), and the lairs we know
+	-- (a grenade may land grenadeRange away and blast grenadeSafe around that: the scan reaches that far; a full list may have left
+	-- some out, and then no area attack)
+	local field = self:creatureField(pBot, g, now, pTarget, self.grenadeRange + self.grenadeSafe + 4)
+	local lairs = self:lairsExcludingFight(pBot, oid, g, now)
+	local tank = self:tankFor(oid, g)
+
+	if #field >= 40 then
+		wantGrenade, wantCone = false, false
+	end
+
+	-- A grenade at a clump on the tank (else on any member of the group, without a tank)
+	if wantGrenade then
+		local best, bestN = nil, 0
+
+		for _, e in ipairs(field) do
+			if e.pulled and (tank == nil or e.target == tank.oid) and
+				math.sqrt((e.x - bx) ^ 2 + (e.y - by) ^ 2) <= self.grenadeRange then
+				local n = 0
+
+				for _, other in ipairs(field) do
+					if other.pulled and (tank == nil or other.target == tank.oid) and
+						math.sqrt((other.x - e.x) ^ 2 + (other.y - e.y) ^ 2) <= self.grenadeClump then
+						n = n + 1
+					end
+				end
+
+				if n > bestN then
+					best, bestN = e, n
+				end
+			end
+		end
+
+		if best ~= nil and bestN >= self.grenadeMin and self:blastUnsafe(best.x, best.y, self.grenadeSafe, field, lairs) then
+			self:areaHeld(oid, "grenade", now)
+		elseif best ~= nil and bestN >= self.grenadeMin then
+			local item = bot("botStockItem", pBot, self.grenade, self.grenadeStock) or 0
+
+			if item ~= 0 then
+				botEnqueue(pBot, "throwgrenade", best.oid, tostring(item))
+				put(ckey(oid, "grenadeAt"), now)
+				put(ckey(oid, "specialCount"), readData(ckey(oid, "specialCount")) + 1)
+				print("BotJobs: " .. self:name(oid) .. " (commando) throwgrenade at " .. best.oid .. ", " .. bestN .. " creatures within " ..
+					self.grenadeClump .. " m")
+				self:callout(pBot, oid, "grenade", nil, now)
+
+				return true
+			end
+		end
+	end
+
+	-- A cone at the creature with most of the group's creatures in line with it, if nothing unpulled stands in the cone
+	if wantCone then
+		local best, bestN = nil, 0
+
+		for _, e in ipairs(field) do
+			if e.pulled and math.sqrt((e.x - bx) ^ 2 + (e.y - by) ^ 2) - e.r <= self.coneRange then
+				local n = 0
+
+				for _, other in ipairs(field) do
+					if other.pulled and math.sqrt((other.x - bx) ^ 2 + (other.y - by) ^ 2) - other.r <= self.coneRange and
+						angleBetween(other.x - bx, other.y - by, e.x - bx, e.y - by) <= self.coneHalf then
+						n = n + 1
+					end
+				end
+
+				if n > bestN then
+					best, bestN = e, n
+				end
+			end
+		end
+
+		if best ~= nil and bestN >= self.coneMin and self:coneUnsafe(bx, by, best.x, best.y, field, lairs) then
+			self:areaHeld(oid, "cone", now)
+		elseif best ~= nil and bestN >= self.coneMin then
+			botEnqueue(pBot, coneCmd, best.oid, "")
+			put(ckey(oid, "specialCount"), readData(ckey(oid, "specialCount")) + 1)
+			print("BotJobs: " .. self:name(oid) .. " (commando) " .. coneCmd .. " " .. best.oid .. ", " .. bestN .. " creatures in the cone")
+			self:callout(pBot, oid, "flame", nil, now)
+
+			return true
+		end
+	end
+
+	-- Otherwise a single shot at the fight's target, within its reach
+	if singleCmd ~= "" and dist <= self.coneRange then
+		botEnqueue(pBot, singleCmd, SceneObject(pTarget):getObjectID(), "")
+		put(ckey(oid, "specialCount"), readData(ckey(oid, "specialCount")) + 1)
+
+		return true
+	end
+
+	return false
+end
+
 -- One fight step: a new target is set and attacked (the tank taunts it), the bot moves to its range, and with its command
 -- queue empty it uses a special (the tank holds the creatures that aren't on it, see tankTurn)
 function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
@@ -2004,6 +3158,11 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 
 	local dist = BotJobs:distance(pBot, pTarget) or 999
 
+	-- The entertainer stops its performance for a fight, and picks its pistol up again
+	if role == "entertainer" then
+		self:perfStop(pBot, oid, true)
+	end
+
 	if role == "tank" then
 		self:closeIn(pBot, oid, pTarget, dist, now)
 	elseif self:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now) == "move" then
@@ -2011,6 +3170,12 @@ function BotCrew:fight(pBot, oid, pTarget, pLeader, g, now)
 	end
 
 	if CreatureObject(pBot):getQueueSize() > 0 then
+		return
+	end
+
+	-- The commando's cones, grenades and single shots are its own turn
+	if role == "commando" then
+		self:commandoTurn(pBot, oid, pTarget, g, dist, now)
 		return
 	end
 
@@ -2070,6 +3235,14 @@ end
 -- weapon that isn't ranged, or a build without botWeaponRange, gives the old stand-anywhere-in-reach.
 function BotCrew:readBand(pBot, oid)
 	local r = bot("botWeaponRange", pBot)
+
+	-- The commando's heavy weapons do their specials within 16 m: it stands close
+	if r ~= nil and self:role(oid) == "commando" then
+		put(ckey(oid, "bandNear"), self.commandoBand[1])
+		put(ckey(oid, "bandFar"), self.commandoBand[2])
+		put(ckey(oid, "bandMax"), r.maxRange)
+		return
+	end
 
 	if r == nil or not r.ranged then
 		put(ckey(oid, "bandNear"), 0)
@@ -2315,7 +3488,8 @@ function BotCrew:rangedStance(pBot, oid, pTarget, pLeader, g, dist, role, now)
 		local onMeDist = pOnMe ~= nil and BotJobs:distance(pBot, pOnMe) or nil
 		local leaderDist = BotJobs:distance(pBot, pLeader)
 
-		if onMeDist ~= nil and onMeDist < math.max(self.backOffRange, near) and now >= readData(ckey(oid, "backBlock")) then
+		if onMeDist ~= nil and onMeDist < math.max(self.backOffRange, near) and now >= readData(ckey(oid, "backBlock")) and
+			role ~= "commando" then
 			-- A creature has come for this bot: step back toward the group, and shoot once it can't be kept off
 			if readData(ckey(oid, "backSince")) == 0 then
 				put(ckey(oid, "backSince"), now)
@@ -2400,6 +3574,10 @@ function BotCrew:endFight(pBot, oid, now)
 	put(ckey(oid, "peaceAt"), now)
 	bot("botSetTarget", pBot, 0)
 	botEnqueue(pBot, "peace", 0, "")
+
+	if self:role(oid) == "commando" and readData(ckey(oid, "held")) == 2 then
+		self:commandoHold(pBot, oid, 1, now)
+	end
 
 	local move = bot("botMoveState", pBot)
 
@@ -2667,9 +3845,9 @@ function BotCrew:dotTurn(pBot, oid, g, now)
 
 	for _, kind in ipairs({
 		{ability = "poisonPack", command = "applypoison", on = th.poisoned, immune = th.poisonImmune, tries = "pT", at = "pA",
-			pending = "pP", said = "pS", line = "poisoned", name = "poison"},
+			pending = "pP", said = "pS", line = "poisoned", name = "poison", single = self.packs.dotPoison, area = self.packs.dotPoisonArea},
 		{ability = "diseasePack", command = "applydisease", on = th.diseased, immune = th.diseaseImmune, tries = "dT", at = "dA",
-			pending = "dP", said = "dS", line = "diseased", name = "disease"}}) do
+			pending = "dP", said = "dS", line = "diseased", name = "disease", single = self.packs.dotDisease, area = self.packs.dotDiseaseArea}}) do
 		if self:can(oid, kind.ability) then
 			if kind.on then
 				-- It landed (and runs its course): say so once, forget the misses
@@ -2688,12 +3866,18 @@ function BotCrew:dotTurn(pBot, oid, g, now)
 				end
 
 				if not kind.immune and readData(ckey(oid, kind.tries)) < 2 and readData(ckey(oid, kind.pending)) == 0 then
-					botEnqueue(pBot, kind.command, coid, "")
+					-- The pack's oid goes with the command: with both a single and an area pack of one kind in the pack Core3 takes
+					-- the first of the kind otherwise ("health|<oid>": the pool, then the pack)
+					local area = self:areaPack(pBot, oid, g, pTarget, kind, now)
+					local template = area or kind.single
+					local packOid = self:pack(pBot, oid, template)
+
+					botEnqueue(pBot, kind.command, coid, packOid ~= 0 and ("health|" .. packOid) or "")
 					put(ckey(oid, kind.at), now)
 					put(ckey(oid, kind.pending), 1)
 					put(ckey(oid, "dotReady"), getTimestampMilli() + self:waitDotMs(pBot))
-					print("BotJobs: " .. self:name(oid) .. " " .. kind.command .. " " .. SceneObject(pTarget):getDisplayedName() .. " " ..
-						coid .. ", " .. string.format("%.0f", dist) .. " m")
+					print("BotJobs: " .. self:name(oid) .. " " .. kind.command .. (area ~= nil and " (area)" or "") .. " " ..
+						SceneObject(pTarget):getDisplayedName() .. " " .. coid .. ", " .. string.format("%.0f", dist) .. " m")
 
 					return true
 				end
@@ -2702,6 +3886,45 @@ function BotCrew:dotTurn(pBot, oid, g, now)
 	end
 
 	return false
+end
+
+-- The area pack to throw at this target, or nil for the single one: areaMin or more creatures of the group (on the tank, with
+-- one in the group) within areaRadius of the target, a pack in the bag, and no creature that isn't fighting the group (nor a
+-- lair that isn't the fight) within areaSafe of the target
+function BotCrew:areaPack(pBot, oid, g, pTarget, kind, now)
+	if kind.area == nil or (bot("botFindPack", pBot, kind.area) or 0) == 0 then
+		return nil
+	end
+
+	local field = self:creatureField(pBot, g, now, pTarget, 60)
+
+	-- (a full scan may have left some out)
+	if #field >= 40 then
+		return nil
+	end
+
+	local tank = self:tankFor(oid, g)
+	local tx, ty = SceneObject(pTarget):getWorldPositionX(), SceneObject(pTarget):getWorldPositionY()
+	local n = 0
+
+	for _, e in ipairs(field) do
+		if e.pulled and (tank == nil or e.target == tank.oid) and math.sqrt((e.x - tx) ^ 2 + (e.y - ty) ^ 2) - e.r <= self.areaRadius then
+			n = n + 1
+		end
+	end
+
+	if n < self.areaMin then
+		return nil
+	end
+
+	local lairs = self:lairsExcludingFight(pBot, oid, g, now)
+
+	if self:blastUnsafe(tx, ty, self.areaSafe, field, lairs) then
+		self:areaHeld(oid, "area pack", now)
+		return nil
+	end
+
+	return kind.area
 end
 
 -- Core3's wait between pack throws: 12 s less up to 6 with healing range speed, at least 4, plus a margin
@@ -2927,10 +4150,18 @@ function BotCrew:outOfCombat(pBot, oid, g, pLeader, now)
 		return
 	end
 
+	if role == "entertainer" then
+		self:perfPistol(pBot, oid)
+	end
+
 	if readData(ckey(oid, "inCamp")) == 1 then
 		deleteData(ckey(oid, "inCamp"))
 		deleteStringData(ckey(oid, "campTried"))
 		self:standUp(pBot, oid)
+
+		if role == "entertainer" then
+			self:perfStop(pBot, oid, true)
+		end
 
 		if role == "medic" and BotDoctor ~= nil then
 			BotDoctor:clear(oid)
@@ -3011,6 +4242,13 @@ function BotCrew:inCamp(pBot, oid, g, pLeader, camp, now)
 			bot("botMoveTo", pBot, x, camp.z, y, 0)
 		end
 
+		return
+	end
+
+	-- The entertainer performs for the camp instead of sitting at the fire
+	if self:role(oid) == "entertainer" then
+		self:stopMoving(pBot)
+		self:perform(pBot, oid, now)
 		return
 	end
 
@@ -3787,7 +5025,7 @@ end
 function BotCrew:intentFor(text, role)
 	local t = wordsOf(text)
 
-	for _, intent in ipairs({"home", "attack", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
+	for _, intent in ipairs({"makeroom", "call", "fatigue", "perfstop", "music", "dance", "home", "attack", "follow", "stay", "join", "camp", "track", "buff", "wounds", "harvest", "loot"}) do
 		-- A line that starts with the word is an order too ("loot", "harvest?", "loot, please", "kill!")
 		if (intent == "attack" and self:attackOrder(text, t)) or
 			(intent ~= "attack" and (hasAny(t, self.words[intent]) or self:startsWith(t, intent) or
@@ -4274,6 +5512,30 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
+	-- "Make room" (Phase 8): the commando gives its place up so the other human fits in the group
+	if text ~= nil and self:role(oid) == "commando" and CreatureObject(pBot):isGrouped() and self:makeRoomWanted(text) then
+		local g = self:group(pBot)
+		local speakerOid = SceneObject(pSpeaker):getObjectID()
+
+		if g ~= nil and g.byOid[speakerOid] ~= nil and g.byOid[speakerOid].human then
+			self:makeRoom(pBot, oid, pSpeaker, channel)
+
+			return true
+		end
+	end
+
+	-- "Crew, come to me" (Phase 8): by tell, or in group chat from a human far from some of the crew; every free crew bot comes
+	if text ~= nil and (channel == "tell" or channel == "group") and self:human(pSpeaker) and self:callWanted(text) then
+		self:crewCall(pBot, oid, pSpeaker, channel)
+
+		return true
+	end
+
+	-- The entertainer's own: music, dancing, battle fatigue (Phase 8)
+	if text ~= nil and self:role(oid) == "entertainer" and self:entertainerAsk(pBot, oid, pSpeaker, channel, text) then
+		return true
+	end
+
 	-- "What are you harvesting?" the ranger answers from its state (crew_loot.lua), in any channel it was asked in
 	if text ~= nil and self:role(oid) == "ranger" and CreatureObject(pBot):isGrouped() and self:harvestQuestion(text) then
 		local g = self:group(pBot)
@@ -4489,12 +5751,67 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 		end
 	end
 
+	-- "Make room" is the commando's alone: with none in the group, nobody answers it
+	if intent == "makeroom" then
+		return false
+	end
+
 	if pool[1] ~= nil and pool[1].oid == oid then
 		lastForGroup = true
 		return true
 	end
 
 	return false
+end
+
+-- Is the group over the cap with a human waiting outside it? (checked every capEvery seconds, not in a fight); if so the commando
+-- says it sits this one out and leaves
+function BotCrew:overCap(pBot, oid, g, pLeader, now)
+	if now - readData(ckey(oid, "capAt")) < self.capEvery or CreatureObject(pBot):isInCombat() or self:groupFighting(g) then
+		return false
+	end
+
+	put(ckey(oid, "capAt"), now)
+
+	local waiting = 0
+
+	for _, humanOid in ipairs(self:humansOnline()) do
+		if g.byOid[humanOid] == nil then
+			waiting = waiting + 1
+		end
+	end
+
+	if waiting == 0 or #g.members + waiting <= self.groupCap then
+		return false
+	end
+
+	print("BotJobs: " .. self:name(oid) .. " gives its place up: " .. #g.members .. " in the group and " .. waiting .. " player(s) outside it")
+	self:groupSay(pBot, oid, "sitOut", self:firstName(pLeader))
+	self:applyOrder(pBot, oid, "home", now, 0)
+
+	return true
+end
+
+-- "Sitting this one out." (the cap): out loud when the player is near, else a tell
+function BotCrew:sitOut(pBot, oid, pPlayer, channel)
+	local dist = BotJobs:distance(pBot, pPlayer)
+
+	if channel == "spatial" and (dist == nil or dist > 40) then
+		channel = "tell"
+	end
+
+	self:say(pBot, oid, SceneObject(pPlayer):getObjectID(), channel, "sitOut", self:firstName(pPlayer))
+end
+
+-- "Make room" in group chat (or a tell): the commando leaves the group, so the other human can be invited
+function BotCrew:makeRoomWanted(text)
+	return hasAny(wordsOf(text), self.words.makeroom)
+end
+
+function BotCrew:makeRoom(pBot, oid, pSpeaker, channel)
+	print("BotJobs: " .. self:name(oid) .. " makes room: leaves " .. self:firstName(pSpeaker) .. "'s group")
+	self:say(pBot, oid, SceneObject(pSpeaker):getObjectID(), channel == "group" and "group" or channel, "sitOut", self:firstName(pSpeaker))
+	self:applyOrder(pBot, oid, "home", os.time(), 0)
 end
 
 -- "Wanna hunt?": a player in a group is asked for an invite; one on their own gets the bot's invite, and the lead
@@ -4508,7 +5825,7 @@ function BotCrew:join(pBot, oid, pPlayer, channel, brainLine)
 	if g ~= nil then
 		kind = g.byOid[playerOid] ~= nil and "alreadyWith" or "otherGroup"
 	elseif CreatureObject(pPlayer):isGrouped() then
-		kind = "askInvite"
+		kind = self:noRoom(oid, pPlayer) and "sitOut" or "askInvite"
 	else
 		botEnqueue(pBot, "invite", playerOid, "")
 		put(ckey(oid, "invited"), playerOid)
@@ -4696,6 +6013,11 @@ function BotCrew:onEvent(pBot, oid, name, pOther, detail)
 	elseif name == "cloned" then
 		self:afterClone(pBot, oid, now)
 	elseif name == "died" or name == "incapacitated" or name == "duel" or name == "fightStarted" then
+		-- A provoked fight or a duel (BotFight): the entertainer puts its flute away and holds its pistol
+		if (name == "duel" or name == "fightStarted") and self:role(oid) == "entertainer" then
+			self:perfStop(pBot, oid, true)
+		end
+
 		if name == "died" and CreatureObject(pBot):isGrouped() then
 			self:huntTallyAdd(pBot, "deaths", 1)
 			self:huntEvent(pBot, self:firstName(pBot) .. " died" ..
@@ -4741,7 +6063,23 @@ function BotCrew:devLead(first, off)
 
 	local on = off ~= "off"
 
-	put("crew:pretend:" .. SceneObject(pBot):getObjectID(), on and 1 or 0)
+	local botOid = SceneObject(pBot):getObjectID()
+	local list = {}
+
+	put("crew:pretend:" .. botOid, on and 1 or 0)
+
+	-- (the list humansOnline reads: the bots standing in for players)
+	for _, listed in ipairs(oidList(readStringData("crew:pretendList"))) do
+		if listed ~= botOid then
+			table.insert(list, listed)
+		end
+	end
+
+	if on then
+		table.insert(list, botOid)
+	end
+
+	putString("crew:pretendList", table.concat(list, ","))
 	print("BotCrew: " .. tostring(first) .. (on and " counts as a player leader" or " is a bot again"))
 end
 
@@ -4914,6 +6252,33 @@ function BotCrew:devSpawnNow(pBot, args)
 	print("BotCrew: spawned " .. a[1] .. ": " .. (pMobile ~= nil and tostring(SceneObject(pMobile):getObjectID()) or "failed"))
 end
 
+-- devSpawnBy:<bot>:<creature oid>:<template>: a creature 1.5 m from another (to put one beside a clump), run as an event on the bot
+function BotCrew:devSpawnBy(first, oid, template)
+	local pBot = devBot(first)
+
+	if pBot == nil or tonumber(oid or "") == nil or template == nil then
+		print("BotCrew: usage devSpawnBy:<bot>:<creature oid>:<mobile template>")
+		return
+	end
+
+	createEvent(10, "BotCrew", "devSpawnByNow", pBot, packArgs(oid, template))
+end
+
+function BotCrew:devSpawnByNow(pBot, args)
+	local a = unpackArgs(args)
+	local pNear = getSceneObject(tonumber(a[1]))
+
+	if pNear == nil then
+		print("BotCrew: no creature " .. tostring(a[1]))
+		return
+	end
+
+	local pMobile = spawnMobile(SceneObject(pNear):getZoneName(), a[2], 0, SceneObject(pNear):getWorldPositionX() + 1.5,
+		SceneObject(pNear):getWorldPositionZ(), SceneObject(pNear):getWorldPositionY(), 0, 0)
+
+	print("BotCrew: spawned " .. a[2] .. ": " .. (pMobile ~= nil and tostring(SceneObject(pMobile):getObjectID()) or "failed"))
+end
+
 function BotCrew:devWalk(first, x, y)
 	local pBot = devBot(first)
 
@@ -5070,14 +6435,87 @@ function BotCrew:devState(first)
 		readStringData(ckey(oid, "can")) .. "; specials " .. readStringData(ckey(oid, "specialsList")))
 end
 
+-- Phase 8 development: calls, stock, resistances
+function BotCrew:devCall(first, to)
+	local pBot, pTo = devBot(first), devBot(to)
+
+	if pBot == nil or pTo == nil then
+		print("BotCrew: usage devCall:<bot>:<to>, both online")
+		return
+	end
+
+	createEvent(10, "BotCrew", "devCallNow", pBot, tostring(SceneObject(pTo):getObjectID()))
+end
+
+function BotCrew:devCallNow(pBot, args)
+	local pTo = getSceneObject(tonumber(args))
+
+	print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " botCallTo " .. tostring(pTo ~= nil and CreatureObject(pTo):getFirstName()) .. ": " ..
+		tostring(bot("botCallTo", pBot, pTo)))
+end
+
+function BotCrew:devStock(first)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devStockNow", pBot, "")
+	end
+end
+
+function BotCrew:devStockNow(pBot, args)
+	print("BotCrew: area poison pack " .. tostring(botStockPack(pBot, MED .. "medpack_poison_area_health_c.iff", 5, 250, 240, 150, 30, 10)) ..
+		" oid " .. tostring(botFindPack(pBot, MED .. "medpack_poison_area_health_c.iff")))
+	print("BotCrew: grenade oid " .. tostring(botStockItem(pBot, "object/weapon/ranged/grenade/grenade_fragmentation.iff", 5)) ..
+		" found " .. tostring(botFindItem(pBot, "object/weapon/ranged/grenade/grenade_fragmentation.iff")))
+end
+
+function BotCrew:devField(first)
+	local pBot = devBot(first)
+
+	if pBot ~= nil then
+		createEvent(10, "BotCrew", "devFieldNow", pBot, "")
+	end
+end
+
+function BotCrew:devFieldNow(pBot, args)
+	local g = self:group(pBot)
+
+	if g == nil then
+		print("BotCrew: " .. CreatureObject(pBot):getFirstName() .. " isn't grouped")
+		return
+	end
+
+	local bx, by = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
+
+	for _, e in ipairs(self:creatureField(pBot, g, os.time(), nil, 60)) do
+		local pCreature = getSceneObject(e.oid)
+
+		print(string.format("BotCrew: field %s %d at %.0f,%.0f, %.0f m, %s, on %s", pCreature ~= nil and SceneObject(pCreature):getDisplayedName() or "?", e.oid, e.x, e.y,
+			math.sqrt((e.x - bx) ^ 2 + (e.y - by) ^ 2), e.pulled and "PULLED" or "unpulled", e.target ~= 0 and tostring(e.target) or "nobody"))
+	end
+end
+
+function BotCrew:devResists(oid)
+	local pCreature = getSceneObject(tonumber(oid))
+	local r = pCreature ~= nil and bot("botResists", pCreature) or nil
+
+	if r == nil then
+		print("BotCrew: no resists for " .. tostring(oid))
+		return
+	end
+
+	print(string.format("BotCrew: resists kinetic %d energy %d blast %d heat %d cold %d electricity %d acid %d stun %d", r.kinetic, r.energy,
+		r.blast, r.heat, r.cold, r.electricity, r.acid, r.stun))
+end
+
 -- Destroy missions in the leader's direction (Phase 7)
 includeFile("../custom_scripts/screenplays/bots/crew_missions.lua")
 
--- The four roles share this module; each has its own table (for the role-aware keywords and the brain's actions)
+-- The roles share this module; each has its own table (for the role-aware keywords and the brain's actions)
 BotJobModules = BotJobModules or {}
 
 for role in pairs(CREW) do
-	BotJobModules[role] = BotCrew:new {crewRole = role, kit = role == "medic" and "medic" or "fighter"}
+	BotJobModules[role] = BotCrew:new {crewRole = role, kit = role == "medic" and "medic" or (role == "entertainer" and "entertainer" or "fighter")}
 end
 
 -- Phase 7: looting, harvesting and the handover (adds to BotCrew)

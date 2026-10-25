@@ -109,6 +109,9 @@ public:
 	void getOnlineBots(Vector<Reference<server::zone::objects::creature::CreatureObject*>>& out) const;
 	void getBotList(Vector<Reference<BotListEntry*>>& out) const;
 
+	// The oids of the players online with a client (never a bot), for the crew's group cap
+	void getOnlineHumans(Vector<uint64>& out) const;
+
 	// Lua and console controls
 	bool forceState(const String& firstName, bool online);
 	void setDevHuman(bool on);

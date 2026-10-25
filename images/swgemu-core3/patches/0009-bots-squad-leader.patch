@@ -1,0 +1,130 @@
+diff --git a/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp b/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
+index c573a01..5858891 100644
+--- a/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
++++ b/MMOCoreORB/src/server/zone/managers/group/GroupManager.cpp
+@@ -236,6 +236,10 @@ void GroupManager::joinGroup(CreatureObject* creature) {
+ 	group->addMember(creature);
+ 	creature->updateGroup(group);
+ 
++	// A bot squad leader's aura reaches the new member only now: addMember runs before its group is set (our patch)
++	if (BotGroup::squadLeaderBotIn(group) != nullptr)
++		group->addGroupModifiers();
++
+ 	// Update the pvp status for those around the new member
+ 	group->updatePvPStatusNearCreature(creature);
+ 
+diff --git a/MMOCoreORB/src/server/zone/objects/creature/commands/RetreatCommand.h b/MMOCoreORB/src/server/zone/objects/creature/commands/RetreatCommand.h
+index a168ea3..3ef161f 100644
+--- a/MMOCoreORB/src/server/zone/objects/creature/commands/RetreatCommand.h
++++ b/MMOCoreORB/src/server/zone/objects/creature/commands/RetreatCommand.h
+@@ -84,7 +84,8 @@ public:
+ 		if (!inflictHAM(player, 0, actionCost, mindCost))
+ 			return GENERALERROR;
+ 
+-		for (int i = 1; i < group->getGroupSize(); ++i) {
++		// The loop skips the leader, who is the caller; a bot squad leader calling it from a human's group runs the whole group (our patch)
++		for (int i = (group->getLeader() == player) ? 1 : 0; i < group->getGroupSize(); ++i) {
+ 			ManagedReference<CreatureObject*> member = group->getGroupMember(i);
+ 
+ 			if (member == nullptr || !member->isPlayerCreature())
+diff --git a/MMOCoreORB/src/server/zone/objects/creature/commands/SquadLeaderCommand.h b/MMOCoreORB/src/server/zone/objects/creature/commands/SquadLeaderCommand.h
+index 4c2659c..155984e 100644
+--- a/MMOCoreORB/src/server/zone/objects/creature/commands/SquadLeaderCommand.h
++++ b/MMOCoreORB/src/server/zone/objects/creature/commands/SquadLeaderCommand.h
+@@ -10,6 +10,7 @@
+ 
+ #include "CombatQueueCommand.h"
+ #include "server/zone/objects/group/GroupObject.h"
++#include "server/zone/managers/bot/BotGroup.h"
+ 
+ class SquadLeaderCommand : public CombatQueueCommand {
+ protected:
+@@ -48,7 +49,8 @@ public:
+ 			return false;
+ 		}
+ 
+-		if (group->getLeader() != player) {
++		// A bot squad leader in the group may call them without leading it (our patch)
++		if (group->getLeader() != player && !BotGroup::mayCallSquadLeader(player, group)) {
+ 			player->sendSystemMessage("@error_message:not_group_leader");
+ 			return false;
+ 		}
+diff --git a/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp b/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
+index 1fbba2d..ad3e032 100644
+--- a/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/objects/group/GroupObjectImplementation.cpp
+@@ -156,7 +156,11 @@ void GroupObjectImplementation::addMember(CreatureObject* newMember, bool notify
+ 		}
+ 
+ 		if (hasSquadLeader()) {
+-			addGroupModifiers(newMember);
++			// A bot squad leader joining gives the aura to everyone already in the group (our patch)
++			if (BotGroup::isSquadLeaderBot(newMember))
++				addGroupModifiers();
++			else
++				addGroupModifiers(newMember);
+ 		}
+ 
+ 		scheduleUpdateNearestMissionForGroup(newMember->getPlanetCRC());
+@@ -194,7 +198,8 @@ void GroupObjectImplementation::removeMember(CreatureObject* memberRemoved) {
+ 	bool wasLeader = getLeaderID() == memberRemovedID;
+ 
+ 	if (hasSquadLeader()) {
+-		if (wasLeader)
++		// ...and takes it away from everyone when it leaves (our patch)
++		if (wasLeader || BotGroup::isSquadLeaderBot(memberRemoved))
+ 			removeGroupModifiers();
+ 		else
+ 			removeGroupModifiers(memberRemoved, false);
+@@ -245,7 +250,8 @@ void GroupObjectImplementation::removeMember(CreatureObject* memberRemoved) {
+ 				setMasterLooterID(groupLeader->getObjectID());
+ 		}
+ 
+-		if (wasLeader && hasSquadLeader()) {
++		// A bot squad leader leaving takes the aura from everyone above; a human squad leader still in the group gives it again (our patch)
++		if ((wasLeader || BotGroup::isSquadLeaderBot(memberRemoved)) && hasSquadLeader()) {
+ 			addGroupModifiers();
+ 		}
+ 
+@@ -441,7 +447,8 @@ bool GroupObjectImplementation::hasSquadLeader() {
+ 			return true;
+ 	}
+ 
+-	return false;
++	// A bot squad leader in the group gives the aura too (our patch)
++	return BotGroup::squadLeaderBotIn(_this.getReferenceUnsafeStaticCast()) != nullptr;
+ }
+ 
+ void GroupObjectImplementation::addGroupModifiers() {
+@@ -488,6 +495,16 @@ void GroupObjectImplementation::addGroupModifiers(CreatureObject* player) {
+ 
+ 	String action = "squadleader";
+ 
++	// The leader's squad leader skills, else a bot squad leader's in the group (our patch)
++	Reference<CreatureObject*> skills = leader;
++
++	if (!leader->hasSkill("outdoors_squadleader_novice")) {
++		Reference<CreatureObject*> botLeader = BotGroup::squadLeaderBotIn(_this.getReferenceUnsafeStaticCast());
++
++		if (botLeader != nullptr)
++			skills = botLeader;
++	}
++
+ 	if (player->hasBuff(action.hashCode()))
+ 		player->removeBuff(action.hashCode());
+ 
+@@ -495,10 +512,10 @@ void GroupObjectImplementation::addGroupModifiers(CreatureObject* player) {
+ 
+ 	Locker locker(buff);
+ 
+-	buff->setSkillModifier("slope_move", leader->getSkillMod("group_slope_move"));
+-	buff->setSkillModifier("private_group_ranged_defense", leader->getSkillMod("group_ranged_defense"));
+-	buff->setSkillModifier("private_group_melee_defense", leader->getSkillMod("group_melee_defense"));
+-	buff->setSkillModifier("burst_run", leader->getSkillMod("group_burst_run"));
++	buff->setSkillModifier("slope_move", skills->getSkillMod("group_slope_move"));
++	buff->setSkillModifier("private_group_ranged_defense", skills->getSkillMod("group_ranged_defense"));
++	buff->setSkillModifier("private_group_melee_defense", skills->getSkillMod("group_melee_defense"));
++	buff->setSkillModifier("burst_run", skills->getSkillMod("group_burst_run"));
+ 	player->addBuff(buff);
+ 
+ 	buff->addObservers();

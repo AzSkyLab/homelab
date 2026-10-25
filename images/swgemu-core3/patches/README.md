@@ -22,6 +22,7 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
 | `0006-sui-page-null-client` | `SuiPageData.cpp` | Null-client check in `sendTo` (an upstream crash with a clientless player) |
 | `0007-bots-fairness` | group loot, mission rewards, XP | Bots are left out of the credit split, random loot and lottery candidates, the mission reward divisor and the XP damage share |
 | `0008-bots-mission-done` | `MissionObjectiveImplementation.cpp` | `awardReward` notes the mission as completed (`BotGroup::missionDone`), so the crew tells a lair destroyed from a mission dropped |
+| `0009-bots-squad-leader` | `SquadLeaderCommand.h`, `RetreatCommand.h`, `GroupObjectImplementation.cpp`, `GroupManager.cpp` | A bot squad leader in a group it doesn't lead may call the six squad leader commands (`BotGroup::mayCallSquadLeader`); retreat runs the whole group; the group's aura (`hasSquadLeader`, `addGroupModifiers`) reads a bot squad leader's skills when the leader has none, and a late joiner gets it after its group is set. **Builds on 0007** for the `BotGroup.h` include in `GroupObjectImplementation.cpp` and the context of `GroupManager.cpp` (it was made against the files with 0007 applied, and the two apply in order) |
 
 The Dockerfile applies both after the checkout. A patch that doesn't apply fails the build, so after a `CORE3_REF`
 bump, fix the patches first (`dev/build-core3.sh` shows which one fails).

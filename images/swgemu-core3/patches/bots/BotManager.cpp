@@ -302,6 +302,20 @@ bool BotManager::isDevHuman() const {
 
 // --- The online rule ---
 
+void BotManager::getOnlineHumans(Vector<uint64>& out) const {
+	PlayerManager* playerManager = zoneServer != nullptr ? zoneServer->getPlayerManager() : nullptr;
+
+	if (playerManager == nullptr)
+		return;
+
+	Vector<uint64> online = playerManager->getOnlinePlayerList();
+
+	for (int i = 0; i < online.size(); ++i) {
+		if (!isBotOid(online.get(i)))
+			out.add(online.get(i));
+	}
+}
+
 bool BotManager::countHumans() const {
 	if (isDevHuman())
 		return true;

@@ -13,6 +13,12 @@ BotLines.musician = {
 		"Done, {name}. Listen to a song or two, then stop listening when you're ready to go.",
 	},
 	-- Asked from afar (another building, another planet, a tell)
+	-- The band: the dancer was asked for a buff and has said its piece; the musician joins in
+	band = {
+		"And listen to me while you watch her, {name}. You'll get both buffs.",
+		"I've got you too, {name}: listen to the music while you watch the dance.",
+		"Listen in, {name}, and watch her dance. That's the full set.",
+	},
 	far = {
 		"Come by the cantina in {city} and listen to me play, I'll set you up.",
 		"I'm playing in the {city} cantina, right next to the dancer. Come listen and I'll buff you.",

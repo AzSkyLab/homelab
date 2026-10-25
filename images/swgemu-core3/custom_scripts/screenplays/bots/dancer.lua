@@ -1,4 +1,4 @@
--- Bot players (Phase 3): the master dancer. It dances on its cantina's floor the whole time it's online, like an AFK
+-- Bot players (Phase 3, with Phase 8's band): the master dancer. It dances on its cantina's floor the whole time it's online, like an AFK
 -- dancer in 2004: startdance at login, a flourish every 20-40 s, another dance every 10-20 minutes. Core3's own
 -- entertaining session heals its watchers' battle fatigue and mind wounds. Asked for a buff, it makes the player its
 -- buff target (setperformancebufftarget), and the mind buff lands when they stop watching. Driven by BotJobs
@@ -32,6 +32,168 @@ end
 
 local function between(range)
 	return getRandomNumber(range[1], range[2])
+end
+
+local function packArgs(...)
+	return table.concat({...}, ":")
+end
+
+local function unpackArgs(args)
+	local out = {}
+
+	for part in string.gmatch(args or "", "[^:]+") do
+		table.insert(out, part)
+	end
+
+	return out
+end
+
+-- The cantina band (Phase 8, specs/2026-10-25-full-group/): a city's dancer and musician play as one. The musician plays
+-- and the dancer dances together, and they flourish together (the first to come due flourishes and sets its partner's
+-- flourish a moment behind it; a round ends when both have, and the next comes due after bandFlourish seconds). Asked for a
+-- buff, either one makes the player its buff target and gets its partner to as well, which says to listen (or watch) too.
+-- The band is not a Core3 group (a group needs a leader, and a bot never leads): Core3 stacks the two healings as it
+-- always has, and the buffs are the dancer's mind buff and the musician's focus and willpower. A city's pair only; a bot
+-- whose partner is offline keeps its own timers.
+BotBand = ScreenPlay:new {
+	screenplayName = "BotBand",
+
+	bandFlourish = {20, 40},
+	-- The cantina bands: these three cities only (Varenhal's dancer and musician stay as they were)
+	bandCities = {mos_eisley = true, coronet = true, theed = true},
+	-- The partner's flourish and buff set-up follow the first by this long (ms)
+	followMs = 800,
+	joinMs = 1200,
+}
+
+local function bandKey(city, field)
+	return "band:" .. city .. ":" .. field
+end
+
+-- The other half of the band: an online musician for a dancer and a dancer for a musician in the same cantina city. Its
+-- creature and oid, or nil
+function BotBand:partner(oid)
+	local city = BotJobs:city(oid)
+	local job = BotJobs:job(oid)
+	local want = job == "dancer" and "musician" or (job == "musician" and "dancer" or nil)
+
+	if want == nil or city == nil or not self.bandCities[city] or botList == nil then
+		return nil
+	end
+
+	for _, entry in ipairs(botList() or {}) do
+		if entry.job == want and entry.city == city and entry.online and entry.oid ~= 0 then
+			local pPartner = getSceneObject(entry.oid)
+
+			if pPartner ~= nil then
+				return pPartner, entry.oid
+			end
+		end
+	end
+
+	return nil
+end
+
+local function performing(pBot)
+	local creature = CreatureObject(pBot)
+
+	return creature:isDancing() or creature:isPlayingMusic()
+end
+
+-- Is it time for this bot's flourish? nil without a band (its own timer then), else true once per round for each of the two.
+-- The first to come due flourishes now and the partner follows moments later.
+function BotBand:flourishDue(pBot, oid, now)
+	local pPartner, partnerOid = self:partner(oid)
+
+	if pPartner == nil or not performing(pPartner) then
+		return nil
+	end
+
+	local city = BotJobs:city(oid)
+	local round = readData(bandKey(city, "round")) + 1
+	local due = readData(bandKey(city, "due"))
+
+	if due == 0 then
+		due = now + between(self.bandFlourish)
+		writeData(bandKey(city, "due"), due)
+	end
+
+	if now < due or readData(key(oid, "bandRound")) == round then
+		return false
+	end
+
+	writeData(key(oid, "bandRound"), round)
+
+	if readData(key(partnerOid, "bandRound")) == round then
+		self:endRound(city, round, now)
+	else
+		createEvent(self.followMs, "BotBand", "partnerFlourish", pPartner, packArgs(readData(key(partnerOid, "gen")), round))
+	end
+
+	return true
+end
+
+function BotBand:endRound(city, round, now)
+	writeData(bandKey(city, "round"), round)
+	writeData(bandKey(city, "due"), now + between(self.bandFlourish))
+end
+
+function BotBand:partnerFlourish(pBot, args)
+	local a = unpackArgs(args)
+
+	if not BotJobs:current(pBot, a[1]) or not performing(pBot) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local round = tonumber(a[2])
+
+	if readData(key(oid, "bandRound")) == round then
+		return
+	end
+
+	writeData(key(oid, "bandRound"), round)
+	botEnqueue(pBot, "flourish", 0, tostring(getRandomNumber(1, 8)))
+	writeData(key(oid, "flourishes"), readData(key(oid, "flourishes")) + 1)
+	self:endRound(BotJobs:city(oid), round, os.time())
+end
+
+-- Asked for a buff, the asked one has made the player its buff target; its partner does the same a moment later, with a line
+-- of its own (the dancer: watch, the musician: listen)
+function BotBand:askPartner(pBot, oid, pPatient)
+	local pPartner, partnerOid = self:partner(oid)
+
+	if pPartner == nil then
+		return
+	end
+
+	createEvent(self.joinMs, "BotBand", "partnerBuff", pPartner, packArgs(readData(key(partnerOid, "gen")), SceneObject(pPatient):getObjectID()))
+end
+
+function BotBand:partnerBuff(pBot, args)
+	local a = unpackArgs(args)
+
+	if not BotJobs:current(pBot, a[1]) then
+		return
+	end
+
+	local oid = SceneObject(pBot):getObjectID()
+	local patientOid = tonumber(a[2])
+	local pPatient = getSceneObject(patientOid)
+	local job = BotJobs:job(oid)
+	local module = BotJobs:module(job)
+
+	if pPatient == nil or module == nil or module.buffTarget == nil or not performing(pBot) then
+		return
+	end
+
+	-- (silent: the line below is the partner's)
+	module:buffTarget(pBot, pPatient, "spatial", true)
+
+	if readData(key(oid, "buffTarget")) == patientOid then
+		BotJobs:reply(pBot, patientOid, "spatial", BotLines:pick(job, "band", CreatureObject(pPatient):getFirstName(), BotJobs:city(oid)))
+		print("BotJobs: " .. BotJobs:name(oid) .. " joins the band's buff for " .. CreatureObject(pPatient):getFirstName())
+	end
 end
 
 -- A dance other than the current one
@@ -137,7 +299,10 @@ function BotDancer:tick(pBot, oid, now)
 		return
 	end
 
-	if now >= readData(key(oid, "nextFlourish")) then
+	-- Flourishes: with the band, together with the musician; alone, on its own timer
+	local together = BotBand:flourishDue(pBot, oid, now)
+
+	if together == true or (together == nil and now >= readData(key(oid, "nextFlourish"))) then
 		botEnqueue(pBot, "flourish", 0, tostring(getRandomNumber(1, 8)))
 		writeData(key(oid, "nextFlourish"), now + between(self.flourishEvery))
 		writeData(key(oid, "flourishes"), readData(key(oid, "flourishes")) + 1)
@@ -259,6 +424,7 @@ end
 function BotDancer:act(pBot, pPlayer, action, channel, brainLine)
 	if action == "bufftarget" then
 		self:buffTarget(pBot, pPlayer, channel, brainLine)
+		BotBand:askPartner(pBot, SceneObject(pBot):getObjectID(), pPlayer)
 	end
 end
 

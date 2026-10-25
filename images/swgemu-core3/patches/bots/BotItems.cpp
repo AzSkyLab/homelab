@@ -19,6 +19,7 @@
 #include "server/zone/objects/tangible/pharmaceutical/CurePack.h"
 #include "server/zone/objects/tangible/pharmaceutical/RevivePack.h"
 #include "server/zone/objects/tangible/pharmaceutical/DotPack.h"
+#include "server/zone/objects/tangible/TangibleObject.h"
 #include "server/zone/objects/scene/SceneObjectType.h"
 #include "server/zone/objects/manufactureschematic/craftingvalues/CraftingValues.h"
 #include "templates/manager/TemplateManager.h"
@@ -71,6 +72,7 @@ public:
 	int duration = 0;
 	float potency = 0;
 	float range = 0;
+	float area = 0;
 };
 
 const float REVIVE_POWER = 400;
@@ -125,15 +127,13 @@ bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power, cons
 	} else if (pack->isDotPackObject()) {
 		DotPack* dotPack = cast<DotPack*>(pack);
 
-		// Area packs would make the medic a defender of everything they hit
-		if (dotPack->isArea())
-			return false;
-
 		float potency = dot.potency > 0 ? dot.potency : dotPack->getPotency();
 		float range = dot.range > 0 ? dot.range : dotPack->getRange();
 		float duration = dot.duration > 0 ? dot.duration : dotPack->getDuration();
+		// An area pack keeps its template's area unless one is asked for; a single-target pack has none
+		float area = dotPack->isArea() ? (dot.area > 0 ? dot.area : dotPack->getArea()) : 0;
 
-		if (dotPack->getEffectiveness() == power && dotPack->getPotency() == potency && dotPack->getRange() == range && dotPack->getDuration() == (uint32) duration && enoughUses)
+		if (dotPack->getEffectiveness() == power && dotPack->getPotency() == potency && dotPack->getRange() == range && dotPack->getDuration() == (uint32) duration && dotPack->getArea() == area && enoughUses)
 			return true;
 
 		// The fields DotPack::updateCraftingValues reads, as a crafting session would set them
@@ -141,6 +141,7 @@ bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power, cons
 		addValue(values, "potency", "expEaseOfUse", potency);
 		addValue(values, "range", "exp_charges", range);
 		addValue(values, "duration", "exp_effectiveness", duration);
+		addValue(values, "area", "null", area);
 
 		dotPack->updateCraftingValues(&values, true);
 	} else if (pack->isStatePack()) {
@@ -194,7 +195,7 @@ const VectorMap<uint32, String>& getKnownBuffNames() {
 
 }
 
-bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency, float range) {
+bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency, float range, float area) {
 	if (bot == nullptr || !bot->isPlayerCreature())
 		return false;
 
@@ -288,6 +289,7 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 		dot.duration = duration;
 		dot.potency = potency;
 		dot.range = range;
+		dot.area = area;
 
 		if (!setCombatPackValues(pack, uses, power, dot)) {
 			itemsLog().error() << "stockPack: " << templateName << " is a kind of pack a bot doesn't stock";
@@ -351,6 +353,81 @@ uint64 BotItems::findPack(CreatureObject* bot, const String& templateName) {
 	}
 
 	return 0;
+}
+
+uint64 BotItems::findItem(CreatureObject* bot, const String& templateName) {
+	if (bot == nullptr || templateName.isEmpty())
+		return 0;
+
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	if (inventory == nullptr)
+		return 0;
+
+	uint32 crc = templateName.hashCode();
+
+	for (int i = 0; i < inventory->getContainerObjectsSize(); ++i) {
+		SceneObject* object = inventory->getContainerObject(i);
+
+		if (object != nullptr && object->getServerObjectCRC() == crc && !BotLoot::isGood(bot, object->getObjectID()))
+			return object->getObjectID();
+	}
+
+	return 0;
+}
+
+uint64 BotItems::stockItem(CreatureObject* bot, const String& templateName, int uses) {
+	if (bot == nullptr || !bot->isPlayerCreature() || !templateName.beginsWith("object/weapon/ranged/grenade/"))
+		return 0;
+
+	ZoneServer* zoneServer = bot->getZoneServer();
+	SceneObject* inventory = bot->getSlottedObject("inventory");
+
+	if (zoneServer == nullptr || inventory == nullptr)
+		return 0;
+
+	Locker locker(bot);
+
+	ManagedReference<TangibleObject*> item;
+	uint64 oid = findItem(bot, templateName);
+
+	if (oid != 0) {
+		item = zoneServer->getObject(oid).castTo<TangibleObject*>();
+	} else {
+		ManagedReference<SceneObject*> object = zoneServer->createObject(templateName.hashCode(), 1);
+
+		if (object == nullptr || !object->isTangibleObject()) {
+			itemsLog().error() << "stockItem: could not create " << templateName;
+
+			if (object != nullptr)
+				object->destroyObjectFromDatabase(true);
+
+			return 0;
+		}
+
+		Locker olocker(object, bot);
+
+		if (!inventory->transferObject(object, -1, bot->getZone() != nullptr)) {
+			itemsLog().error() << "stockItem: no room for " << templateName << " in " << bot->getFirstName() << "'s inventory";
+
+			object->destroyObjectFromDatabase(true);
+			return 0;
+		}
+
+		item = cast<TangibleObject*>(object.get());
+
+		itemsLog().info(true) << bot->getFirstName() << " stocked " << templateName << ", uses " << uses;
+	}
+
+	if (item == nullptr)
+		return 0;
+
+	Locker ilocker(item, bot);
+
+	if ((int) item->getUseCount() < uses)
+		item->setUseCount(uses, false);
+
+	return item->getObjectID();
 }
 
 int BotItems::getWounds(CreatureObject* creature, int pool) {

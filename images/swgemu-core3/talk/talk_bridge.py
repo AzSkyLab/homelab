@@ -158,21 +158,24 @@ def swearing(r):
     return rule.format(player=player)
 
 # Bot players: where each job stands, and the actions it may take. Phase 3: doctor, dancer. Phase 4: musician,
-# smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger). Phase 6: a player city's mayor and citizens.
+# smuggler. Phase 5: the hunting crew (tank, rifleman, medic, ranger; Phase 8: squadleader, entertainer, commando).
+# Phase 6: a player city's mayor and citizens.
 CREW = ("join", "follow", "stay", "home", "harvest", "loot", "attack")
-CREW_JOBS = ("tank", "rifleman", "medic", "ranger")
+CREW_JOBS = ("tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando")
 CITY_JOBS = ("mayor", "citizen")
 BOT_PLACES = {
     "doctor": "inside the medical centre", "dancer": "on the dance floor of the cantina",
     "musician": "on the cantina floor, playing beside the dancer",
     "smuggler": "at a quiet table at the back of the cantina",
     "tank": "in the cantina", "rifleman": "in the cantina", "medic": "in the cantina", "ranger": "in the cantina",
+    "squadleader": "in the cantina", "entertainer": "in the cantina", "commando": "in the cantina",
     "mayor": "by the city hall", "citizen": "out and about in town",
 }
 # The order matters when the model left out a request that names two: the job's own work comes first
 BOT_ACTIONS = {
     "doctor": ("buff", "wounds"), "dancer": ("bufftarget",), "musician": ("bufftarget",), "smuggler": (),
     "tank": CREW, "rifleman": CREW, "medic": ("buff", "wounds") + CREW, "ranger": ("camp", "track") + CREW,
+    "squadleader": CREW, "entertainer": CREW, "commando": CREW,
     "mayor": (), "citizen": (),
 }
 # What the model may call an action -> the job's action
@@ -195,7 +198,7 @@ _RANGER = {"camp": "camp", "place camp": "camp", "rest": "camp", "track": "track
 ACTION_ALIASES = {
     "doctor": _DOCTOR, "dancer": _ENTERTAINER,
     "musician": dict(_ENTERTAINER, **{"music buff": "bufftarget", "focus": "bufftarget", "willpower": "bufftarget"}),
-    "tank": _CREW, "rifleman": _CREW,
+    "tank": _CREW, "rifleman": _CREW, "squadleader": _CREW, "entertainer": _CREW, "commando": _CREW,
     "medic": dict(_CREW, **{k: v for k, v in _DOCTOR.items() if k != "bufftarget"}),
     "ranger": dict(_CREW, **_RANGER),
 }
@@ -448,12 +451,26 @@ CREW_ROLES = {
                "carbine in light armor, and out of combat you're the group's woodsman: you read tracks, know the "
                "creatures and their lairs, track what's around, and throw down a master camp where the group can rest, "
                "heal and get the medic's buffs"),
+    "squadleader": ("a master squad leader, with master carbineer and master marksman. You fight with a DXR-6 carbine in "
+                    "marine armor, and you call the fight the way a squad leader did: steady aim on the way out, a "
+                    "rally when a pack comes, a volley on the tank's target, form up when someone is stunned, boost "
+                    "morale after, and \"Fall back!\" when it's lost. You never lead the group: they do"),
+    "entertainer": ("a master dancer and master musician who can hold a pistol. In camp you dance or play for the group "
+                    "(the dance heals mind wounds and gives a mind buff; ask for music and you play instead: focus and "
+                    "willpower); out hunting you shoot a DH-17 pistol. You can't heal battle fatigue in a camp, only in a "
+                    "cantina or a theater"),
+    "commando": ("a master commando with master carbineer and some medic. You carry a flame thrower, an acid rifle and "
+                 "grenades: flame cones and grenades on a clump of creatures once the tank has them, never anywhere near "
+                 "creatures that aren't fighting the group yet"),
 }
 CREW_VOICES = {
     "tank": "loud, cocky and fearless: you love a big fight and brag about what you've taken down",
     "rifleman": "cool and dry: a professional who counts kills and hates wasted shots",
     "medic": "grumpy but caring: you swear at people who stand in the fire, then patch them up",
     "ranger": "quiet and patient: you talk about tracks, weather and creatures more than people",
+    "squadleader": "calm and commanding: short orders, a drill sergeant's habits, and you praise a clean fight",
+    "entertainer": "warm and a little theatrical: you tease, you compliment, and you can't help humming",
+    "commando": "gleeful about fire: you love a good clump of creatures, say so, and talk about burning things",
 }
 # A citizen's trade (the Lua's "role"), in a few words
 CITIZEN_ROLES = {
@@ -673,9 +690,9 @@ class Bridge:
                      "where things came from, and you always steer back to business.")
         elif crew:
             who = (
-                f"You are {name}, a {species} {person}: {CREW_ROLES[job]}. You're one of a hunting crew of four "
+                f"You are {name}, a {species} {person}: {CREW_ROLES[job]}. You're one of a hunting crew of seven "
                 f"regulars who hang out {where} in {town} looking for a group: a Teras Kasi tank, a rifleman, a combat "
-                "medic and a ranger. Anyone who wants to hunt can take you along: they /invite you, or ask. In a "
+                "medic, a ranger, a squad leader, an entertainer and a commando. Anyone who wants to hunt can take you along: they /invite you, or ask. In a "
                 "group you follow their lead: they lead and they're master looter, never you; you go where they go, "
                 "attack what they attack and defend the group. On a hunt the ranger loots the corpses and then "
                 "harvests the creatures (when it can't, another of the crew loots), and whoever holds anything hands "

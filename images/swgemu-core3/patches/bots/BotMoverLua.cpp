@@ -166,6 +166,7 @@ void BotMoverLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botStop", botStop);
 	lua->registerFunction("botMoveTo", botMoveTo);
 	lua->registerFunction("botMoveState", botMoveState);
+	lua->registerFunction("botCallTo", botCallTo);
 
 	// BotMoverDev: console tools for bot-on-bot tests (runLuaFunction passes the table as the first argument)
 	lua_State* L = lua->getLuaState();
@@ -182,6 +183,8 @@ void BotMoverLua::registerFunctions(Lua* lua) {
 	lua_setfield(L, -2, "patrol");
 	lua_pushcfunction(L, devZone);
 	lua_setfield(L, -2, "zone");
+	lua_pushcfunction(L, devCall);
+	lua_setfield(L, -2, "call");
 	lua_pushcfunction(L, devQuiet);
 	lua_setfield(L, -2, "quiet");
 	lua_pushcfunction(L, devState);
@@ -235,6 +238,23 @@ int BotMoverLua::botMoveTo(lua_State* L) {
 	return 1;
 }
 
+// botCallTo(pBot, pPlayer): the bot appears near the player
+int BotMoverLua::botCallTo(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	CreatureObject* player = toCreature(L, 2);
+	bool ok = false;
+
+	if (bot != nullptr && player != nullptr) {
+		Locker locker(bot);
+
+		ok = BotMover::callTo(bot, player);
+	}
+
+	lua_pushboolean(L, ok);
+
+	return 1;
+}
+
 // botMoveState(pBot): {state, leader, distance, stuck}, or nil for anything but an online bot
 int BotMoverLua::botMoveState(lua_State* L) {
 	CreatureObject* bot = toOnlineBot(L, 1);
@@ -272,6 +292,25 @@ int BotMoverLua::devFollow(lua_State* L) {
 		bool ok = BotMover::follow(bot, leader, rosterSetting(L, "followNear", 3), rosterSetting(L, "followFar", 5));
 
 		BotManager::instance()->info(true) << "BotMoverDev: follow " << (ok ? "ok" : "refused");
+	}
+
+	return 0;
+}
+
+// call:<bot>:<player's first name>: Phase 8's botCallTo (the player is another online bot in the dev tests, or any player)
+int BotMoverLua::devCall(lua_State* L) {
+	if (!devAllowed())
+		return 0;
+
+	Reference<CreatureObject*> bot = devBot(toString(L, 2));
+	Reference<CreatureObject*> player = devBot(toString(L, 3));
+
+	if (bot != nullptr && player != nullptr) {
+		Locker locker(bot);
+
+		bool ok = BotMover::callTo(bot, player);
+
+		BotManager::instance()->info(true) << "BotMoverDev: call " << (ok ? "ok" : "refused");
 	}
 
 	return 0;

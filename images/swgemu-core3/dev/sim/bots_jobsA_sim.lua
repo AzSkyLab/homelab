@@ -139,6 +139,18 @@ return function(ctx)
 			end
 			bot.music, bot.outroUntil = args, nil
 			return true
+		elseif command == "startdance" then
+			-- (Phase 8's band: the dancer; any dance of the master dancer's)
+			if performing(bot) then
+				return false, "already performing"
+			elseif bot.inCombat then
+				return false, "in combat"
+			end
+			bot.dancing = args
+			return true
+		elseif command == "stopdance" then
+			bot.dancing, bot.buffTarget = nil, nil
+			return true
 		elseif command == "changemusic" then
 			-- (Core3 has no outro check here, nor in /flourish: isPlayingMusic() holds through the outro)
 			if bot.music == nil then
@@ -781,13 +793,17 @@ return function(ctx)
 
 	local saved, savedSettings = nil, nil
 
-	local function setup(talkDir)
+	local function setup(talkDir, withDancer)
 		saved = {roster = BotRoster, fns = {}}
 		for name, fn in pairs(api) do
 			saved.fns[name] = _G[name] == nil and false or _G[name]
 			_G[name] = fn
 		end
 		BotRoster = testRoster()
+		if withDancer then
+			table.insert(BotRoster.bots, {name = "Lena Soro", species = "twilek", sex = "female", job = "dancer", city = "mos_eisley",
+				outfit = {"object/tangible/wearables/dress/dress_s08.iff"}, station = {planet = "tatooine", x = 1006, z = 5, y = 1000, cell = 0, heading = 0}})
+		end
 		savedSettings = {dir = LivingTalk.dir, chatterEvery = LivingCities.chatterEvery, greetChance = LivingCities.greetChance}
 		LivingTalk.dir = talkDir
 		LivingCities.chatterEvery, LivingCities.greetChance = 1e12, 0
@@ -811,6 +827,83 @@ return function(ctx)
 		LivingTalk.dir, LivingCities.chatterEvery, LivingCities.greetChance = savedSettings.dir, savedSettings.chatterEvery,
 			savedSettings.greetChance
 		sim.chatLog = nil
+	end
+
+
+	-- Scenario: Phase 8 group 6, the cantina band
+
+	function scenarios.botband()
+		setup("/nonexistent/sim-talk", true)
+		local mus, dancer = byJob("musician"), byJob("dancer")
+		api.botLogin(mus.first)
+		api.botLogin(dancer.first)
+		local t0 = nowMs()
+
+		-- 1. Both perform from login; an hour of flourishes together: each of the dancer's comes within 3 s of the musician's
+		sim.run(3600)
+		if mus.music == nil or dancer.dancing == nil then fail("botband: not both performing") end
+		local fm, fd = commands(mus, "flourish", t0), commands(dancer, "flourish", t0)
+		if #fm < 60 or #fd < 60 then fail("botband: " .. #fm .. " and " .. #fd .. " flourishes in an hour") end
+		if math.abs(#fm - #fd) > 1 then fail("botband: " .. #fm .. " musician flourishes against " .. #fd .. " dancer ones") end
+		local apart = 0
+		for i = 1, math.min(#fm, #fd) do
+			local gap = math.abs(fm[i].t - fd[i].t)
+			if gap > 3000 then apart = apart + 1 end
+		end
+		if apart > 0 then fail("botband: " .. apart .. " flourishes more than 3 s apart") end
+		for i = 2, #fm do
+			local gap = fm[i].t - fm[i - 1].t
+			if gap < 19000 or gap > 50000 then fail("botband: " .. gap .. " ms between the band's flourishes") break end
+		end
+
+		-- 2. Asked for a buff, the musician gets the dancer to set the same target, and each says its line
+		local player = makePlayer("Cameren", "tatooine", 1004, 1000)
+		player.target = mus.oid
+		local t = nowMs()
+		speak(mus, player, "can I get a buff?", "spatial")
+		sim.run(5)
+		if mus.buffTarget ~= player.oid then fail("botband: the musician didn't make the player its buff target") end
+		if dancer.buffTarget ~= player.oid then fail("botband: the dancer didn't join the buff") end
+		if not anyLine(linesOf(mus, t), "musician", "listen") then fail("botband: the musician didn't say to listen") end
+		if not anyLine(linesOf(dancer, t), "dancer", "band") then fail("botband: the dancer didn't say to watch") end
+		if #linesOf(mus, t) ~= 1 or #linesOf(dancer, t) ~= 1 then fail("botband: " .. #linesOf(mus, t) .. " and " .. #linesOf(dancer, t) .. " lines for one buff") end
+
+		-- ...and asked of the dancer, the musician joins
+		local other = makePlayer("Dex", "tatooine", 1004, 1001)
+		other.target = dancer.oid
+		t = nowMs()
+		speak(dancer, other, "buff please", "spatial")
+		sim.run(5)
+		if dancer.buffTarget ~= other.oid or mus.buffTarget ~= other.oid then fail("botband: the dancer's buff didn't reach both") end
+		if not anyLine(linesOf(dancer, t), "dancer", "watch") or not anyLine(linesOf(mus, t), "musician", "band") then
+			fail("botband: the lines of a buff asked of the dancer")
+		end
+
+		-- 3. The musician offline: the dancer flourishes on its own timer, and a buff is hers alone
+		api.botLogout(mus.first)
+		sim.run(5)
+		t = nowMs()
+		sim.run(600)
+		local alone = commands(dancer, "flourish", t)
+		if #alone < 10 then fail("botband: the dancer flourished " .. #alone .. " times in ten minutes without the musician") end
+		player.target = dancer.oid
+		speak(dancer, player, "buff please", "spatial")
+		sim.run(5)
+		if dancer.buffTarget ~= player.oid then fail("botband: the lone dancer's buff") end
+
+		-- 4. Varenhal's dancer and musician are not a band (they are the same pair here, with the city changed)
+		api.botLogin(mus.first)
+		sim.run(10)
+		if BotBand:partner(dancer.oid) == nil then fail("botband: the pair isn't a band again after the musician came back") end
+		for _, entry in ipairs(BotRoster.bots) do
+			if entry.job == "dancer" or entry.job == "musician" then entry.city = "varenhal" end
+		end
+		writeStringData("bot:" .. dancer.oid .. ":city", "varenhal")
+		writeStringData("bot:" .. mus.oid .. ":city", "varenhal")
+		if BotBand:partner(dancer.oid) ~= nil or BotBand:partner(mus.oid) ~= nil then fail("botband: Varenhal's pair formed a band") end
+
+		realPrint(string.format("botband %d musician flourishes, %d dancer flourishes", #fm, #fd))
+		teardown()
 	end
 
 	-- Scenario: the musician
@@ -1644,6 +1737,7 @@ return function(ctx)
 	end
 
 	table.insert(order, "botmusic")
+	table.insert(order, "botband")
 	table.insert(order, "botslice")
 	table.insert(order, "botfight")
 end

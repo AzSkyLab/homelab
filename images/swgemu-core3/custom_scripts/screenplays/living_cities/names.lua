@@ -5,11 +5,11 @@
 -- Kaavo, Doran Halcott, Selka Marrovan, Ilyra Seawell, Saela Dawnmere. Phase 4: Tibbo Kressik, Dorvan Haldis, Vianne
 -- Corsell, Tarkon Veyle, Rhaan Telluro, Ylessa Tor'vani. Phase 5: Kragoth Ssival, Senna Delmont, Quillan Desh, Weeta
 -- Valsk. Phase 6: Aldren Vasche, Talia Marise, Ossin Valcourt, Brynna Solace, Garvik Thal, Mareth Kaine, Mowsha
--- Glenhallow, Sarra Venlo, Neebo Tulluk, Rrowkarr. A first name a player calls out means one character.
+-- Glenhallow, Sarra Venlo, Neebo Tulluk, Rrowkarr. Phase 8: Tavik Drennor, Ilsi Nuura, Brask Tor'vel. A first name a player calls out means one character.
 LivingCitiesNames = {
 	first = {
 		"Aren", "Bela", "Corvan", "Dahla", "Davin", "Eris", "Faela", "Garen", "Halia", "Ivo", "Jaela", "Jarek", "Kael",
-		"Kira", "Landry", "Lira", "Maro", "Nessa", "Orin", "Pell", "Quin", "Rhea", "Rorik", "Tavik", "Teva",
+		"Kira", "Landry", "Lira", "Maro", "Nessa", "Orin", "Pell", "Quin", "Rhea", "Rorik", "Teva",
 		"Ulric", "Vara", "Venn", "Wes", "Xara", "Yorin", "Zara", "Ardo", "Brisa", "Cael", "Dax", "Elan", "Fenn", "Gella",
 		"Jaro", "Kesh", "Lorn", "Mira", "Nalo", "Oska", "Pira", "Raen", "Sorin", "Tamsin", "Ula",
 		"Varek", "Wren", "Yana", "Zev", "Alys", "Bram", "Cira", "Deln", "Essa", "Galt", "Hana", "Isko", "Jessa", "Korr",
@@ -20,7 +20,7 @@ LivingCitiesNames = {
 	},
 	last = {
 		"Vosk", "Darklin", "Merrik", "Sunrider", "Tarrant", "Holloway", "Venn", "Kessler", "Draven", "Corwin", "Starling",
-		"Thorne", "Vael", "Rendar", "Malrek", "Okuda", "Brask", "Calder", "Dunmore", "Everin", "Fallow", "Grael", "Hask",
+		"Thorne", "Vael", "Rendar", "Malrek", "Okuda", "Calder", "Dunmore", "Everin", "Fallow", "Grael", "Hask",
 		"Ironwood", "Jandor", "Kell", "Lorne", "Marsh", "Nightwind", "Orlo", "Pryce", "Quell", "Raskin", "Sarno", "Telgar",
 		"Ulvane", "Varn", "Wexley", "Yorke", "Zand", "Arkwell", "Bellamy", "Cross", "Dace", "Embry", "Farrow", "Gant",
 		"Harlan", "Ives", "Jaxon", "Krayne", "Lockhart", "Madreth", "Norvan", "Odar", "Pell", "Quarrel", "Ryland", "Sable",
