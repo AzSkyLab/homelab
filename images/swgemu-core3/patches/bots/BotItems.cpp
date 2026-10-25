@@ -18,6 +18,7 @@
 #include "server/zone/objects/tangible/pharmaceutical/StatePack.h"
 #include "server/zone/objects/tangible/pharmaceutical/CurePack.h"
 #include "server/zone/objects/tangible/pharmaceutical/RevivePack.h"
+#include "server/zone/objects/tangible/pharmaceutical/DotPack.h"
 #include "server/zone/objects/scene/SceneObjectType.h"
 #include "server/zone/objects/manufactureschematic/craftingvalues/CraftingValues.h"
 #include "templates/manager/TemplateManager.h"
@@ -57,17 +58,26 @@ void addValue(CraftingValues& values, const String& name, const String& group, f
 	values.setCurrentValue(name, value);
 }
 
-// The combat packs (Phase 5), kept one per template: stims, ranged stims, state, cure and revive packs
+// The combat packs (Phase 5), kept one per template: stims, ranged stims, state, cure and revive packs, and (Phase 7c)
+// poison and disease packs
 bool isCombatPackTemplate(SharedObjectTemplate* objectTemplate) {
 	return objectTemplate->isStimPackTemplate() || objectTemplate->isStatePackTemplate() || objectTemplate->isCurePackTemplate()
-		|| objectTemplate->getGameObjectType() == SceneObjectType::REVIVEPACK;
+		|| objectTemplate->isDotPackTemplate() || objectTemplate->getGameObjectType() == SceneObjectType::REVIVEPACK;
 }
+
+// What a DoT pack needs besides the usual: seconds, potency and range (0 keeps the pack's own)
+class DotPackExtras {
+public:
+	int duration = 0;
+	float potency = 0;
+	float range = 0;
+};
 
 const float REVIVE_POWER = 400;
 
 // The fields each combat pack's updateCraftingValues reads, as a crafting session would set them. What stockPack
 // doesn't set (medicine use, range, area) stays as the pack has it. Pre: pack locked
-bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power) {
+bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power, const DotPackExtras& dot) {
 	CraftingValues values;
 	int useCount = Math::max(uses, pack->getUseCount());
 	bool enoughUses = pack->getUseCount() >= uses;
@@ -112,6 +122,27 @@ bool setCombatPackValues(PharmaceuticalObject* pack, int uses, float power) {
 			addValue(values, "area", "null", cure->getArea());
 
 		cure->updateCraftingValues(&values, true);
+	} else if (pack->isDotPackObject()) {
+		DotPack* dotPack = cast<DotPack*>(pack);
+
+		// Area packs would make the medic a defender of everything they hit
+		if (dotPack->isArea())
+			return false;
+
+		float potency = dot.potency > 0 ? dot.potency : dotPack->getPotency();
+		float range = dot.range > 0 ? dot.range : dotPack->getRange();
+		float duration = dot.duration > 0 ? dot.duration : dotPack->getDuration();
+
+		if (dotPack->getEffectiveness() == power && dotPack->getPotency() == potency && dotPack->getRange() == range && dotPack->getDuration() == (uint32) duration && enoughUses)
+			return true;
+
+		// The fields DotPack::updateCraftingValues reads, as a crafting session would set them
+		addValue(values, "power", "exp_effectiveness", power);
+		addValue(values, "potency", "expEaseOfUse", potency);
+		addValue(values, "range", "exp_charges", range);
+		addValue(values, "duration", "exp_effectiveness", duration);
+
+		dotPack->updateCraftingValues(&values, true);
 	} else if (pack->isStatePack()) {
 		if (enoughUses)
 			return true;
@@ -163,7 +194,7 @@ const VectorMap<uint32, String>& getKnownBuffNames() {
 
 }
 
-bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int uses, float power, int duration) {
+bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int uses, float power, int duration, float potency, float range) {
 	if (bot == nullptr || !bot->isPlayerCreature())
 		return false;
 
@@ -252,7 +283,13 @@ bool BotItems::stockPack(CreatureObject* bot, const String& templateName, int us
 	Locker plocker(pack, bot);
 
 	if (combatPack) {
-		if (!setCombatPackValues(pack, uses, power)) {
+		DotPackExtras dot;
+
+		dot.duration = duration;
+		dot.potency = potency;
+		dot.range = range;
+
+		if (!setCombatPackValues(pack, uses, power, dot)) {
 			itemsLog().error() << "stockPack: " << templateName << " is a kind of pack a bot doesn't stock";
 			return false;
 		}

@@ -757,14 +757,14 @@ void BotFactory::ensureOutfit(ZoneServer* zoneServer, CreatureObject* creature, 
 
 		Locker locker(item, creature);
 
-		// Make room: a worn item the roster no longer lists goes to the inventory
+		// Make room: a worn (or held) item the roster no longer lists goes to the inventory
 		if (item->getArrangementDescriptorSize() > 0 && inventory != nullptr) {
 			const Vector<String>* slots = item->getArrangementDescriptor(0);
 
 			for (int j = 0; slots != nullptr && j < slots->size(); ++j) {
 				Reference<SceneObject*> occupant = creature->getSlottedObject(slots->get(j));
 
-				if (occupant == nullptr || wanted.contains(occupant->getServerObjectCRC()) || !(occupant->isWearableObject() || occupant->isArmorObject()))
+				if (occupant == nullptr || wanted.contains(occupant->getServerObjectCRC()) || !(occupant->isWearableObject() || occupant->isArmorObject() || occupant->isWeaponObject()))
 					continue;
 
 				Locker olocker(occupant, creature);

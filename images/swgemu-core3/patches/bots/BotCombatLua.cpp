@@ -8,6 +8,7 @@
 #include "BotManager.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
+#include "server/ServerCore.h"
 
 using namespace server::zone::managers::bot;
 
@@ -55,6 +56,105 @@ uint64 toOid(lua_State* L, int index) {
 
 }
 
+namespace {
+
+void setIntField(lua_State* L, const char* name, lua_Integer value) {
+	lua_pushinteger(L, value);
+	lua_setfield(L, -2, name);
+}
+
+void setBoolField(lua_State* L, const char* name, bool value) {
+	lua_pushboolean(L, value);
+	lua_setfield(L, -2, name);
+}
+
+void setStringField(lua_State* L, const char* name, const String& value) {
+	lua_pushstring(L, value.toCharArray());
+	lua_setfield(L, -2, name);
+}
+
+Logger& devLog() {
+	static Logger logger("BotCombatDev");
+
+	return logger;
+}
+
+// threat:<oid>: a creature's threat map, its target, and when a taunt works again
+int devThreat(lua_State* L) {
+	ZoneServer* zoneServer = ServerCore::getZoneServer();
+	uint64 oid = (uint64) UnsignedLong::valueOf(toString(L, 2));
+	ManagedReference<SceneObject*> object = zoneServer != nullptr ? zoneServer->getObject(oid) : nullptr;
+
+	if (object == nullptr || !object->isCreatureObject()) {
+		devLog().info(true) << "threat: no creature " << oid;
+		return 0;
+	}
+
+	CreatureObject* creature = object->asCreatureObject();
+	BotThreat threat;
+	StringBuffer text;
+
+	// The reading is cross-locked from a bot's lock: any online bot will do
+	Vector<Reference<CreatureObject*>> bots;
+	BotManager::instance()->getOnlineBots(bots);
+
+	if (bots.size() == 0) {
+		devLog().info(true) << "threat: no bot is online";
+		return 0;
+	}
+
+	if (!BotCombat::threatOn(bots.get(0), creature, threat)) {
+		devLog().info(true) << "threat: " << creature->getDisplayedName() << " is not an AiAgent";
+		return 0;
+	}
+
+	text << "threat: " << creature->getDisplayedName() << " " << oid << ", HAM " << creature->getHAM(0) << "/" << creature->getMaxHAM(0) << ", on " << threat.target
+		<< ", tauntable " << (threat.tauntable ? "yes" : "NO") << ", " << (threat.taunted ? "TAUNTED by " + String::valueOf(threat.tauntedBy) : String("not taunted"))
+		<< ", taunt lockout " << threat.lockoutMs << " ms" << (threat.poisoned ? ", POISONED" : "") << (threat.diseased ? ", DISEASED" : "");
+
+	for (int i = 0; i < threat.entries.size(); ++i) {
+		const BotThreatEntry& entry = *threat.entries.get(i);
+
+		text << "; " << entry.name << " " << entry.oid << " damage " << entry.damage << " aggro " << entry.aggro << " heal " << entry.heal << (entry.taunted ? " TAUNTED" : "");
+	}
+
+	devLog().info(true) << text.toString();
+
+	return 0;
+}
+
+// range:<first>: a bot's held weapon and its ranges
+int devRange(lua_State* L) {
+	Reference<CreatureObject*> bot = BotManager::instance()->getOnlineBot(toString(L, 2));
+	BotWeaponRange range;
+
+	if (bot == nullptr || !BotCombat::weaponRange(bot, range)) {
+		devLog().info(true) << "range: no online bot called " << toString(L, 2);
+		return 0;
+	}
+
+	devLog().info(true) << "range: " << bot->getFirstName() << " holds " << (range.templateName.isEmpty() ? String("nothing (fists)") : range.templateName) << ": point blank "
+		<< range.pointBlankAccuracy << " @ " << range.pointBlankRange << " m, ideal " << range.idealAccuracy << " @ " << range.idealRange << " m, max " << range.maxAccuracy
+		<< " @ " << range.maxRange << " m, " << (range.ranged ? "ranged" : "not ranged");
+
+	return 0;
+}
+
+void registerDevTable(lua_State* L) {
+	static const luaL_Reg functions[] = {{"threat", devThreat}, {"range", devRange}, {nullptr, nullptr}};
+
+	lua_newtable(L);
+
+	for (int i = 0; functions[i].name != nullptr; ++i) {
+		lua_pushcfunction(L, functions[i].func);
+		lua_setfield(L, -2, functions[i].name);
+	}
+
+	lua_setglobal(L, "BotCombatDev");
+}
+
+}
+
 void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botSetTarget", botSetTarget);
 	lua->registerFunction("botDuelState", botDuelState);
@@ -66,6 +166,11 @@ void BotCombatLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botFindPack", botFindPack);
 	lua->registerFunction("botRecentIncaps", botRecentIncaps);
 	lua->registerFunction("botDropDeadDefenders", botDropDeadDefenders);
+	lua->registerFunction("botWeaponRange", botWeaponRange);
+	lua->registerFunction("botThreatOn", botThreatOn);
+	lua->registerFunction("botLairsNear", botLairsNear);
+
+	registerDevTable(lua->getLuaState());
 
 	BotCombat::start();
 }
@@ -168,6 +273,98 @@ int BotCombatLua::botRecentIncaps(lua_State* L) {
 	CreatureObject* creature = toCreature(L, 1);
 
 	lua_pushinteger(L, creature != nullptr ? BotCombat::recentIncaps(creature) : 0);
+
+	return 1;
+}
+
+// botWeaponRange(pBot) -> {template, ranged, pointBlankRange, pointBlankAccuracy, idealRange, idealAccuracy, maxRange, maxAccuracy}
+int BotCombatLua::botWeaponRange(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	BotWeaponRange range;
+
+	if (bot == nullptr || !BotCombat::weaponRange(bot, range)) {
+		lua_pushnil(L);
+
+		return 1;
+	}
+
+	lua_newtable(L);
+	setStringField(L, "template", range.templateName);
+	setBoolField(L, "ranged", range.ranged);
+	setIntField(L, "pointBlankRange", range.pointBlankRange);
+	setIntField(L, "pointBlankAccuracy", range.pointBlankAccuracy);
+	setIntField(L, "idealRange", range.idealRange);
+	setIntField(L, "idealAccuracy", range.idealAccuracy);
+	setIntField(L, "maxRange", range.maxRange);
+	setIntField(L, "maxAccuracy", range.maxAccuracy);
+
+	return 1;
+}
+
+// botThreatOn(pBot, pCreature) -> {target, tauntable, taunted, tauntedBy, lockoutMs, entries}
+int BotCombatLua::botThreatOn(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	CreatureObject* creature = toCreature(L, 2);
+	BotThreat threat;
+
+	if (bot == nullptr || creature == nullptr || !BotCombat::threatOn(bot, creature, threat)) {
+		lua_pushnil(L);
+
+		return 1;
+	}
+
+	lua_newtable(L);
+	setIntField(L, "target", (lua_Integer) threat.target);
+	setBoolField(L, "tauntable", threat.tauntable);
+	setBoolField(L, "taunted", threat.taunted);
+	setIntField(L, "tauntedBy", (lua_Integer) threat.tauntedBy);
+	setIntField(L, "lockoutMs", threat.lockoutMs);
+	setBoolField(L, "poisoned", threat.poisoned);
+	setBoolField(L, "diseased", threat.diseased);
+	setBoolField(L, "poisonImmune", threat.poisonImmune);
+	setBoolField(L, "diseaseImmune", threat.diseaseImmune);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < threat.entries.size(); ++i) {
+		const BotThreatEntry& entry = *threat.entries.get(i);
+
+		lua_newtable(L);
+		setIntField(L, "oid", (lua_Integer) entry.oid);
+		setStringField(L, "name", entry.name);
+		setIntField(L, "damage", entry.damage);
+		setIntField(L, "aggro", entry.aggro);
+		setIntField(L, "heal", entry.heal);
+		setBoolField(L, "taunted", entry.taunted);
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	lua_setfield(L, -2, "entries");
+
+	return 1;
+}
+
+// botLairsNear(pBot, range) -> {{oid, x, y}, ...}
+int BotCombatLua::botLairsNear(lua_State* L) {
+	CreatureObject* bot = toOnlineBot(L, 1);
+	Vector<Reference<BotLairInfo*>> found;
+
+	if (bot != nullptr)
+		BotCombat::lairsNear(bot, (float) lua_tonumber(L, 2), found);
+
+	lua_newtable(L);
+
+	for (int i = 0; i < found.size(); ++i) {
+		const BotLairInfo& lair = *found.get(i);
+
+		lua_newtable(L);
+		setIntField(L, "oid", (lua_Integer) lair.oid);
+		lua_pushnumber(L, lair.x);
+		lua_setfield(L, -2, "x");
+		lua_pushnumber(L, lair.y);
+		lua_setfield(L, -2, "y");
+		lua_rawseti(L, -2, i + 1);
+	}
 
 	return 1;
 }
