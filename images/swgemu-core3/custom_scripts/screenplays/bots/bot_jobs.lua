@@ -46,6 +46,8 @@ includeFile("../custom_scripts/screenplays/bots/crew.lua")
 includeFile("../custom_scripts/screenplays/bots/fight.lua")
 includeFile("../custom_scripts/screenplays/bots/mayor.lua")
 includeFile("../custom_scripts/screenplays/bots/citizen.lua")
+-- Phase 11 (built with 9b): buff time left, the group's window and the 15-minute warning
+includeFile("../custom_scripts/screenplays/bots/buffs.lua")
 
 BotJobs = ScreenPlay:new {
 	screenplayName = "BotJobs",
@@ -327,6 +329,11 @@ function BotJobs:tick(pBot, gen)
 		BotFight:tick(pBot, oid, now)
 	end
 
+	-- Phase 11: each human online has a chain that warns them when their mind buffs run low
+	if BotBuffs ~= nil then
+		BotBuffs:keep(now)
+	end
+
 	createEvent(self.tickMs, "BotJobs", "tick", pBot, gen)
 end
 
@@ -578,7 +585,7 @@ function BotJobs:poll(pBot, args)
 	local a = unpackArgs(args)
 	local gen, id, playerOid, tries, channel, intent = a[1], a[2], tonumber(a[3]), tonumber(a[4]), a[5], a[6]
 	local alive = self:current(pBot, gen)
-	local status, mood, line, action, flags = LivingTalk:readReply(id)
+	local status, mood, line, action, flags, orders, teach = LivingTalk:readReply(id)
 
 	if intent == "-" then
 		intent = nil
@@ -607,6 +614,20 @@ function BotJobs:poll(pBot, args)
 			-- Reply line 5: flags about the player's words (e.g. "insult"), for provoked fights
 			if BotFight ~= nil and BotFight.onReply ~= nil then
 				BotFight:onReply(pBot, playerOid, flags or "", channel)
+			end
+
+			-- Reply lines 6 and 7 (the crew, Phase 9b): orders for the tactics table the bridge checked against the player's
+			-- words, and the result of a lesson it wrote ("added quillan")
+			local module = self:module(job)
+
+			if module ~= nil and module.tacticOrders ~= nil then
+				if orders ~= nil and orders ~= "" then
+					module:tacticOrders(pBot, oid, playerOid, channel, orders)
+				end
+
+				if teach ~= nil and teach ~= "" then
+					module:teachResult(pBot, oid, teach)
+				end
 			end
 		else
 			-- The bridge couldn't get an answer: the job by keyword, or one canned line; then the quiet minute
@@ -653,6 +674,9 @@ function BotJobs:canned(pBot, playerOid, channel, intent)
 
 	if intent == "notMine" or intent == "watchHint" then
 		line = BotLines:pick(job, intent, name, city)
+	elseif intent == "tactics" then
+		-- (the crew, Phase 9b: an order or a lesson that the model isn't there to read)
+		line = BotLines:pick("crew", "orderNoBrain", name, city)
 	end
 
 	line = line or BotLines:pick(job, "fallback", name, city)

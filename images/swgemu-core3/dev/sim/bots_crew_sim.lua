@@ -94,7 +94,8 @@ return function(ctx)
 	local function resetLog()
 		log = {taunts = {}, debuffs = {}, rescues = {}, dots = {}, loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
 			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
-			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}, landed = {}}
+			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}, landed = {}, windows = {},
+			sysmsgs = {}}
 	end
 	resetLog()
 
@@ -132,6 +133,15 @@ return function(ctx)
 	function methods.isInCombat(self) return self.inCombat == true end
 	-- (Core3: a patron's mood is "entertained" while it watches or listens)
 	function methods.getMoodString(self) return (self.watchTo ~= nil or self.listenTo ~= nil) and "entertained" or "neutral" end
+	-- (Phase 9b: a creature's health is its hit points, for "the weakest" and "the strongest")
+	function methods.getHAM(self, pool)
+		if self.isMob then return pool == 0 and math.floor(self.hp or 0) or 0 end
+		return self:pool(pool).cur
+	end
+	-- (Phase 9b: a creature's level, in a plan request)
+	function methods.getLevel(self) return self.level or 10 end
+	-- (Phase 11: a system message to a player, and the list box of the buffs window)
+	function methods.sendSystemMessage(self, text) table.insert(log.sysmsgs, {to = self.oid, text = text, t = nowMs()}) end
 	function methods.getMainDefender(self)
 		-- A creature is on whoever it's after (its AI picks; Phase 7c: taunt, rescue)
 		if self.isMob then
@@ -830,6 +840,12 @@ return function(ctx)
 	end
 	function api.botGetWounds(p, pool) return p ~= nil and (p.wounds or {})[pool] or 0 end
 	function api.botGetShockWounds(p) return p ~= nil and p.shock or 0 end
+	function api.LuaSuiManager()
+		return {sendListBox = function(_, using, player, title, prompt, buttons, cancel, other, ok, screenplay, callback, close, options)
+			table.insert(log.windows, {to = player.oid, title = title, prompt = prompt, screenplay = screenplay, callback = callback,
+				options = options, t = nowMs()})
+		end}
+	end
 	function api.botGetBuffs(p)
 		local out = {}
 		for name, buff in pairs(p ~= nil and p.buffs or {}) do
@@ -6747,6 +6763,995 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Phase 9b: the tactics table (crew_doctrine.lua). crewtable: the layers and the checks on the way in; crewdoctrine: each entry
+	-- followed in a fight, and the hard rules under a hostile table.
+
+	function scenarios.crewtable()
+		local cameren = sevenGroup("crewtable")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewtable: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local medic, rifleman, sl, tank, cmdo = crew.medic, crew.rifleman, crew.squadleader, crew.tank, crew.commando
+
+		-- 1. With no table, every entry stands at its default from no layer, and the defaults are today's numbers
+		for _, role in ipairs(SEVEN) do
+			for name, def in pairs(BotCrew.tactics) do
+				if def.roles[role] then
+					local _, layer = BotCrew:tactic(crew[role].oid, name)
+					eq(role .. " " .. name .. " layer", layer, nil)
+				end
+			end
+		end
+		eq("hold", BotCrew:tactic(rifleman.oid, "hold"), BotCrew.holdFor)
+		eq("healAt", BotCrew:tactic(medic.oid, "healAt"), BotCrew.healBelow.fight)
+		eq("mindFloor", BotCrew:tactic(medic.oid, "mindFloor"), BotCrew.dotMindFloor)
+		eq("retreatAt", BotCrew:tactic(sl.oid, "retreatAt"), BotCrew.retreatLow)
+		eq("specials", BotCrew:specialsFor(rifleman.oid), BotCrew:setting("specialsHam"))
+		eq("focus", BotCrew:tactic(rifleman.oid, "focus"), "tank")
+		eq("range", BotCrew:tactic(rifleman.oid, "range"), "band")
+		eq("protect", BotCrew:tactic(tank.oid, "protect"), "medic")
+		eq("reviveFirst", BotCrew:tactic(medic.oid, "reviveFirst"), "yes")
+		eq("packs", BotCrew:tactic(medic.oid, "packs"), "area")
+		eq("shoot", BotCrew:tactic(medic.oid, "shoot"), "yes")
+		eq("area", BotCrew:tactic(cmdo.oid, "area"), "both")
+		eq("calls", BotCrew:tactic(sl.oid, "calls"), "all")
+		eq("a bot with no such entry", BotCrew:tactic(tank.oid, "healAt") ~= nil, true) -- (the default is still readable)
+
+		-- 2. The checks on the way in: roles, limits, unknown entries and words
+		eq("role", BotCrew:setTactic(rifleman.oid, "order", "healAt", "0.7"), nil)
+		eq("unknown entry", BotCrew:setTactic(medic.oid, "order", "bogus", "x"), nil)
+		eq("healAt over", BotCrew:setTactic(medic.oid, "order", "healAt", "0.99"), "0.90")
+		eq("healAt percent", BotCrew:setTactic(medic.oid, "order", "healAt", "80%"), "0.80")
+		eq("healAt under", BotCrew:setTactic(medic.oid, "order", "healAt", "0.2"), "0.50")
+		eq("mindFloor", BotCrew:setTactic(medic.oid, "order", "mindFloor", "0.95"), "0.80")
+		eq("hold over", BotCrew:setTactic(rifleman.oid, "order", "hold", "9"), "6")
+		eq("hold", BotCrew:setTactic(rifleman.oid, "order", "hold", "0"), "0")
+		eq("retreatAt under", BotCrew:setTactic(sl.oid, "order", "retreatAt", "0.1"), "0.20")
+		eq("retreatAt over", BotCrew:setTactic(sl.oid, "order", "retreatAt", "0.9"), "0.50")
+		eq("bad word", BotCrew:setTactic(rifleman.oid, "order", "range", "sideways"), nil)
+		eq("range", BotCrew:setTactic(rifleman.oid, "order", "range", "far"), "far")
+		eq("calls order", BotCrew:setTactic(sl.oid, "order", "calls", "volley,rally"), "rally,volley")
+		eq("calls bad", BotCrew:setTactic(sl.oid, "order", "calls", "rally,dance"), nil)
+		eq("calls all", BotCrew:setTactic(sl.oid, "order", "calls", "rally,volley,formup,steadyaim"), "all")
+		eq("focus creature", BotCrew:setTactic(rifleman.oid, "order", "focus", "creature:123"), "creature:123")
+		eq("focus bad creature", BotCrew:setTactic(rifleman.oid, "order", "focus", "creature:abc"), nil)
+		eq("protect member", BotCrew:setTactic(tank.oid, "order", "protect", "Ilsi"), "ilsi")
+		eq("protect bad", BotCrew:setTactic(tank.oid, "order", "protect", "x y"), nil)
+		eq("plan layer, wrong role", BotCrew:setTactic(tank.oid, "plan", "area", "none"), nil)
+		eq("base is not settable here", BotCrew:setTactic(medic.oid, "base", "healAt", "0.6"), nil)
+		for _, role in ipairs(SEVEN) do
+			BotCrew:clearLayer(crew[role].oid, "order")
+		end
+
+		-- 3. Layers: order over plan over base over the default; a layer gone, the next shows
+		writeStringData("crew:tbase:quillan:healAt", "0.60")
+		local v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("base value", v, 0.6)
+		eq("base layer", layer, "base")
+		BotCrew:setTactic(medic.oid, "plan", "healAt", "0.85")
+		v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("plan beats base", v, 0.85)
+		eq("plan layer", layer, "plan")
+		BotCrew:setTactic(medic.oid, "order", "healAt", "0.55")
+		v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("order beats plan", v, 0.55)
+		eq("order layer", layer, "order")
+		BotCrew:clearLayer(medic.oid, "order")
+		eq("plan after order", BotCrew:tactic(medic.oid, "healAt"), 0.85)
+		BotCrew:clearLayer(medic.oid, "plan")
+		eq("base after plan", BotCrew:tactic(medic.oid, "healAt"), 0.6)
+		deleteStringData("crew:tbase:quillan:healAt")
+		eq("default after base", BotCrew:tactic(medic.oid, "healAt"), 0.75)
+		-- (a bad value in a layer reads as the next layer: the turns clamp what they read too)
+		writeStringData("bot:" .. medic.oid .. ":crew:t:order:healAt", "banana")
+		eq("a bad stored value", BotCrew:tactic(medic.oid, "healAt"), 0.75)
+		deleteStringData("bot:" .. medic.oid .. ":crew:t:order:healAt")
+		writeStringData("bot:" .. medic.oid .. ":crew:t:order:healAt", "95")
+		eq("a stored value over the limit", BotCrew:tactic(medic.oid, "healAt"), 0.9)
+		deleteStringData("bot:" .. medic.oid .. ":crew:t:order:healAt")
+
+		-- 4. An order on a creature ends when it dies; a lost bot's orders go home with it
+		local m = makeCreature(cameren, "a kreetle", 40, 0, nil)
+		eq("a named creature", BotCrew:setTactic(rifleman.oid, "order", "focus", "creature:" .. m.oid), "creature:" .. m.oid)
+		eq("while it lives", BotCrew:tactic(rifleman.oid, "focus"), "creature:" .. m.oid)
+		damage(m, 1e9)
+		eq("once it is dead", BotCrew:tactic(rifleman.oid, "focus"), "tank")
+		eq("and the order is gone", readStringData("bot:" .. rifleman.oid .. ":crew:t:order:focus"), "")
+		BotCrew:setTactic(rifleman.oid, "order", "range", "far")
+		BotCrew:setTactic(rifleman.oid, "plan", "hold", "1")
+		sim.call("BotCrew", "leaveForHome", rifleman, rifleman.oid, os.time())
+		eq("an order after going home", BotCrew:tactic(rifleman.oid, "range"), "band")
+		eq("a plan after going home", BotCrew:tactic(rifleman.oid, "hold"), BotCrew.holdFor)
+		BotCrew:setTactic(medic.oid, "order", "shoot", "no")
+		sim.call("BotCrew", "clear", medic.oid)
+		eq("an order after a restart (clear)", BotCrew:tactic(medic.oid, "shoot"), "yes")
+		realPrint("crewtable the layers, limits and defaults")
+		teardown()
+	end
+
+
+	function scenarios.crewdoctrine()
+		local cameren = sevenGroup("crewdoctrine")
+		-- (big pools, so the specials' cost doesn't keep anyone under the heal line)
+		for _, role in ipairs(SEVEN) do
+			local b = crew[role]
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).base = b:pool(pool).base * 8 end
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).cur = b:getMaxHAM(pool) end
+		end
+		local tank, rifleman, medic, ranger, sl, ent, cmdo = crew.tank, crew.rifleman, crew.medic, crew.ranger, crew.squadleader,
+			crew.entertainer, crew.commando
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function calm()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(30)
+		end
+		local function clearAll()
+			for _, role in ipairs(SEVEN) do
+				BotCrew:clearLayer(crew[role].oid, "order")
+				BotCrew:clearLayer(crew[role].oid, "plan")
+			end
+		end
+		local function order(role, name, value)
+			if BotCrew:setTactic(crew[role].oid, "order", name, value) == nil then
+				fail("crewdoctrine: test bug, " .. role .. " " .. name .. " " .. value .. " isn't taken")
+			end
+		end
+		local function targetOf(b) return readData("bot:" .. b.oid .. ":crew:target") end
+		local function count(b, since, names)
+			local n = 0
+			for _, c in ipairs(okCommands(b, nil, since)) do
+				if names[c.cmd] then n = n + 1 end
+			end
+			return n
+		end
+		local function dots(since)
+			local out = {}
+			for _, d in ipairs(log.dots) do if d.bot == medic.oid and d.t >= since then table.insert(out, d) end end
+			return out
+		end
+		local function areas(cmd, since)
+			local out = {}
+			for _, a in ipairs(log.areas) do
+				if a.bot == cmdo.oid and a.t >= (since or 0) and (cmd == nil or a.cmd:find(cmd, 1, true)) then table.insert(out, a) end
+			end
+			return out
+		end
+		-- (when a bot set the creature as its target: its shots start there)
+		local function firstEngage(b, mob, since)
+			for _, e in ipairs(entries(log.targets, b, since)) do
+				if e.target == mob.oid then return e.t end
+			end
+			return nil
+		end
+		local sh = BotCrew:setting("specialsHam")
+		local SPECIALS = {headshot1 = true, headshot2 = true, headshot3 = true, flurryshot1 = true, flurryshot2 = true,
+			strafeshot1 = true, strafeshot2 = true, startleshot2 = true}
+
+		-- 1. specials: only above 30% (full), 50% (normal, the roster's) or 75% (save) of each pool
+		rifleman.noRegen = true
+		local function specialsAt(share, value)
+			clearAll()
+			if value ~= nil then order("rifleman", "specials", value) end
+			rifleman:pool(MIND).cur = math.floor(rifleman:getMaxHAM(MIND) * share)
+			local m = makeCreature(cameren, "a kreetle", 40, 0, tank)
+			local t = nowMs()
+			attack(cameren, m)
+			sim.run(10)
+			local n = count(rifleman, t, SPECIALS)
+			slays(m)
+			calm()
+			return n
+		end
+		local between = (sh + 0.75) / 2
+		if specialsAt(between, nil) == 0 then fail("crewdoctrine: no specials at " .. between .. " of its mind by default") end
+		if specialsAt(between, "save") ~= 0 then fail("crewdoctrine: specials at " .. between .. " of its mind with 'save'") end
+		local low = (0.3 + sh) / 2
+		if specialsAt(low, nil) ~= 0 then fail("crewdoctrine: specials at " .. low .. " of its mind by default") end
+		if specialsAt(low, "full") == 0 then fail("crewdoctrine: no specials at " .. low .. " of its mind with 'full'") end
+		rifleman.noRegen = false
+		rifleman:pool(MIND).cur = rifleman:getMaxHAM(MIND)
+		clearAll()
+
+		-- 2. hold: how long a ranged bot waits for the tank (0: not at all)
+		local function openingGap(value)
+			clearAll()
+			if value ~= nil then order("rifleman", "hold", value) end
+			local m = makeCreature(cameren, "a kreetle", 40, 0, nil, nil, false)
+			m.hits = 5
+			local t = nowMs()
+			attack(cameren, m)
+			sim.run(8)
+			local tankAt, rifleAt = firstEngage(tank, m, t), firstEngage(rifleman, m, t)
+			slays(m)
+			calm()
+			return tankAt, rifleAt, t
+		end
+		local tankAt, rifleAt = openingGap(nil)
+		if tankAt == nil or rifleAt == nil or rifleAt - tankAt < 2000 then
+			fail("crewdoctrine: by default the rifleman opened " .. tostring(rifleAt and tankAt and (rifleAt - tankAt)) .. " ms after the tank")
+		end
+		local tankAt0, rifleAt0, t0 = openingGap("0")
+		if tankAt0 == nil or rifleAt0 == nil or rifleAt0 - t0 > 2600 then
+			fail("crewdoctrine: with hold 0 the rifleman opened " .. tostring(rifleAt0 and (rifleAt0 - t0)) .. " ms after the pull")
+		end
+		clearAll()
+
+		-- 3. focus: the tank's target (default), the leader's, the weakest, the strongest, what is on the medic, a named creature
+		local small = makeCreature(cameren, "a kreetle", 40, 0, tank, 1e5)
+		local big = makeCreature(cameren, "a bantha", 40, 3, tank, 9e6)
+		local onMedic = makeCreature(cameren, "a gurrek", 38, -3, medic, 5e6)
+		onMedic.noTaunt, onMedic.lockUntil = true, nowMs() + 1e9 -- (neither the tank nor the ranger can take it off the medic)
+		attack(cameren, small)
+		sim.run(5)
+		local function focusIs(value, want, label)
+			clearAll()
+			if value ~= nil then order("rifleman", "focus", value) end
+			-- (it holds fire up to 6 s on a creature the tank hasn't taken: one on the medic, say)
+			sim.run(9)
+			if targetOf(rifleman) ~= want.oid then
+				fail("crewdoctrine: focus " .. tostring(value) .. ": the rifleman fights " .. targetOf(rifleman) .. ", expected " .. label)
+			end
+		end
+		focusIs(nil, small, "the tank's target")
+		focusIs("strongest", big, "the strongest")
+		focusIs("weakest", small, "the weakest")
+		focusIs("medic", onMedic, "the creature on the medic")
+		cameren.target = big.oid
+		focusIs("leader", big, "the leader's target")
+		cameren.target = small.oid
+		focusIs("creature:" .. big.oid, big, "the named creature")
+		slays(big)
+		sim.run(4)
+		local v = BotCrew:tactic(rifleman.oid, "focus")
+		if v ~= "tank" then fail("crewdoctrine: the order on a dead creature still stands: " .. tostring(v)) end
+		if targetOf(rifleman) == big.oid then fail("crewdoctrine: the rifleman still fights the dead creature") end
+		slays(small, onMedic)
+		calm()
+
+		-- 4. range: the band moved 5 m, inside the weapon's reach
+		clearAll()
+		local near0, far0 = BotCrew:band(rifleman, rifleman.oid, "rifleman")
+		local reach = readData("bot:" .. rifleman.oid .. ":crew:bandMax")
+		order("rifleman", "range", "far")
+		local nearF, farF = BotCrew:band(rifleman, rifleman.oid, "rifleman")
+		order("rifleman", "range", "close")
+		local nearC, farC = BotCrew:band(rifleman, rifleman.oid, "rifleman")
+		if farF ~= math.min(far0 + 5, reach - 2) or nearF ~= math.min(near0 + 5, farF - 2) then
+			fail(string.format("crewdoctrine: range far gave %s-%s, the band is %s-%s (reach %s)", tostring(nearF), tostring(farF), tostring(near0), tostring(far0), tostring(reach)))
+		end
+		if farC ~= far0 - 5 or nearC ~= math.max(3, near0 - 5) then
+			fail(string.format("crewdoctrine: range close gave %s-%s, the band is %s-%s", tostring(nearC), tostring(farC), tostring(near0), tostring(far0)))
+		end
+		if farF > reach then fail("crewdoctrine: range far went past the weapon's reach") end
+		clearAll()
+
+		-- 5. protect: the creature on the member looked after comes first when taunting and rescuing
+		local mM = makeCreature(cameren, "a kreetle", 30, 0, medic)
+		local mI = makeCreature(cameren, "a kreetle", 30, 2, ent)
+		local g = BotCrew:group(tank)
+		local function sorted()
+			local list = {{p = mI, oid = mI.oid, dist = 8}, {p = mM, oid = mM.oid, dist = 12}}
+			return BotCrew:sortByVictim(tank, list, g, tank.oid)
+		end
+		if sorted()[1].oid ~= mM.oid then fail("crewdoctrine: by default the creature on the medic isn't first") end
+		order("tank", "protect", "ilsi")
+		if sorted()[1].oid ~= mI.oid then fail("crewdoctrine: protect ilsi: the creature on her isn't first") end
+		order("tank", "protect", "nobodyhere")
+		if sorted()[1].oid ~= mM.oid then fail("crewdoctrine: protect a name that isn't in the group: not the medic's") end
+		slays(mM, mI)
+		clearAll()
+		calm()
+
+		-- 6. healAt: heal below this share of health or action in a fight
+		cameren.noRegen = true
+		local function healsAt(share, value)
+			clearAll()
+			if value ~= nil then order("medic", "healAt", value) end
+			cameren:pool(HEALTH).cur = math.floor(cameren:getMaxHAM(HEALTH) * share)
+			local m = makeCreature(cameren, "a kreetle", 40, 0, tank)
+			local t = nowMs()
+			attack(cameren, m)
+			sim.run(8)
+			local n = 0
+			for _, c in ipairs(okCommands(medic, "healdamage", t)) do
+				if tonumber(c.args:match("^(%d+)")) == cameren.oid or c.target == cameren.oid then n = n + 1 end
+			end
+			slays(m)
+			cameren:pool(HEALTH).cur = cameren:getMaxHAM(HEALTH)
+			calm()
+			return n
+		end
+		if healsAt(0.6, nil) == 0 then fail("crewdoctrine: the medic didn't heal a member at 60% in a fight by default") end
+		if healsAt(0.6, "0.5") ~= 0 then fail("crewdoctrine: healAt 0.5: the medic healed a member at 60%") end
+		if healsAt(0.85, "0.9") == 0 then fail("crewdoctrine: healAt 0.9: the medic didn't heal a member at 85%") end
+		cameren.noRegen = false
+		clearAll()
+
+		-- 7. packs, and mindFloor
+		local function throws(value, entry, mindShare)
+			clearAll()
+			if value ~= nil then order("medic", entry, value) end
+			medic.noRegen = true
+			medic:pool(MIND).cur = math.floor(medic:getMaxHAM(MIND) * (mindShare or 1))
+			local a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+			local b = makeCreature(cameren, "a kreetle", 40, 2, tank)
+			local c = makeCreature(cameren, "a kreetle", 41, 1, tank)
+			local t = nowMs()
+			attack(cameren, a)
+			sim.run(30)
+			local d = dots(t)
+			slays(a, b, c)
+			medic.noRegen = false
+			medic:pool(MIND).cur = medic:getMaxHAM(MIND)
+			calm()
+			return d
+		end
+		local d = throws(nil, "packs")
+		if #d < 2 or not d[1].pack:find("_area_", 1, true) then fail("crewdoctrine: by default the medic didn't throw area packs at a clump") end
+		d = throws("single", "packs")
+		if #d < 2 then fail("crewdoctrine: packs single: " .. #d .. " packs") end
+		for _, x in ipairs(d) do
+			if x.pack:find("_area_", 1, true) then fail("crewdoctrine: packs single threw an area pack") end
+		end
+		d = throws("none", "packs")
+		if #d ~= 0 then fail("crewdoctrine: packs none: " .. #d .. " packs thrown") end
+		d = throws(nil, "mindFloor", 0.6)
+		if #d == 0 then fail("crewdoctrine: no packs at 60% of its mind by default") end
+		d = throws("0.8", "mindFloor", 0.6)
+		if #d ~= 0 then fail("crewdoctrine: mindFloor 0.8: packs thrown at 60% of its mind") end
+		clearAll()
+
+		-- 8. shoot: heals and stays out of it unless something is on it
+		local function shoots(role, value)
+			clearAll()
+			if value ~= nil then order(role, "shoot", value) end
+			local b = crew[role]
+			local m = makeCreature(cameren, "a kreetle", 40, 0, tank)
+			local t = nowMs()
+			attack(cameren, m)
+			sim.run(8)
+			local opened = #entries(log.targets, b, t) > 0 or targetOf(b) ~= 0
+			-- a creature on the bot itself is fought back whatever the table says
+			local m2 = makeCreature(cameren, "a gurrek", 20, 0, b)
+			m2.noTaunt = true
+			sim.run(6)
+			local fought = targetOf(b) == m2.oid
+			slays(m, m2)
+			calm()
+			return opened, fought
+		end
+		for _, role in ipairs({"medic", "entertainer"}) do
+			local opened = shoots(role, nil)
+			if not opened then fail("crewdoctrine: the " .. role .. " didn't shoot by default") end
+			local opened2, fought = shoots(role, "no")
+			if opened2 then fail("crewdoctrine: shoot no: the " .. role .. " still shot") end
+			if not fought then fail("crewdoctrine: shoot no: the " .. role .. " didn't fight what was on it") end
+		end
+		clearAll()
+
+		-- 9. area: both, cones only, neither
+		local function volley(value)
+			clearAll()
+			if value ~= nil then order("commando", "area", value) end
+			local a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+			local b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+			local c = makeCreature(cameren, "a kreetle", 41, 0.6, tank)
+			local t = nowMs()
+			attack(cameren, a)
+			sim.run(20)
+			local cones, grenades = #areas("cone", t), #areas("grenade", t)
+			slays(a, b, c)
+			calm()
+			return cones, grenades
+		end
+		local cones, grenades = volley(nil)
+		if cones == 0 or grenades == 0 then fail("crewdoctrine: by default the commando fired " .. cones .. " cones and " .. grenades .. " grenades at a clump") end
+		cones, grenades = volley("cones")
+		if cones == 0 or grenades ~= 0 then fail("crewdoctrine: area cones: " .. cones .. " cones and " .. grenades .. " grenades") end
+		cones, grenades = volley("none")
+		if cones ~= 0 or grenades ~= 0 then fail("crewdoctrine: area none: " .. cones .. " cones and " .. grenades .. " grenades") end
+		clearAll()
+
+		-- 10. calls: which the squad leader makes
+		local function callsMade(value)
+			clearAll()
+			if value ~= nil then order("squadleader", "calls", value) end
+			local a = makeCreature(cameren, "a kreetle", 40, 0, nil, nil, false)
+			local b = makeCreature(cameren, "a kreetle", 40, 3, tank, nil, false)
+			local t = nowMs()
+			attack(cameren, a)
+			sim.run(16)
+			local out = {rally = #okCommands(sl, "rally", t), volley = #okCommands(sl, "volleyfire", t)}
+			slays(a, b)
+			calm()
+			sim.run(30)
+			return out
+		end
+		local made = callsMade(nil)
+		if made.rally == 0 then fail("crewdoctrine: by default the squad leader didn't rally") end
+		made = callsMade("none")
+		if made.rally ~= 0 or made.volley ~= 0 then fail("crewdoctrine: calls none: rally " .. made.rally .. ", volley " .. made.volley) end
+		made = callsMade("volley")
+		if made.rally ~= 0 then fail("crewdoctrine: calls volley: it still rallied") end
+		clearAll()
+
+		realPrint("crewdoctrine each entry followed in a fight")
+		teardown()
+	end
+
+
+	-- The medic's order of work, and the hard rules under a hostile table
+	function scenarios.crewdoctrinemedic()
+		local cameren = sevenGroup("crewdoctrinemedic")
+		local rifleman, medic = crew.rifleman, crew.medic
+		local function clearAll()
+			for _, role in ipairs(SEVEN) do
+				BotCrew:clearLayer(crew[role].oid, "order")
+			end
+		end
+		-- The first of the medic's revives and heals since t, in the order it queued them
+		local function firstWork(since)
+			for _, c in ipairs(commands(medic, nil, since)) do
+				if c.cmd == "reviveplayer" or c.cmd == "healdamage" then return c.cmd, c.target end
+			end
+			return nil
+		end
+		cameren.noRegen = true
+		local function run(share, orders)
+			clearAll()
+			for name, value in pairs(orders or {}) do
+				if BotCrew:setTactic(medic.oid, "order", name, value) == nil then fail("crewdoctrinemedic: test bug " .. name) end
+			end
+			cameren:pool(HEALTH).cur = math.floor(cameren:getMaxHAM(HEALTH) * share)
+			rifleman.dead = true
+			dropFromCombat(rifleman)
+			local t = nowMs()
+			sim.run(25)
+			local first, target = firstWork(t)
+			cameren:pool(HEALTH).cur = cameren:getMaxHAM(HEALTH)
+			sim.run(30)
+			return first, target
+		end
+
+		-- 1. By default the dead are revived before the living are healed
+		local first = run(0.6)
+		if first ~= "reviveplayer" then fail("crewdoctrinemedic: by default the medic's first work was " .. tostring(first)) end
+		-- 2. reviveFirst no: the living first
+		local first2, target2 = run(0.6, {reviveFirst = "no"})
+		if first2 ~= "healdamage" or target2 ~= cameren.oid then fail("crewdoctrinemedic: reviveFirst no: the medic's first work was " .. tostring(first2)) end
+		-- 3. A member close to death (under 25%) is healed before a revive, whatever the table says
+		local first3, target3 = run(0.2, {reviveFirst = "yes", healAt = "0.5"})
+		if first3 ~= "healdamage" or target3 ~= cameren.oid then
+			fail("crewdoctrinemedic: with a member at 20% and reviveFirst yes the medic's first work was " .. tostring(first3))
+		end
+		-- ...and the same with the table set to its most hostile
+		local first4, target4 = run(0.2, {reviveFirst = "yes", healAt = "0.5", packs = "none", mindFloor = "0.8", shoot = "no"})
+		if first4 ~= "healdamage" or target4 ~= cameren.oid then
+			fail("crewdoctrinemedic: with a hostile table and a member at 20% the medic's first work was " .. tostring(first4))
+		end
+		realPrint("crewdoctrinemedic the order of work")
+		teardown()
+	end
+
+	-- The squad leader's retreat: the tank down and two members under retreatAt; three down always
+	local function retreatRun(label, share, orders, downToo)
+		local cameren = sevenGroup(label)
+		local tank, medic, rifleman, ranger, sl = crew.tank, crew.medic, crew.rifleman, crew.ranger, crew.squadleader
+		for name, value in pairs(orders or {}) do
+			if BotCrew:setTactic(sl.oid, "order", name, value) == nil then fail(label .. ": test bug " .. name) end
+		end
+		local m = makeCreature(cameren, "a kreetle", 30, 0, nil, nil, false)
+		m.hits = 5
+		attack(cameren, m)
+		sim.run(6)
+		local t = nowMs()
+		tank.dead = true
+		medic.injuryReady, rifleman.injuryReady = nowMs() + 40000, nowMs() + 40000
+		for _, role in ipairs({"rifleman", "ranger"}) do
+			local b = crew[role]
+			b.noRegen = true
+			b:pool(HEALTH).cur = math.floor(b:getMaxHAM(HEALTH) * share)
+		end
+		if downToo then
+			ranger.dead, rifleman.dead = true, true
+		end
+		m.aggro = cameren.oid
+		startCombat(m, cameren)
+		sim.run(6)
+		local n = #okCommands(sl, "retreat", t)
+		teardown()
+		return n
+	end
+
+	function scenarios.crewdoctrineretreat()
+		if retreatRun("crewdoctrineretreat", 0.4, nil, false) ~= 0 then
+			fail("crewdoctrineretreat: a retreat with the tank down and two members at 40% by default")
+		end
+	end
+
+	function scenarios.crewdoctrineretreatat()
+		if retreatRun("crewdoctrineretreatat", 0.4, {retreatAt = "0.5"}, false) == 0 then
+			fail("crewdoctrineretreatat: no retreat with the tank down and two members at 40% and retreatAt 0.5")
+		end
+	end
+
+	function scenarios.crewdoctrineretreatthree()
+		-- (the table at its most hostile for a retreat: the lowest retreatAt, no calls; three down is a retreat all the same)
+		if retreatRun("crewdoctrineretreatthree", 0.9, {retreatAt = "0.2", calls = "none"}, true) == 0 then
+			fail("crewdoctrineretreatthree: no retreat with three members down and retreatAt 0.2")
+		end
+	end
+
+	-- The area attacks keep their checks under a table that asks for them
+	function scenarios.crewdoctrinearea()
+		local cameren = sevenGroup("crewdoctrinearea")
+		for _, role in ipairs(SEVEN) do
+			local b = crew[role]
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).base = b:pool(pool).base * 8 end
+			for _, pool in ipairs({HEALTH, ACTION}) do b:pool(pool).cur = b:getMaxHAM(pool) end
+		end
+		local tank, medic, com = crew.tank, crew.medic, crew.commando
+		assert(BotCrew:setTactic(com.oid, "order", "area", "both"))
+		assert(BotCrew:setTactic(medic.oid, "order", "packs", "area"))
+		assert(BotCrew:setTactic(medic.oid, "order", "mindFloor", "0.3"))
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		-- A clump of three on the tank with an idle, unpulled creature beside it: no cone, no grenade, no area pack
+		local a = makeCreature(cameren, "a kreetle", 40, 0, tank)
+		local b = makeCreature(cameren, "a kreetle", 40, 1.2, tank)
+		local c = makeCreature(cameren, "a kreetle", 41, 0.6, tank)
+		local idle = makeCreature(cameren, "a dewback", 43, 0.6, nil)
+		idle.neverAggro, idle.unpulled = true, true
+		local t = nowMs()
+		attack(cameren, a)
+		sim.run(30)
+		for _, x in ipairs(log.areas) do
+			if x.t >= t and (x.bot == com.oid or x.bot == medic.oid) then
+				for _, oid in ipairs(x.hit) do
+					if oid == idle.oid then fail("crewdoctrinearea: an area attack hit the unpulled creature (" .. x.cmd .. ")") end
+				end
+			end
+		end
+		for _, x in ipairs(log.dots) do
+			if x.t >= t and x.bot == medic.oid and x.pack:find("_area_", 1, true) then fail("crewdoctrinearea: an area pack with an unpulled creature near") end
+		end
+		if idle.poisonUntil ~= nil then fail("crewdoctrinearea: the unpulled creature was poisoned") end
+		slays(a, b, c, idle)
+		realPrint("crewdoctrinearea the area checks under a table that asks for them")
+		teardown()
+	end
+
+
+	-- Plans, orders and the base table, through a faked talk bridge (set SIM_TALK_DIR to an empty directory with req/ and rep/)
+	local function planWorld(label, dir, files)
+		setup(dir)
+		-- (the base table's file is there before the crew logs in)
+		for path, text in pairs(files or {}) do
+			os.execute('mkdir -p "' .. dir .. '/tactics"')
+			local f = io.open(dir .. "/" .. path, "w")
+			f:write(text)
+			f:close()
+		end
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		for _, role in ipairs(SEVEN) do
+			invite(cameren, crew[role], true)
+			sim.run(3)
+		end
+		sim.run(10)
+		if members(cameren) ~= 8 then fail(label .. ": " .. members(cameren) .. " in the group, expected Cameren and the seven") end
+		for _, role in ipairs(SEVEN) do
+			crew[role].cell = 0
+			for _, pool in ipairs({HEALTH, ACTION}) do
+				crew[role]:pool(pool).base = crew[role]:pool(pool).base * 8
+				crew[role]:pool(pool).cur = crew[role]:getMaxHAM(pool)
+			end
+		end
+		cameren.cell = 0
+		sim.run(10)
+		return cameren
+	end
+
+	-- The bridge: reads req/, answers after `delay` ms with what `answer(r)` gives (nil: no answer at all). Plans and says are
+	-- recorded. bridge.on false: no heartbeat (the crew sees no bridge).
+	local function fakeBridge(dir, answer)
+		local bridge = {on = true, requests = {}, delay = 1500}
+		local function heartbeat()
+			local f = io.open(dir .. "/alive", "w")
+			f:write(tostring(sim.now) .. "\n")
+			f:close()
+		end
+		local function parse(body)
+			local r = {}
+			for k, v in body:gmatch('"([%w_]+)":"([^"]*)"') do r[k] = v end
+			for k, v in body:gmatch('"([%w_]+)":(%-?%d+)') do r[k] = tonumber(v) end
+			-- (the multi-line fields are \u000a in the file)
+			for k, v in pairs(r) do
+				if type(v) == "string" then r[k] = v:gsub("\\u000a", "\n") end
+			end
+			return r
+		end
+		local function tick()
+			if bridge.on then
+				heartbeat()
+				local handle = io.popen('ls "' .. dir .. '/req" 2>/dev/null')
+				for name in handle:lines() do
+					if name:match("%.json$") then
+						local path = dir .. "/req/" .. name
+						local f = io.open(path)
+						local body = f:read("a")
+						f:close()
+						os.remove(path)
+						local r = parse(body)
+						r.seenAt = nowMs()
+						table.insert(bridge.requests, r)
+						local reply = answer(r)
+						if reply ~= nil then
+							sim.schedule(bridge.delay, function()
+								local out = io.open(dir .. "/rep/" .. r.id .. ".txt", "w")
+								out:write(reply)
+								out:close()
+							end)
+						end
+					end
+				end
+				handle:close()
+			end
+			sim.schedule(500, tick)
+		end
+		heartbeat()
+		tick()
+		function bridge.plans()
+			local out = {}
+			for _, r in ipairs(bridge.requests) do if r.type == "plan" then table.insert(out, r) end end
+			return out
+		end
+		return bridge
+	end
+
+	function scenarios.crewplan()
+		local dir = os.getenv("SIM_TALK_DIR")
+		if dir == nil then
+			realPrint("crewplan skipped (set SIM_TALK_DIR to an empty directory with req/ and rep/)")
+			return
+		end
+		os.execute('rm -rf "' .. dir .. '/tactics" "' .. dir .. '/alive"')
+		local planReply = "ok\nkragoth focus strongest\nquillan healAt 0.85\nsenna healAt 0.9\nsenna hold 1\nsay kragoth All heals on me, the big one is mine.\n"
+		local bridge = fakeBridge(dir, function(r)
+			if r.type == "plan" then
+				return planReply
+			end
+			return nil
+		end)
+		local cameren = planWorld("crewplan", dir, {["tactics/base.txt"] =
+			"quillan healAt 0.60\nquillan packs single\nkragoth focus leader\nsenna hold 0\nsenna healAt 0.9\nbogus x y\nweeta range sideways\n"})
+		local tank, rifleman, medic = crew.tank, crew.rifleman, crew.medic
+		local function eq(label, got, want)
+			if got ~= want then fail("crewplan: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+		local function calm()
+			cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+			sim.run(30)
+		end
+
+		-- 1. The base table from the file: for the roles that have the entries; a bad line, an unknown entry or a wrong role dropped
+		local v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("base healAt", v, 0.6)
+		eq("base layer", layer, "base")
+		eq("base packs", BotCrew:tactic(medic.oid, "packs"), "single")
+		eq("base focus", BotCrew:tactic(tank.oid, "focus"), "leader")
+		eq("base hold", BotCrew:tactic(rifleman.oid, "hold"), 0)
+		eq("a wrong role's entry", BotCrew:tactic(rifleman.oid, "healAt"), BotCrew.healBelow.fight)
+		eq("an unknown word", BotCrew:tactic(crew.ranger.oid, "range"), "band")
+
+		-- 2. The pull: one plan request, with the crew and the creatures in it; applied when the reply comes
+		local m1 = makeCreature(cameren, "a kreetle", 40, 0, nil, 5e6, false)
+		m1.hits = 5
+		local m2 = makeCreature(cameren, "a bantha", 40, 3, tank, 9e6, false)
+		m2.hits = 5
+		local t = nowMs()
+		attack(cameren, m1)
+		sim.run(5)
+		local plans = bridge.plans()
+		eq("plans at the pull", #plans, 1)
+		local r = plans[1]
+		if r ~= nil then
+			eq("the reason", r.reason, "pull")
+			if not (r.crew or ""):find("quillan medic hp ", 1, true) or not (r.crew or ""):find("kragoth tank", 1, true) then
+				fail("crewplan: the request's crew lines: " .. tostring(r.crew))
+			end
+			if not (r.creatures or ""):find(tostring(m2.oid) .. " bantha level", 1, true) then fail("crewplan: the request's creatures: " .. tostring(r.creatures)) end
+			if r.leader ~= "cameren" then fail("crewplan: the leader " .. tostring(r.leader)) end
+		end
+		sim.run(4)
+		v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("plan healAt", v, 0.85)
+		eq("plan layer", layer, "plan")
+		eq("plan focus", BotCrew:tactic(tank.oid, "focus"), "strongest")
+		eq("a wrong role in the plan", BotCrew:tactic(rifleman.oid, "healAt"), BotCrew.healBelow.fight)
+		eq("plan hold", BotCrew:tactic(rifleman.oid, "hold"), 1)
+		local said = false
+		for _, l in ipairs(entries(log.group, tank, t)) do
+			if l.text == "All heals on me, the big one is mine." then said = true end
+		end
+		if not said then fail("crewplan: kragoth didn't say the plan's line in group chat") end
+
+		-- 3. At most one plan every 10 s: an add and a member down inside the window wait for it, then one more goes
+		local before = #bridge.plans()
+		local add = makeCreature(cameren, "a gurrek", 38, -3, tank, 5e6, false)
+		add.hits = 5
+		sim.run(3)
+		eq("plans inside the window", #bridge.plans(), before)
+		sim.run(10)
+		eq("the plan after the window", #bridge.plans(), before + 1)
+		if #bridge.plans() >= 2 then
+			local a, b = bridge.plans()[1].seenAt, bridge.plans()[2].seenAt
+			if b - a < 9000 then fail("crewplan: two plans " .. (b - a) .. " ms apart") end
+			eq("the reason of the second", bridge.plans()[2].reason, "add")
+		end
+
+		-- 4. A reply that comes after planLate seconds is dropped: the plan layer stays as it was
+		planReply = "ok\nquillan healAt 0.55\n"
+		bridge.delay = 15500
+		local down = makeCreature(cameren, "a kreetle", 36, 0, tank, 5e6, false)
+		sim.run(14)
+		sim.run(10)
+		eq("a late plan", BotCrew:tactic(medic.oid, "healAt"), 0.85)
+		bridge.delay = 1500
+
+		-- 5. The plan goes with the fight: nobody fights, the plan layers are gone and the base shows again
+		slays(m1, m2, add, down)
+		calm()
+		v, layer = BotCrew:tactic(medic.oid, "healAt")
+		eq("healAt after the fight", v, 0.6)
+		eq("layer after the fight", layer, "base")
+		eq("focus after the fight", BotCrew:tactic(tank.oid, "focus"), "leader")
+
+		-- 6. A restart mid-fight leaves no plan layer: a plan, then the bot logs in afresh
+		planReply = "ok\nquillan healAt 0.7\n"
+		local m3 = makeCreature(cameren, "a kreetle", 40, 0, nil, 5e6, false)
+		m3.hits = 5
+		attack(cameren, m3)
+		sim.run(8)
+		eq("a plan before the restart", BotCrew:tactic(medic.oid, "healAt"), 0.7)
+		sim.call("BotCrew", "clear", medic.oid)
+		eq("the plan after a restart", BotCrew:tactic(medic.oid, "healAt"), 0.6)
+		slays(m3)
+		calm()
+
+		-- 7. The base file changes: the crew's base entries follow it (within a minute), and a file that is gone leaves the last
+		local f = io.open(dir .. "/tactics/base.txt", "w")
+		f:write("quillan healAt 0.8\n")
+		f:close()
+		sim.run(70)
+		eq("a changed file", BotCrew:tactic(medic.oid, "healAt"), 0.8)
+		eq("an entry no longer in the file", BotCrew:tactic(tank.oid, "focus"), "tank")
+		os.remove(dir .. "/tactics/base.txt")
+		sim.run(70)
+		eq("a file that is gone", BotCrew:tactic(medic.oid, "healAt"), 0.8)
+
+		realPrint(string.format("crewplan %d plans asked", #bridge.plans()))
+		bridge.on = false
+		teardown()
+	end
+
+	function scenarios.crewordering()
+		local dir = os.getenv("SIM_TALK_DIR")
+		if dir == nil then
+			realPrint("crewordering skipped (set SIM_TALK_DIR to an empty directory with req/ and rep/)")
+			return
+		end
+		os.execute('rm -rf "' .. dir .. '/tactics" "' .. dir .. '/alive"')
+		local orders = ""
+		local teach = ""
+		local bridge = fakeBridge(dir, function(r)
+			if r.type == "plan" then
+				return "ok\n"
+			end
+			return "ok\nneutral\nGot it.\n\n\n" .. orders .. "\n" .. teach .. "\n"
+		end)
+		local cameren = planWorld("crewordering", dir)
+		local tank, rifleman, medic, ranger, sl, ent, cmdo = crew.tank, crew.rifleman, crew.medic, crew.ranger, crew.squadleader,
+			crew.entertainer, crew.commando
+		local function eq(label, got, want)
+			if got ~= want then fail("crewordering: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local function slays(...)
+			for _, m in ipairs({...}) do
+				if not m.dead then damage(m, 1e9) end
+			end
+		end
+
+		-- 1. To the crew: the group's first crew bot asks, and the entry goes to everyone who has it
+		orders = "* range far"
+		groupSay(cameren, "everyone stay back")
+		sim.run(5)
+		for _, role in ipairs({"rifleman", "ranger", "squadleader", "entertainer", "medic"}) do
+			eq(role .. " range", BotCrew:tactic(crew[role].oid, "range"), "far")
+		end
+		eq("tank range (no such entry)", readStringData("bot:" .. tank.oid .. ":crew:t:order:range"), "")
+		eq("commando range (no such entry)", readStringData("bot:" .. cmdo.oid .. ":crew:t:order:range"), "")
+		-- 2. To one bot, by name
+		orders = "quillan shoot no;quillan packs none"
+		groupSay(cameren, "Quillan, just heal")
+		sim.run(5)
+		eq("medic shoot", BotCrew:tactic(medic.oid, "shoot"), "no")
+		eq("medic packs", BotCrew:tactic(medic.oid, "packs"), "none")
+		eq("entertainer shoot (not told)", BotCrew:tactic(ent.oid, "shoot"), "yes")
+		-- 3. An order on a creature ends with the creature
+		local m = makeCreature(cameren, "a bantha", 40, 0, tank, 5e6, false)
+		orders = "* focus creature:" .. m.oid
+		groupSay(cameren, "kill the bantha")
+		sim.run(5)
+		eq("a named creature", BotCrew:tactic(rifleman.oid, "focus"), "creature:" .. m.oid)
+		slays(m)
+		eq("the creature dead", BotCrew:tactic(rifleman.oid, "focus"), "tank")
+		-- 4. "As you were" ends every order
+		orders = "* clear"
+		groupSay(cameren, "as you were")
+		sim.run(5)
+		eq("medic shoot after", BotCrew:tactic(medic.oid, "shoot"), "yes")
+		eq("range after", BotCrew:tactic(rifleman.oid, "range"), "band")
+		-- 5. An order from someone outside the group changes nothing
+		local stranger = makeHuman("Stranger", crew.tank.x + 3, crew.tank.y + 1)
+		orders = "quillan shoot no"
+		sim.call("BotJobs", "onHeard", medic, stranger, "Quillan, just heal", "tell")
+		sim.run(5)
+		eq("an order from outside the group", BotCrew:tactic(medic.oid, "shoot"), "yes")
+		-- 6. An order beyond the limits is clamped, an unknown entry dropped
+		orders = "quillan healAt 0.99;quillan bogus x;kragoth range far"
+		groupSay(cameren, "Quillan, heal earlier")
+		sim.run(5)
+		eq("a clamped order", BotCrew:tactic(medic.oid, "healAt"), 0.9)
+		eq("an entry the role hasn't", readStringData("bot:" .. tank.oid .. ":crew:t:order:range"), "")
+		-- 7. The result of a lesson makes the base file be read soon after
+		orders = ""
+		teach = "added quillan"
+		os.execute('mkdir -p "' .. dir .. '/tactics"')
+		local f = io.open(dir .. "/tactics/base.txt", "w")
+		f:write("quillan reviveFirst no\n")
+		f:close()
+		groupSay(cameren, "Quillan, from now on heal the living first")
+		sim.run(14)
+		eq("a lesson read in", BotCrew:tactic(medic.oid, "reviveFirst"), "no")
+		teach = ""
+		os.remove(dir .. "/tactics/base.txt")
+		-- 8. Going home ends the orders
+		BotCrew:setTactic(rifleman.oid, "order", "range", "far")
+		sim.call("BotCrew", "leaveForHome", rifleman, rifleman.oid, os.time())
+		eq("an order after going home", BotCrew:tactic(rifleman.oid, "range"), "band")
+
+		realPrint(string.format("crewordering %d requests", #bridge.requests))
+		bridge.on = false
+		teardown()
+	end
+
+	-- No model: an order or a lesson gets one canned line and changes nothing
+	function scenarios.crewordernobrain()
+		local cameren = sevenGroup("crewordernobrain")
+		local medic = crew.medic
+		local t = nowMs()
+		groupSay(cameren, "Quillan, just heal")
+		sim.run(5)
+		local lines = entries(log.group, medic, t)
+		if #lines ~= 1 or not isLine(lines[1].text, "medic", "orderNoBrain") then
+			local seen = {}
+			for _, l in ipairs(lines) do table.insert(seen, l.text) end
+			fail("crewordernobrain: expected one canned line, got " .. #lines .. ": " .. table.concat(seen, " | "))
+		end
+		if BotCrew:tactic(medic.oid, "shoot") ~= "yes" then fail("crewordernobrain: the order changed the table") end
+		-- (talk that isn't one gets the ordinary fallback, not the order's)
+		t = nowMs()
+		sim.run(65)
+		t = nowMs()
+		groupSay(cameren, "nice weather today")
+		sim.run(5)
+		for _, l in ipairs(entries(log.group, nil, t)) do
+			if isLine(l.text, "medic", "orderNoBrain") then fail("crewordernobrain: ordinary chat got the order's canned line") end
+		end
+		realPrint("crewordernobrain")
+		teardown()
+	end
+
+
+	-- Phase 11: the buffs window and the 15-minute warning
+	function scenarios.crewbuffs()
+		local cameren = sevenGroup("crewbuffs")
+		local medic, tank, ent = crew.medic, crew.tank, crew.entertainer
+		local function eq(label, got, want)
+			if got ~= want then fail("crewbuffs: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local function buff(o, name, seconds)
+			o.buffs = o.buffs or {}
+			o.buffs[name] = {expires = sim.now + seconds, amount = 100}
+		end
+		-- Cameren has the dancer's mind buff (the warning's, later), the tank all three mind buffs and two enhancements, Ilsi battle fatigue
+		buff(cameren, "performance_enhance_dance_mind", 3000)
+		buff(tank, "performance_enhance_dance_mind", 3600)
+		buff(tank, "performance_enhance_music_focus", 1800)
+		buff(tank, "performance_enhance_music_willpower", 1800)
+		buff(tank, "medical_enhance_health", 7200)
+		buff(tank, "medical_enhance_action", 5400)
+		ent.shock = 250
+
+		-- 1. "buffs" in group chat: one window for Cameren, a row for each of the eight, him first
+		local t = nowMs()
+		groupSay(cameren, "buffs")
+		sim.run(4)
+		eq("windows", #log.windows, 1)
+		local w = log.windows[1]
+		if w ~= nil then
+			eq("window for", w.to, cameren.oid)
+			eq("screenplay", w.screenplay, "BotBuffs")
+			eq("rows", #w.options, 8)
+			if not w.options[1][1]:find("^Cameren %(you%): mind 50, focus %-, willpower %-, doctor %-, battle fatigue none$") then
+				fail("crewbuffs: his row " .. tostring(w.options[1][1]))
+			end
+			local tankRow, entRow
+			for _, o in ipairs(w.options) do
+				if o[1]:find("^Kragoth") then tankRow = o[1] end
+				if o[1]:find("^Ilsi") then entRow = o[1] end
+			end
+			if tankRow == nil or not tankRow:find("mind 60, focus 30, willpower 30, doctor 90 (2 of 6)", 1, true) then
+				fail("crewbuffs: the tank's row " .. tostring(tankRow))
+			end
+			if entRow == nil or not entRow:find("battle fatigue 250", 1, true) then fail("crewbuffs: Ilsi's row " .. tostring(entRow)) end
+		end
+		-- 2. Asked again, fresh times (a window is not updated)
+		sim.run(60)
+		groupSay(cameren, "buff check")
+		sim.run(4)
+		eq("windows after asking again", #log.windows, 2)
+		if log.windows[2] ~= nil and not log.windows[2].options[1][1]:find("mind 49,", 1, true) then
+			fail("crewbuffs: the second window's row " .. tostring(log.windows[2].options[1][1]))
+		end
+		-- 3. A request for the doctor's work is not a window
+		sim.run(10)
+		groupSay(cameren, "buff us up doc")
+		sim.run(4)
+		eq("windows for a buff request", #log.windows, 2)
+		-- 4. A tell to a crew bot out of a group: his own row
+		local lone = makeHuman("Lone", crew.tank.x + 40, crew.tank.y)
+		speak(crew.ranger, lone, "buffs", "tell")
+		sim.run(4)
+		eq("windows after a tell", #log.windows, 3)
+		if log.windows[3] ~= nil then
+			eq("rows for a tell", #log.windows[3].options, 1)
+			eq("for", log.windows[3].to, lone.oid)
+		end
+		-- 5. The warning: his mind buff reaches 15 minutes (900 s): one system message, not repeated, not for the tank's
+		local before = #log.sysmsgs
+		sim.run(2200)
+		local mine = 0
+		for _, m in ipairs(log.sysmsgs) do
+			if m.to == cameren.oid then
+				mine = mine + 1
+				eq("the message", m.text, "Your mind buffs have 15 minutes left.")
+			end
+		end
+		eq("warnings for Cameren", mine, 1)
+		-- ...and a renewed buff warns again when it comes down
+		buff(cameren, "performance_enhance_dance_mind", 1500)
+		sim.run(700)
+		mine = 0
+		for _, m in ipairs(log.sysmsgs) do if m.to == cameren.oid then mine = mine + 1 end end
+		eq("warnings after a renewal", mine, 2)
+		realPrint(string.format("crewbuffs %d windows, %d system messages", #log.windows, #log.sysmsgs))
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -6774,4 +7779,15 @@ return function(ctx)
 	table.insert(order, "crewmindout")
 	table.insert(order, "crewmindclone")
 	table.insert(order, "crewmindcamp")
+	table.insert(order, "crewtable")
+	table.insert(order, "crewdoctrine")
+	table.insert(order, "crewdoctrinemedic")
+	table.insert(order, "crewdoctrineretreat")
+	table.insert(order, "crewdoctrineretreatat")
+	table.insert(order, "crewdoctrineretreatthree")
+	table.insert(order, "crewdoctrinearea")
+	table.insert(order, "crewplan")
+	table.insert(order, "crewordering")
+	table.insert(order, "crewordernobrain")
+	table.insert(order, "crewbuffs")
 end

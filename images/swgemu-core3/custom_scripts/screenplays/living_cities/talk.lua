@@ -186,10 +186,41 @@ function LivingTalk:readReply(id)
 	local line = f:read("l") or ""
 	local action = f:read("l") or ""
 	local flags = f:read("l") or ""
+	-- Phase 9b, crew replies: orders for the crew's tactics table ("first entry value;...") and the result of a lesson taught
+	local orders = f:read("l") or ""
+	local teach = f:read("l") or ""
 	f:close()
 	os.remove(path)
 
-	return status, mood, line, action, flags
+	return status, mood, line, action, flags, orders, teach
+end
+
+-- A reply file as all its lines (the crew's plans, Phase 9b), or nil when it isn't there yet
+function LivingTalk:readLines(id)
+	local path = self.dir .. "/rep/" .. id .. ".txt"
+	local f = io.open(path, "r")
+
+	if f == nil then
+		return nil
+	end
+
+	local lines = {}
+
+	for line in f:lines() do
+		table.insert(lines, line)
+	end
+
+	f:close()
+	os.remove(path)
+
+	-- (the first line is the status: a plan that fell back has nothing)
+	if lines[1] ~= "ok" then
+		return {}
+	end
+
+	table.remove(lines, 1)
+
+	return lines
 end
 
 -- A line fit for chat: no control characters, at most maxChars

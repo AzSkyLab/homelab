@@ -334,6 +334,12 @@ BotLines.crew = {
 		"Got one on me, tank!",
 		"Add on me, shooting it.",
 	},
+	-- An order or a lesson (Phase 9b) with no model to read it: nothing changes
+	orderNoBrain = {
+		"Can't make that out. Say again later.",
+		"Not following you right now. Say it again in a bit.",
+		"Can't take that in at the moment, {name}. Try me again later.",
+	},
 	-- The model can't answer and nothing was asked for: one of these, then a quiet minute
 	fallback = {
 		"Hm?",

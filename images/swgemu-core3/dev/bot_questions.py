@@ -527,6 +527,162 @@ INSULT_CHECKS = [
 ]
 
 
+# Phase 9b, crew orders and lessons (--check, no model): the group a crew bot is in when it hears them, and a fight in it
+SQUAD = ("cameren:player,kragoth:tank,senna:rifleman,quillan:medic,weeta:ranger,tavik:squadleader,ilsi:entertainer,"
+         "brask:commando")
+FIGHT = "5001 womp rat level 5 hp 80 on kragoth 12m\n5002 bantha level 20 hp 100 on none 20m"
+FIRST = {"tank": "kragoth", "rifleman": "senna", "medic": "quillan", "ranger": "weeta", "squadleader": "tavik",
+         "entertainer": "ilsi", "commando": "brask"}
+
+
+def O(to, entry, value):
+    return {"to": to, "entry": entry, "value": value}
+
+
+# (who answers, what the player says, the orders the model proposed, the action the bridge decided, the orders it keeps)
+ORDER_CHECKS = [
+    # The spec's examples, said in plain words, with and without the model's help
+    ("tank", "focus the big one", [O("crew", "focus", "strongest")], "", "* focus strongest"),
+    ("tank", "focus the big one", [], "", "* focus strongest"),
+    ("tank", "kill the one on Quillan first", [O("crew", "focus", "medic")], "attack", "* focus medic"),
+    ("tank", "kill the one on Quillan first", [], "attack", "* focus medic"),
+    ("medic", "Quillan, just heal", [O("quillan", "shoot", "no"), O("quillan", "packs", "none")], "",
+     "quillan shoot no;quillan packs none"),
+    ("medic", "Quillan, just heal", [], "", "quillan shoot no;quillan packs none"),
+    ("medic", "can you just heal for a while?", [O("self", "shoot", "no"), O("self", "packs", "none")], "",
+     "quillan shoot no;quillan packs none"),
+    ("commando", "save the grenades", [O("brask", "area", "cones")], "", "brask area cones"),
+    ("commando", "Brask, no grenades please", [], "", "brask area cones"),
+    ("tank", "everyone stay back", [O("crew", "range", "far")], "", "* range far"),
+    ("tank", "stay at range, all of you", [O("crew", "range", "far")], "", "* range far"),
+    ("rifleman", "get in closer", [O("crew", "range", "close")], "", "* range close"),
+    ("tank", "Kragoth, protect Ilsi", [O("kragoth", "protect", "ilsi")], "", "kragoth protect ilsi"),
+    ("tank", "Kragoth, protect Ilsi", [], "", "kragoth protect ilsi"),
+    ("rifleman", "don't wait for the tank", [O("crew", "hold", "0")], "", "* hold 0"),
+    ("rifleman", "don't wait for the tank", [], "", "* hold 0"),
+    ("tank", "as you were", [], "", "* clear"),
+    ("tank", "back to normal", [O("crew", "range", "band")], "", "* clear"),
+    ("medic", "Quillan, as you were", [], "", "quillan clear"),
+    ("medic", "Quillan, heal the living before reviving", [], "", "quillan reviveFirst no"),
+    ("rifleman", "save your specials", [O("self", "specials", "save")], "", "senna specials save"),
+    ("rifleman", "everyone save your specials", [], "", "* specials save"),
+    ("tank", "kill the bantha first", [O("crew", "focus", "creature:5002")], "attack", "* focus creature:5002"),
+    ("tank", "focus the weakest one", [], "", "* focus weakest"),
+    # The model's mistakes: orders from chat that isn't one, or beyond what was said
+    ("rifleman", "nice shot", [O("crew", "focus", "strongest")], "", ""),
+    ("tank", "how's it going?", [O("crew", "range", "far")], "", ""),
+    ("commando", "do you use grenades?", [O("brask", "area", "cones")], "", ""),
+    ("medic", "you're a great medic", [O("quillan", "shoot", "no")], "", ""),
+    ("medic", "thanks Quillan!", [O("quillan", "packs", "none")], "", ""),
+    ("rifleman", "that was a good fight", [O("crew", "specials", "save")], "", ""),
+    ("tank", "what are we hunting today?", [O("crew", "focus", "weakest")], "", ""),
+    ("tank", "nice day for a hunt", [], "", ""),
+    ("ranger", "how many creatures are around?", [O("crew", "range", "close")], "", ""),
+    ("medic", "heal me", [O("quillan", "shoot", "no")], "wounds", ""),
+    ("tank", "focus the big one", [O("crew", "focus", "weakest")], "", "* focus strongest"),
+    ("tank", "focus the big one", [O("crew", "healAt", "0.9"), O("crew", "bogus", "x")], "", "* focus strongest"),
+    ("tank", "attack the womp rat", [O("crew", "focus", "creature:9999")], "attack", "* focus creature:5001"),
+    ("tank", "attack the bantha", [O("crew", "focus", "creature:5001")], "attack", "* focus creature:5002"),
+    ("tank", "Kragoth, protect Nobody", [O("kragoth", "protect", "nobody")], "", ""),
+    # An action the words already ask for keeps its meaning: no orders on top
+    ("tank", "everyone back off", [O("crew", "range", "far")], "follow", ""),
+    ("tank", "follow me", [O("crew", "range", "close")], "follow", ""),
+    ("tank", "stay here", [O("crew", "range", "far")], "stay", ""),
+    ("tank", "wanna hunt?", [O("crew", "focus", "strongest")], "join", ""),
+]
+# (who answers, what the player says, the lesson the model proposed, to, the lesson kept: (op, to, line or words) or None)
+TEACH_CHECKS = [
+    ("medic", "Quillan, from now on revive before anything", "Revive first, everything else after.", "self",
+     ("add", "quillan", "Revive first, everything else after.")),
+    ("medic", "Quillan, from now on revive before anything", "", "self", ("add", "quillan", "Revive before anything.")),
+    ("commando", "always save the grenades", "Save the grenades.", "self", ("add", "brask", "Save the grenades.")),
+    # ("always" alone needs the model to have heard a lesson; "from now on" doesn't)
+    ("commando", "always save the grenades", "", "self", None),
+    ("tank", "everyone, never wait for the tank", "Never wait for the tank.", "crew",
+     ("add", "crew", "Never wait for the tank.")),
+    ("tank", "crew, from now on keep your distance", "Keep your distance.", "crew", ("add", "crew", "Keep your distance.")),
+    ("medic", "when Kragoth goes down, revive him first", "When the tank goes down, revive him first.", "self",
+     ("add", "quillan", "When the tank goes down, revive him first.")),
+    ("tank", "Quillan, from now on heal Ilsi first", "Heal Ilsi first.", "self", ("add", "quillan", "Heal Ilsi first.")),
+    # (a bot named at the start wins over "everyone" inside the lesson; seen on the local server)
+    ("medic", "Quillan, from now on top everyone up early, heal anyone under 85 percent", "Heal anyone below 85% health.", "crew",
+     ("add", "quillan", "Heal anyone below 85% health.")),
+    ("medic", "forget what I told you", "forget", "self", ("forget", "quillan", None)),
+    ("commando", "forget the bit about grenades", "forget:grenades", "self", ("forget", "brask", ["grenades"])),
+    ("tank", "forget everything I taught you", "", "self", ("forget", "kragoth", None)),
+    # Chat that mustn't teach anything
+    ("medic", "you always know what to say", "Always know what to say.", "self", None),
+    ("tank", "nice shot", "Nice shot.", "self", None),
+    ("tank", "never mind", "Never mind.", "self", None),
+    ("medic", "what's your doctrine?", "Revive first.", "self", None),
+    ("rifleman", "how do you fight?", "Shoot what the tank holds.", "self", None),
+    ("medic", "do you always revive first?", "Always revive first.", "self", None),
+    ("tank", "that was a great pull", "", "self", None),
+    # Banter with always/never, and retractions, keep the lessons (the review, 2026-10-26)
+    ("medic", "Always a pleasure, Quillan", "Always a pleasure.", "self", None),
+    ("medic", "never seen so many kreetles", "", "self", None),
+    ("tank", "Never again am I hunting rancors", "Never hunt rancors.", "self", None),
+    ("ranger", "always nice to see you guys", "", "crew", None),
+    ("tank", "forget that, kill the big one", "", "self", None),
+    ("tank", "forget about it", "", "self", None),
+    ("medic", "nah forget all that, as you were", "", "self", None),
+    ("medic", "forget those orders", "", "self", None),
+]
+# With the model (not --check): (who is asked, the channel, what is said, the orders that should come back as "entry value"
+# pairs separated by ";" ("" for none), the lesson that should be taken: "add", "forget" or "")
+ORDER_TALKS = [
+    ("tank", "group", "everyone focus the big one", "focus strongest", ""),
+    ("medic", "group", "Quillan, just heal", "shoot no;packs none", ""),
+    ("commando", "group", "Brask, save the grenades", "area cones", ""),
+    ("rifleman", "group", "everybody stay back", "range far", ""),
+    ("tank", "tell", "Kragoth, protect Ilsi", "protect ilsi", ""),
+    ("rifleman", "group", "don't wait for the tank, just open fire", "hold 0", ""),
+    ("tank", "group", "as you were", "clear", ""),
+    ("medic", "group", "Quillan, from now on revive before anything", "", "add"),
+    ("commando", "group", "Brask, always save the grenades for a pack of five", "", "add"),
+    ("medic", "group", "forget what I told you", "", "forget"),
+    ("rifleman", "group", "nice shot Senna", "", ""),
+    ("tank", "group", "how's it going?", "", ""),
+    ("medic", "group", "you're a great medic", "", ""),
+    ("commando", "group", "do you use grenades much?", "", ""),
+    ("ranger", "group", "that bantha was huge", "", ""),
+    ("tank", "group", "what's your doctrine?", "", ""),
+]
+# Questions about the doctrine are recognised (the prompt then asks for a summary)
+DOCTRINE_CHECKS = [("what's your doctrine?", True), ("how do you fight?", True), ("tell me your standing orders", True),
+                   ("nice shot", False), ("how's it going", False)]
+
+
+def check_crew():
+    """Phase 9b: orders, lessons and chat that must change nothing, with no model. Returns the number wrong and the total."""
+    wrong = 0
+    for job, text, proposed, action, expected in ORDER_CHECKS:
+        first = FIRST[job]
+        r = {"first": first, "name": first.title(), "squad": SQUAD, "fight": FIGHT}
+        orders, _teach = talk_bridge.Bridge.crew_changes(r, text, action, {"orders": proposed})
+        if orders != expected:
+            wrong += 1
+            print(f"order {job} {text!r} (model: {proposed or '-'}): expected {expected or '-'}, got {orders or '-'}")
+    print(f"order check: {len(ORDER_CHECKS) - wrong} of {len(ORDER_CHECKS)} right")
+    lessons = 0
+    for job, text, proposed, to, expected in TEACH_CHECKS:
+        first = FIRST[job]
+        r = {"first": first, "name": first.title(), "squad": SQUAD, "fight": FIGHT}
+        orders, teach = talk_bridge.Bridge.crew_changes(r, text, "", {"teach": proposed, "teach_to": to})
+        got = None if teach is None else (teach["op"], teach["to"], teach.get("line", teach.get("words")))
+        if got != expected or (expected is not None and orders != ""):
+            lessons += 1
+            print(f"lesson {job} {text!r} (model: {proposed or '-'}): expected {expected}, got {got}")
+    print(f"lesson check: {len(TEACH_CHECKS) - lessons} of {len(TEACH_CHECKS)} right")
+    asks = 0
+    for text, expected in DOCTRINE_CHECKS:
+        if bool(talk_bridge.cd.DOCTRINE_Q.search(text)) != expected:
+            asks += 1
+            print(f"doctrine question {text!r}: expected {expected}")
+    print(f"doctrine question check: {len(DOCTRINE_CHECKS) - asks} of {len(DOCTRINE_CHECKS)} right")
+    return wrong + lessons + asks, len(ORDER_CHECKS) + len(TEACH_CHECKS) + len(DOCTRINE_CHECKS)
+
+
 def check():
     """The action and insult checks on their own: prints any case they get wrong, and exits 1 if there are any."""
     wrong = 0
@@ -549,7 +705,9 @@ def check():
             bad += 1
             print(f"insult {text!r} (model: {model}): expected {expected}, got {got}")
     print(f"insult check: {len(INSULT_CHECKS) - bad} of {len(INSULT_CHECKS)} right")
-    return 1 if wrong or bad else 0
+    new_wrong, new_total = check_crew()
+    print(f"orders and lessons: {new_total - new_wrong} of {new_total} ({100 * (new_total - new_wrong) / new_total:.1f}%)")
+    return 1 if wrong or bad or new_wrong > 0.05 * new_total else 0
 
 
 def request(city, job, channel, player, text, extra=None):
@@ -706,6 +864,31 @@ def main():
                          insult)
             out.append(f"| {channel} | {text} | {row}")
         out.append("")
+    # Phase 9b: orders and lessons through the model, and chat that must change nothing
+    out += ["## Orders and lessons", "", "A crew bot in a group with the whole crew and a fight in front of it. **Orders** are reply "
+            "line 6 (`entry value` pairs), **Lesson** is what the bridge would write to the bot's doctrine.", "",
+            "| Ch | Bot | Asked | Answer | Expected | Orders | Lesson | Right | s |", "|---|---|---|---|---|---|---|---|---|"]
+    order_right = 0
+    for job, channel, text, orders_want, teach_want in ORDER_TALKS:
+        player += 1
+        r = request("mos_eisley", job, channel, player, text, {"grouped": 1, "squad": SQUAD, "fight": FIGHT})
+        started = time.time()
+        try:
+            result = bridge.answer(r, 40)
+        except Exception as e:  # report and carry on
+            result = None
+            print(f"{job}: {text}: {type(e).__name__} {e}", file=sys.stderr)
+        took = time.time() - started
+        say = result[1] if result else "(fallback)"
+        orders = result[4] if result and len(result) > 4 else ""
+        teach = result[5] if result and len(result) > 5 else None
+        got_orders = ";".join(" ".join(item.split()[1:]) for item in orders.split(";") if item)
+        got_teach = "" if not isinstance(teach, dict) else teach["op"]
+        ok = got_orders == orders_want and got_teach == teach_want
+        order_right += ok
+        out.append(f"| {channel} | {job} | {text} | {say.replace('|', '/')} | {orders_want or '-'} / {teach_want or '-'} | "
+                   f"{got_orders or '-'} | {got_teach or '-'} | {'yes' if ok else '**NO**'} | {took:.1f} |")
+    out.append("")
     s = stats
     latencies, lengths = sorted(s["latencies"]), sorted(s["lengths"]) or [0]
     total = s["total"]
@@ -713,6 +896,7 @@ def main():
             f"- **Actions right:** {s['right']} of {total} ({100 * s['right'] / total:.1f}%).",
             f"- **The model alone** would have had {s['model_right']} of {total} right; the bridge's check changed "
             f"{s['changed']} actions.",
+            f"- **Orders and lessons right:** {order_right} of {len(ORDER_TALKS)}.",
             f"- **Insult flag right:** {s['ins_right']} of {s['ins_total']} "
             f"({100 * s['ins_right'] / max(1, s['ins_total']):.1f}%; the model alone {s['ins_model_right']}), not "
             "counting the cases where either is fine.",
@@ -740,7 +924,8 @@ def main():
         out.append("- **Swore at:** " + "; ".join(f"{job} \"{text}\": \"{say}\"" for job, text, say in s["at_polite"])
                    + ".")
     print("\n".join(out))
-    good = s["right"] >= 0.95 * total and s["ins_right"] >= 0.9 * s["ins_total"] and not s["at_polite"]
+    good = (s["right"] >= 0.95 * total and s["ins_right"] >= 0.9 * s["ins_total"] and not s["at_polite"] and
+            order_right >= 0.95 * len(ORDER_TALKS))
     return 0 if good else 1
 
 
