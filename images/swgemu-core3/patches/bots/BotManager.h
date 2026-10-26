@@ -41,6 +41,8 @@ public:
 	Reference<BotEntry*> entry;
 	String firstNameLower;
 	uint64 oid = 0;					// 0 until the factory made or found the character
+	int index = 0;					// its place in BotManager::bots
+	bool gone = false;				// let go (Phase 9): never logs in again, out of every list; the character is being deleted
 	int state = OFFLINE;
 	bool forced = false;			// botLogin/botLogout: hold forcedOnline until the online rule changes state
 	bool forcedOnline = false;
@@ -62,12 +64,29 @@ public:
 	bool online = false;
 	String state;
 	bool forced = false;
+	// Phase 9 (own crews)
+	String species;
+	String sex;
+	uint64 owner = 0;
+	int64 hiredAt = 0;
+};
+
+// An own-crew owner's state for the "owner" online rule
+class OwnerRule : public Object {
+public:
+	bool online = false;	// as of the last tick
+	bool rule = false;		// what the rule says now
+	Time changed;			// when online last flipped
 };
 
 class BotManager : public Singleton<BotManager>, public Object, public Logger {
 	ManagedReference<ZoneServer*> zoneServer;
 	BotRosterList roster;
 	BotSettings settings;
+	BotRosterList crewEntries;	// the own crews' file as it stands, hired bots and any entry the checks declined (written back whole)
+	PendingDeletionList pendingDeletes;	// characters of bots let go, recorded in that file until a boot has checked them
+	bool crewsBroken = false;	// the crews file exists but did not load: hires and let-gos are refused so it is never overwritten
+	bool saveQueued = false;	// a write of the crews file is waiting in a task
 
 	mutable Mutex stateMutex;
 	Vector<Reference<BotRuntime*>> bots;	// same order as roster
@@ -80,6 +99,7 @@ class BotManager : public Singleton<BotManager>, public Object, public Logger {
 	Time humansChanged;			// when humansOnline last flipped
 	bool ruleOnline = false;	// what the online rule says now
 	VectorMap<String, uint64> planetSeen;	// zone name -> when a human was last on it (ms), for "planet" bots
+	VectorMap<uint64, Reference<OwnerRule*>> ownerRules;	// own-crew owner oid -> its rule
 
 	Reference<Task*> tickTask;
 
@@ -88,6 +108,7 @@ public:
 	static const int RETRY_MS = 5 * 60 * 1000;	// after a failed login
 	static const int SUI_CLOSE_MS = 1500;		// a client closes a window about this fast
 	static const int SCENE_READY_MS = 1000;		// a client takes about this long on the load screen
+	static const int LET_GO_SETTLE_MS = 10000;	// a bot let go is deleted this long after its logout (see finishLetGo)
 
 	BotManager();
 
@@ -112,6 +133,29 @@ public:
 	// The oids of the players online with a client (never a bot), for the crew's group cap
 	void getOnlineHumans(Vector<uint64>& out) const;
 
+	// --- Own crews (Phase 9, Part 1; see BotCrews.h) ---
+
+	// Hires a bot at runtime: checks the entry (the roster's checks, a free name, one bot per role, seven at most per
+	// owner), adds it to the manager and the crews file, and makes its account and character in a task. Returns false
+	// with the reason when it can't. Safe from any thread (no blocking work)
+	bool hire(BotEntry* entry, String& reason);
+
+	// Lets an own-crew bot go: out of every list at once, logged out and its character deleted in a task. The roster's
+	// own bots can't be let go. Returns false with the reason when it can't
+	bool letGo(uint64 oid, String& reason);
+
+	// A bot's entry by first name (any bot that hasn't been let go), or null
+	Reference<BotEntry*> getEntry(const String& firstName) const;
+
+	// The owner of an own-crew bot, 0 for any other
+	uint64 getOwner(uint64 botOid) const;
+
+	// An owner's crew, in hire order (a bot whose character is still being made has oid 0 and online false)
+	void getCrewOf(uint64 owner, Vector<Reference<BotListEntry*>>& out) const;
+
+	// Is a first name free of every bot, character and reserved name? On false, `reason` says why
+	bool nameFree(const String& firstName, String& reason) const;
+
 	// Lua and console controls
 	bool forceState(const String& firstName, bool online);
 	void setDevHuman(bool on);
@@ -123,6 +167,13 @@ public:
 
 private:
 	bool countHumans() const;
+	bool ownerOnline(uint64 owner, const SortedVector<uint64>& online) const;	// pre: stateMutex locked
+	bool ownerWants(uint64 owner, const SortedVector<uint64>& online);			// pre: stateMutex locked
+	void requestSave();															// pre: stateMutex locked; the write runs in a task
+	void writeCrews();															// copies under the lock, writes outside it
+	void deleteCharacter(uint64 oid, const String& firstName);					// a task, no locks held
+	void removeUnmade(BotRuntime* bot);
+	void finishLetGo(Reference<BotRuntime*> runtime, int step);
 	void notePlanets();				// pre: stateMutex locked
 	bool planetOccupied(const String& planet) const;	// pre: stateMutex locked
 	void updateRule();

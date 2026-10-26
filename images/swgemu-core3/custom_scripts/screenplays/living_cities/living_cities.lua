@@ -509,7 +509,9 @@ function LivingCities:makeName(key, species)
 			last = capitalize(string.match(makeCreatureName(), "%a+") or "")
 		end
 
-		if #first >= 3 and #last >= 3 and first ~= last and readData(cityKey(key, "name:" .. first:lower())) == 0 then
+		-- (Phase 9: nor a name a crew bot hired at a recruiter has, or that is being picked for one in the windows)
+		if #first >= 3 and #last >= 3 and first ~= last and readData(cityKey(key, "name:" .. first:lower())) == 0 and
+			readData("crew:name:" .. first:lower()) < os.time() and (botNameFree == nil or botNameFree(first)) then
 			return first, last
 		end
 	end

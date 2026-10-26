@@ -1,0 +1,15 @@
+diff --git a/MMOCoreORB/src/server/zone/objects/player/events/SpawnHelperDroidTask.h b/MMOCoreORB/src/server/zone/objects/player/events/SpawnHelperDroidTask.h
+index 17eb65f..d37ef45 100644
+--- a/MMOCoreORB/src/server/zone/objects/player/events/SpawnHelperDroidTask.h
++++ b/MMOCoreORB/src/server/zone/objects/player/events/SpawnHelperDroidTask.h
+@@ -49,6 +49,10 @@ public:
+ 
+ 		Locker plock(playerCreo);
+ 
++		// Logged out (or unloaded) in the five seconds since scene-ready: no zone to spawn into (a bot can be that quick)
++		if (playerCreo->getZone() == nullptr)
++			return;
++
+ 		SceneObject* datapad = playerCreo->getSlottedObject("datapad");
+ 
+ 		if (datapad == nullptr) {

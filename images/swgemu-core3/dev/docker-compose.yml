@@ -45,6 +45,10 @@ services:
       - ${SWG_TRE:-~/Games/swg-original/tre}:/tre:ro
       - ${CORE3_DEV_DATA:-~/.cache/swgemu-scratch/data}:/data
       - ../custom_scripts:/opt/swgemu/bin/scripts/custom_scripts:ro
+      # Own crews (Phase 9): a hired bot's doctrine file is copied from the seed of its role, which the image has under
+      # /opt/swgemu/talk/doctrine (the dev base image may be older than that). The crews file is /data/bots/crews.lua on the
+      # data mount (BOT_CREWS_FILE or BOT_DATA_DIR move it)
+      - ../talk/doctrine:/opt/swgemu/talk/doctrine:ro
       # NPCs that talk: run the bridge on the host against this directory (the container doesn't trust the lab CA):
       #   TALK_DIR=<data>/talk LITELLM_URL=https://llm.home.lab/v1 LITELLM_KEY=... python3 ../talk/talk_bridge.py
       - ${CORE3_DEV_DATA:-~/.cache/swgemu-scratch/data}/talk:/run/talk

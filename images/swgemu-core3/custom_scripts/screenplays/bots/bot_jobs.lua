@@ -139,18 +139,21 @@ function BotJobs:setting(name)
 	return self.defaults[name]
 end
 
--- A roster entry by first name (case doesn't matter), or nil
+-- A roster entry by first name (case doesn't matter), or nil. A bot hired at a recruiter (Phase 9, an own crew) isn't in
+-- roster.lua: the C++ has its entry (botEntry), the same shape.
 function BotJobs:entry(firstName)
-	if BotRoster == nil or BotRoster.bots == nil then
-		return nil
-	end
-
 	local want = tostring(firstName or ""):lower()
 
-	for _, entry in ipairs(BotRoster.bots) do
-		if firstOf(entry.name):lower() == want then
-			return entry
+	if BotRoster ~= nil and BotRoster.bots ~= nil then
+		for _, entry in ipairs(BotRoster.bots) do
+			if firstOf(entry.name):lower() == want then
+				return entry
+			end
 		end
+	end
+
+	if botEntry ~= nil and want ~= "" then
+		return botEntry(want)
 	end
 
 	return nil

@@ -11,6 +11,7 @@
 #include "BotMissionLua.h"
 #include "BotVehicleLua.h"
 #include "BotLootLua.h"
+#include "BotCrewsLua.h"
 #include "BotManager.h"
 #include "BotChat.h"
 #include "BotItems.h"
@@ -113,6 +114,7 @@ void BotLua::registerFunctions(Lua* lua) {
 	BotMissionLua::registerFunctions(lua);
 	BotVehicleLua::registerFunctions(lua);
 	BotLootLua::registerFunctions(lua);
+	BotCrewsLua::registerFunctions(lua);
 }
 
 // --- Events ---
@@ -181,7 +183,7 @@ void BotLua::callJobsHeard(CreatureObject* bot, CreatureObject* speaker, const S
 
 // --- The bots ---
 
-// botList(): array of {name, firstName, job, city, oid, online, state, forced}
+// botList(): array of {name, firstName, job, city, oid, online, state, forced, owner, species, sex}
 int BotLua::botList(lua_State* L) {
 	Vector<Reference<BotListEntry*>> list;
 	BotManager::instance()->getBotList(list);
@@ -209,6 +211,12 @@ int BotLua::botList(lua_State* L) {
 		lua_setfield(L, -2, "state");
 		lua_pushboolean(L, item->forced);
 		lua_setfield(L, -2, "forced");
+		lua_pushinteger(L, item->owner);	// Phase 9: the owner of an own-crew bot, 0 otherwise
+		lua_setfield(L, -2, "owner");
+		lua_pushstring(L, item->species.toCharArray());
+		lua_setfield(L, -2, "species");
+		lua_pushstring(L, item->sex.toCharArray());
+		lua_setfield(L, -2, "sex");
 
 		lua_rawseti(L, -2, i + 1);
 	}

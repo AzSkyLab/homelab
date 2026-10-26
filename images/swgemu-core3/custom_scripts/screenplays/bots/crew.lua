@@ -73,6 +73,8 @@ BotCrew = ScreenPlay:new {
 	-- The group cap (Phase 8): the crew keeps a group to this many (Core3's own is 20). One of us takes all seven crew; with
 	-- both, the commando joins only while there is a slot left for the other human
 	groupCap = 8,
+	-- Phase 9: an own-crew bot that took an invite counts towards its owner's three for this many seconds before it shows in the group
+	joinWindow = 12,
 	capEvery = 10,
 
 	-- Fighting
@@ -784,6 +786,9 @@ function BotCrew:start(pBot, oid)
 	local now = os.time()
 	local role = self:role(oid)
 
+	-- Phase 9: whose crew it is (0 for the Mos Eisley crew)
+	put(ckey(oid, "owner"), bot("botOwner", oid) or 0)
+
 	self:learn(pBot, oid, role)
 	self:restock(pBot, oid)
 	self:equip(pBot, oid)
@@ -830,7 +835,7 @@ function BotCrew:clear(oid)
 		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
 		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt",
 		"perfHold", "perfSetAt", "perfSetFor", "perfSwitches", "perfSaid", "watching", "watchingAt", "listening", "listeningAt",
-		"band", "bandTarget", "bandAt", "bandLeft"}) do
+		"band", "bandTarget", "bandAt", "bandLeft", "owner", "joinAt"}) do
 		deleteData(ckey(oid, field))
 	end
 
@@ -1270,7 +1275,11 @@ function BotCrew:step(pBot, oid, now)
 
 		-- The commando gives its place up when the group is full and another human is waiting outside it (however the group
 		-- came to be: the invite check only sees the order they came in)
-		if self:role(oid) == "commando" and self:overCap(pBot, oid, g, pLeader, now) then
+		if self:role(oid) == "commando" and self:ownerOf(oid) == 0 and self:overCap(pBot, oid, g, pLeader, now) then
+			return self.groupMs
+		end
+
+		if self:ownerOf(oid) ~= 0 and self:ownedOverCap(pBot, oid, g, pLeader, now) then
 			return self.groupMs
 		end
 
@@ -1395,9 +1404,76 @@ function BotCrew:humansOnline()
 	return out
 end
 
+-- Phase 9: whose crew a bot is: the oid of the human character that hired it at a recruiter, 0 for the Mos Eisley crew
+function BotCrew:ownerOf(oid)
+	return readData(ckey(oid, "owner"))
+end
+
+-- The first name of a bot's owner, or "someone else" when they are not about
+function BotCrew:ownerName(oid)
+	local pOwner = getSceneObject(self:ownerOf(oid))
+
+	return pOwner ~= nil and self:firstName(pOwner) or "my boss"
+end
+
+-- Is this person one the bot works for? Always, for the Mos Eisley crew; for an own-crew bot its owner, anyone in a group its owner
+-- is in, and (fromCrew) another bot of the same owner.
+function BotCrew:mine(oid, pPerson, fromCrew)
+	local owner = self:ownerOf(oid)
+
+	if owner == 0 then
+		return true
+	end
+
+	if pPerson == nil then
+		return false
+	end
+
+	local personOid = SceneObject(pPerson):getObjectID()
+
+	if personOid == owner then
+		return true
+	end
+
+	if fromCrew and self:ownerOf(personOid) == owner then
+		return true
+	end
+
+	local info = bot("botGroupInfo", pPerson)
+
+	if info ~= nil then
+		for _, memberOid in ipairs(info.members) do
+			if memberOid == owner then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+-- A polite no to someone whose crew this isn't: out loud when they are near, else a tell
+function BotCrew:refuse(pBot, oid, pPerson, channel)
+	local dist = BotJobs:distance(pBot, pPerson)
+
+	if channel == "spatial" and (dist == nil or dist > 40) then
+		channel = "tell"
+	end
+
+	self:say(pBot, oid, SceneObject(pPerson):getObjectID(), channel or "spatial", "notYours", self:firstName(pPerson), {owner = self:ownerName(oid)})
+end
+
 -- The group cap (Phase 8): only the commando holds a place for someone. Would it, joining this human's group, leave no
 -- slot for another human who is online and not in the group? (the second one to log in can always be invited)
+-- Phase 9: an own-crew bot of any role sits out when two humans are online and the inviter's group already has perHumanWhenTwo bots
+-- of its owner's crew (the cap of eight is two humans and three each); the Mos Eisley crew keeps the commando's rule.
 function BotCrew:noRoom(oid, pInviter)
+	local owner = self:ownerOf(oid)
+
+	if owner ~= 0 then
+		return self:ownedNoRoom(oid, owner, pInviter)
+	end
+
 	if self:role(oid) ~= "commando" then
 		return false
 	end
@@ -1423,6 +1499,69 @@ function BotCrew:noRoom(oid, pInviter)
 	end
 
 	return size + 1 + waiting > self.groupCap
+end
+
+function BotCrew:ownedNoRoom(oid, owner, pInviter)
+	if #self:humansOnline() < 2 then
+		return false
+	end
+
+	local mates = 0
+	local counted = {}
+	local info = bot("botGroupInfo", pInviter)
+
+	for _, memberOid in ipairs(info ~= nil and info.members or {}) do
+		if memberOid ~= oid and self:ownerOf(memberOid) == owner then
+			mates = mates + 1
+			counted[memberOid] = true
+		end
+	end
+
+	-- Bots of this owner that took an invite a moment ago and are not in the group yet (their joins are queued): they count too
+	local now = os.time()
+
+	for _, entry in ipairs(bot("botList") or {}) do
+		if entry.owner == owner and entry.oid ~= oid and entry.oid ~= 0 and not counted[entry.oid] and
+			now - readData(ckey(entry.oid, "joinAt")) <= self.joinWindow then
+			mates = mates + 1
+		end
+	end
+
+	return mates >= (BotCrewData ~= nil and BotCrewData.perHumanWhenTwo or 3)
+end
+
+-- An own-crew bot over the cap (however it came to be there: invites that crossed) goes home if it is the newest of its owner's in
+-- the group, with two humans online
+function BotCrew:ownedOverCap(pBot, oid, g, pLeader, now)
+	local owner = self:ownerOf(oid)
+
+	if owner == 0 or now - readData(ckey(oid, "capAt")) < self.capEvery or CreatureObject(pBot):isInCombat() or self:groupFighting(g) then
+		return false
+	end
+
+	put(ckey(oid, "capAt"), now)
+
+	if #self:humansOnline() < 2 then
+		return false
+	end
+
+	local mine = 0
+
+	for _, m in ipairs(g.crew) do
+		if self:ownerOf(m.oid) == owner then
+			mine = mine + 1
+		end
+	end
+
+	if mine <= (BotCrewData ~= nil and BotCrewData.perHumanWhenTwo or 3) or self:roomLeaver(g, owner) ~= oid then
+		return false
+	end
+
+	print("BotJobs: " .. self:name(oid) .. " gives its place up: " .. mine .. " of its owner's crew in the group, two players online")
+	self:groupSay(pBot, oid, "sitOut", self:firstName(pLeader))
+	self:applyOrder(pBot, oid, "home", now, 0)
+
+	return true
 end
 
 -- An invite (the "groupInvite" event, or the inviter seen by the tick): join a player's group
@@ -1470,6 +1609,14 @@ function BotCrew:invited(pBot, oid, pInviter, now)
 		return
 	end
 
+	-- Phase 9: an own-crew bot takes invites from its owner, or from a group its owner is in
+	if not self:mine(oid, pInviter, fromCrew) then
+		print("BotJobs: " .. self:name(oid) .. " declines " .. tostring(self:firstName(pInviter)) .. "'s invite: it works for " .. self:ownerName(oid))
+		botEnqueue(pBot, "decline", 0, "")
+		self:refuse(pBot, oid, pInviter, "spatial")
+		return
+	end
+
 	if self:noRoom(oid, pInviter) then
 		print("BotJobs: " .. self:name(oid) .. " sits out " .. self:firstName(pInviter) .. "'s group: no slot would be left for the other player")
 		botEnqueue(pBot, "decline", 0, "")
@@ -1479,6 +1626,7 @@ function BotCrew:invited(pBot, oid, pInviter, now)
 
 	self:standUp(pBot, oid)
 	botEnqueue(pBot, "join", 0, "")
+	put(ckey(oid, "joinAt"), now)
 	print("BotJobs: " .. self:name(oid) .. " accepts " .. self:firstName(pInviter) .. "'s invite")
 	self:startLoop(pBot, oid, 1000)
 end
@@ -2482,8 +2630,18 @@ function BotCrew:crewCall(pBot, oid, pCaller, channel)
 	local chat = channel == "group" and "group" or "tell"
 	local targets, needed = {}, 0
 
+	-- Phase 9: the caller's own crew if they have one, else the Mos Eisley crew; nobody else's. A bot that is not in the call (a
+	-- Mos Eisley bot told by someone with a crew of their own, a stranger's crew) leaves it to the brain.
+	local hasCrew = #(bot("botCrewOf", callerOid) or {}) > 0
+
+	if (hasCrew and self:ownerOf(oid) ~= callerOid) or (not hasCrew and self:ownerOf(oid) ~= 0) then
+		return false
+	end
+
 	for _, entry in ipairs(bot("botList") or {}) do
-		if entry.online and CREW[entry.job] and entry.oid ~= 0 then
+		local theirs = hasCrew and entry.owner == callerOid or (not hasCrew and (entry.owner or 0) == 0)
+
+		if theirs and entry.online and CREW[entry.job] and entry.oid ~= 0 then
 			local pOther = getSceneObject(entry.oid)
 
 			if pOther ~= nil then
@@ -2594,7 +2752,7 @@ function BotCrew:callArrive(pBot, args)
 	local marker = "crew:call:" .. callerOid
 
 	if CreatureObject(pCaller):isGrouped() then
-		local kind = (self:role(oid) == "commando" and self:noRoom(oid, pCaller)) and "sitOut" or "askInvite"
+		local kind = self:noRoom(oid, pCaller) and "sitOut" or "askInvite"
 
 		self:say(pBot, oid, callerOid, "spatial", kind, self:firstName(pCaller))
 	elseif not (now < readData(marker .. ":until") and readData(marker .. ":bot") ~= oid) then
@@ -5940,8 +6098,17 @@ function BotCrew:allowed(action)
 	return nil
 end
 
+-- What an own-crew bot does only for the people it works for (Phase 9)
+local BOSSY = {join = true, call = true, follow = true, stay = true, home = true, attack = true, camp = true, track = true,
+	harvest = true, loot = true, makeroom = true, tactics = true}
+
 function BotCrew:act(pBot, pPlayer, action, channel, brainLine)
 	local oid = SceneObject(pBot):getObjectID()
+
+	if self:ownerOf(oid) ~= 0 and BOSSY[action:match("^%a+") or ""] and not self:mine(oid, pPlayer) then
+		self:refuse(pBot, oid, pPlayer, channel == "tell" and "tell" or channel == "group" and "group" or "spatial")
+		return
+	end
 
 	if action == "join" then
 		self:join(pBot, oid, pPlayer, channel, brainLine)
@@ -6038,6 +6205,17 @@ function BotCrew:requestFields(pBot, oid, playerOid)
 	end
 
 	fields.situation = self:situation(pBot, oid)
+
+	-- Phase 9: whose crew it is, for the brain's persona
+	if self:ownerOf(oid) ~= 0 then
+		fields.owner = self:ownerName(oid)
+
+		local entry = BotJobs:entry(readStringData(key(oid, "first")))
+
+		if entry ~= nil and BotCrewKit ~= nil then
+			fields.boxes = BotCrewKit:boxesIn(entry.skills)
+		end
+	end
 
 	-- Phase 9b: who is in the group and what it is fighting, so an order or a lesson can name a bot or a creature
 	for field, value in pairs(self:doctrineFields(pBot, oid, self:group(pBot))) do
@@ -6374,6 +6552,17 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
+	-- Phase 9: an own-crew bot does what its owner (or a group its owner is in) asks, and tells anyone else so politely
+	if text ~= nil and self:ownerOf(oid) ~= 0 and self:human(pSpeaker) and not self:mine(oid, pSpeaker) then
+		local intent = self:talkIntent(text)
+
+		if intent ~= nil and BOSSY[intent] then
+			self:refuse(pBot, oid, pSpeaker, channel == "tell" and "tell" or "spatial")
+
+			return true
+		end
+	end
+
 	-- "buffs" (Phase 11): the window with the group's buff times; no model is asked
 	if text ~= nil and BotBuffs ~= nil and (channel == "group" or channel == "tell") and self:human(pSpeaker) and
 		BotBuffs:wanted(text) then
@@ -6384,7 +6573,7 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 	end
 
 	-- "Make room" (Phase 8): the commando gives its place up so the other human fits in the group
-	if text ~= nil and self:role(oid) == "commando" and CreatureObject(pBot):isGrouped() and self:makeRoomWanted(text) then
+	if text ~= nil and (self:role(oid) == "commando" or self:ownerOf(oid) ~= 0) and CreatureObject(pBot):isGrouped() and self:makeRoomWanted(text) then
 		local g = self:group(pBot)
 		local speakerOid = SceneObject(pSpeaker):getObjectID()
 
@@ -6610,6 +6799,17 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 		end
 	end
 
+	-- Phase 9: "make room" sends home the newest of the speaker's own crew in the group (the commando's rule stays for the Mos Eisley crew)
+	if intent == "makeroom" then
+		local leaver = self:roomLeaver(g, SceneObject(pSpeaker):getObjectID())
+
+		if leaver ~= nil then
+			lastForGroup = leaver == oid
+
+			return leaver == oid
+		end
+	end
+
 	local owner = self.owners[intent or ""]
 
 	if owner ~= nil then
@@ -6621,7 +6821,8 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 		end
 	end
 
-	-- "Make room" is the commando's alone: with none in the group, nobody answers it
+	-- "Make room" is the commando's alone: with none in the group, nobody answers it (Phase 9: an own crew's newest member sends
+	-- itself home, see the start of this function's makeroom check)
 	if intent == "makeroom" then
 		return false
 	end
@@ -6632,6 +6833,21 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 	end
 
 	return false
+end
+
+-- The own-crew bot of this human that joined the group last, or nil when none of theirs is in it
+function BotCrew:roomLeaver(g, humanOid)
+	local pick, pickAt = nil, -1
+
+	for _, m in ipairs(g.crew) do
+		local joinedAt = readData(ckey(m.oid, "groupedAt"))
+
+		if self:ownerOf(m.oid) == humanOid and (joinedAt > pickAt or (joinedAt == pickAt and m.oid < pick)) then
+			pick, pickAt = m.oid, joinedAt
+		end
+	end
+
+	return pick
 end
 
 -- Is the group over the cap with a human waiting outside it? (checked every capEvery seconds, not in a fight); if so the commando
