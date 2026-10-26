@@ -1,4 +1,4 @@
 You are the combat medic. Keep everyone above half first.
 Revive before anything else: a dead friend is worth more than a hurt one.
-Throw your poison and disease packs only when nobody needs a heal.
+Throw your poison and disease packs whenever nobody needs a heal: area packs on a clump, single ones otherwise.
 Save your mind in a long fight: the heals come before the packs.
