@@ -179,6 +179,18 @@ BotCrew = ScreenPlay:new {
 	perfRestart = 15,
 	perfActionFloor = 30,
 
+	-- Mind buffs (Phase 8b, specs/2026-10-25-crew-mind-buffs/): in camp the entertainer changes between dancing and music every
+	-- setMinutes (a little either way, perfJitter seconds), and says so in group chat with switchSayChance percent, at most once
+	-- a cycle. The crew watch or listen to her (a watch is sent again after rewatchEvery seconds, in case Core3 dropped it).
+	-- A crew bot in the cantina band's session (dancer.lua, BotBand) steps out when a player targets it within bandTargetRange
+	setMinutes = 8,
+	perfJitter = 30,
+	switchSayChance = 40,
+	rewatchEvery = 30,
+	bandTargetRange = 40,
+	bandLeaveWait = 10,
+	bandJoinWait = 15,
+
 	-- The commando (Phase 8). Flame thrower and acid rifle specials reach 16 m (single shots too), so it stands 12-15 m from
 	-- the fight (commandoBand), and fires a cone (45 degrees, so 22.5 to each side) when coneMin or more creatures of the
 	-- group stand in it, else a single shot. A grenade (10 m blast) at a clump of grenadeMin or more creatures on the tank,
@@ -804,7 +816,9 @@ function BotCrew:clear(oid)
 		"holdOid", "holdAt", "offOid", "offSince", "rescueAt", "aimed", "moveSince", "moveBlock", "planted", "addOid", "losAt", "losBadSince", "losTurn", "trailProfile",
 		"stepAt", "kneelAt", "bandNear", "bandFar", "bandMax", "bandOk", "lairsAt", "dotReady", "dotOid", "pT", "dT", "pA", "dA",
 		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
-		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt"}) do
+		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt",
+		"perfHold", "perfSetAt", "perfSetFor", "perfSwitches", "perfSaid", "watching", "watchingAt", "listening", "listeningAt",
+		"band", "bandTarget", "bandAt", "bandLeft"}) do
 		deleteData(ckey(oid, field))
 	end
 
@@ -988,8 +1002,14 @@ function BotCrew:tick(pBot, oid, now)
 
 	local fighting = BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) ~= 0
 
-	if (creature:isGrouped() or creature:isInCombat() or creature:isDead() or fighting or mode == "group" or mode == "called") and
-		now - readData(ckey(oid, "loopAt")) > self.loopStale then
+	-- In the cantina band's session (or its buff target): stays out of the group loop, until it steps out
+	if mode == "band" then
+		self:bandTick(pBot, oid, now, fighting)
+		mode = readStringData(ckey(oid, "mode"))
+	end
+
+	if ((creature:isGrouped() and mode ~= "band") or creature:isInCombat() or creature:isDead() or fighting or mode == "group" or
+		mode == "called") and now - readData(ckey(oid, "loopAt")) > self.loopStale then
 		self:startLoop(pBot, oid, 100)
 	end
 
@@ -1191,6 +1211,20 @@ function BotCrew:step(pBot, oid, now)
 	local pLeader = nil
 	local mode = readStringData(ckey(oid, "mode"))
 
+	-- The cantina band's group is not a hunt: the tick (bandTick) sees to it. A fight on it takes it out of the band now,
+	-- and the loop carries on so it fights back once it's out
+	if g ~= nil and mode == "band" then
+		if CreatureObject(pBot):isInCombat() or (BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) ~= 0) then
+			if readData(ckey(oid, "band")) ~= 0 then
+				self:bandExit(pBot, oid, now)
+			end
+
+			return self.fightMs
+		end
+
+		return nil
+	end
+
 	-- Called and waiting for an invite: follow the caller
 	if g == nil and mode == "called" then
 		return self:calledStep(pBot, oid, now)
@@ -1255,6 +1289,16 @@ function BotCrew:step(pBot, oid, now)
 		return self.fightMs
 	end
 
+	-- In camp the entertainer plays on through a fight the others can take, as a player entertainer would; only a creature on
+	-- her stops the set (Core3 ends a performance in combat)
+	local campFight = g ~= nil and readData(ckey(oid, "inCamp")) == 1 and self:activeCamp(g, pLeader) ~= nil
+
+	if role == "entertainer" and campFight and self:groupFighting(g) and not CreatureObject(pBot):isInCombat() and
+		(CreatureObject(pBot):isDancing() or CreatureObject(pBot):isPlayingMusic()) then
+		self:perform(pBot, oid, now)
+		return self.fightMs
+	end
+
 	local pTarget, held = self:pickTarget(pBot, oid, g, pLeader, now)
 
 	if pTarget == nil and held then
@@ -1263,6 +1307,12 @@ function BotCrew:step(pBot, oid, now)
 	end
 
 	if pTarget ~= nil then
+		-- Watching goes on through a fight at a camp that still stands (Core3 keeps a patron within 60 m, and stopping would
+		-- land a partial buff over a longer one); away from camp a fight ends it
+		if not campFight then
+			self:unwatchAll(pBot, oid)
+		end
+
 		self:fight(pBot, oid, pTarget, pLeader, g, now)
 
 		if pLeader ~= nil then
@@ -1367,6 +1417,24 @@ function BotCrew:invited(pBot, oid, pInviter, now)
 
 	local creature = CreatureObject(pBot)
 
+	-- The cantina band's dancer invites the crew for a session (dancer.lua)
+	if BotBand ~= nil and readStringData(ckey(oid, "mode")) == "home" and not creature:isGrouped() and not creature:isDead() and
+		not creature:isInCombat() then
+		local session = BotBand:invites(BotJobs:city(oid), oid, inviterOid)
+
+		if session ~= 0 then
+			botEnqueue(pBot, "join", 0, "")
+			self:bandEnroll(oid, session, false, now)
+			print("BotJobs: " .. self:name(oid) .. " joins the band's group")
+			return
+		end
+	end
+
+	-- A player's invite reaches the band's buff target (it isn't in the group): it stops watching first
+	if readStringData(ckey(oid, "mode")) == "band" and not creature:isGrouped() and self:human(pInviter) then
+		self:bandExit(pBot, oid, now)
+	end
+
 	-- (a called bot also takes an invite from the crew bot that invited its caller: that bot leads until it hands the lead over)
 	local fromCrew = readStringData(ckey(oid, "mode")) == "called" and SceneObject(pInviter):isPlayerCreature() and
 		CREW[BotJobs:job(inviterOid)] == true
@@ -1438,9 +1506,11 @@ function BotCrew:leftGroup(pBot, oid, now)
 end
 
 function BotCrew:leaveForHome(pBot, oid, now)
+	self:unwatchAll(pBot, oid)
+
 	if self:role(oid) == "entertainer" then
 		self:perfStop(pBot, oid, true)
-		deleteData(ckey(oid, "perf"))
+		self:perfReset(oid)
 	end
 
 	self:missionLeft(pBot, oid)
@@ -2323,7 +2393,8 @@ function BotCrew:callState(pBot, pCaller)
 		return "busy", nil
 	end
 
-	if not creature:isGrouped() then
+	-- (the cantina band's group is at home: callArrive steps it out)
+	if not creature:isGrouped() or self:inBand(SceneObject(pBot):getObjectID()) then
 		return "free", nil
 	end
 
@@ -2415,6 +2486,10 @@ function BotCrew:callArrive(pBot, args)
 	-- (a minute later it may have gone off with someone else, or died)
 	if pCaller == nil or SceneObject(pCaller):getZoneName() == "" or self:callState(pBot, pCaller) == "busy" then
 		return
+	end
+
+	if self:inBand(oid) then
+		self:bandExit(pBot, oid, now)
 	end
 
 	local state = self:callState(pBot, pCaller)
@@ -2549,7 +2624,23 @@ function BotCrew:perfTopUp(pBot)
 	end
 end
 
--- 1 dance, 2 music: what it is asked for (dancing, until asked otherwise)
+-- Phase 8b: she changes between dancing and music every setMinutes while the camp stands (the crew watch and listen, see
+-- campWatch). "Play something" and "dance" switch her at once and restart the set; "stop" holds her until the camp ends.
+
+-- A new set's length: setMinutes, a little either way
+function BotCrew:perfSetStart(oid, now)
+	put(ckey(oid, "perfSetAt"), now)
+	put(ckey(oid, "perfSetFor"), self.setMinutes * 60 + getRandomNumber(-self.perfJitter, self.perfJitter))
+end
+
+-- The camp is over: the next one starts with a dance
+function BotCrew:perfReset(oid)
+	for _, field in ipairs({"perf", "perfHold", "perfSetAt", "perfSetFor", "perfSwitches", "perfSaid"}) do
+		deleteData(ckey(oid, field))
+	end
+end
+
+-- 1 dance, 2 music: what it is doing (dancing at first, then each in turn)
 function BotCrew:perform(pBot, oid, now)
 	local creature = CreatureObject(pBot)
 	local want = readData(ckey(oid, "perf"))
@@ -2560,6 +2651,33 @@ function BotCrew:perform(pBot, oid, now)
 
 	self:standUp(pBot, oid)
 	self:perfTopUp(pBot)
+
+	-- "Stop": nothing more until the camp ends (the pistol back in hand once the song's outro is over)
+	if readData(ckey(oid, "perfHold")) == 1 then
+		self:perfPistol(pBot, oid)
+		return
+	end
+
+	-- The set is over: the other kind. A line about it now and then, never two in one cycle
+	local setAt = readData(ckey(oid, "perfSetAt"))
+
+	if setAt ~= 0 and now - setAt >= readData(ckey(oid, "perfSetFor")) then
+		want = want == 1 and 2 or 1
+		put(ckey(oid, "perf"), want)
+		self:perfSetStart(oid, now)
+
+		local switches = readData(ckey(oid, "perfSwitches")) + 1
+
+		put(ckey(oid, "perfSwitches"), switches)
+		print("BotJobs: " .. self:name(oid) .. " changes to " .. (want == 1 and "dancing" or "music") .. " for the camp")
+
+		local said = readData(ckey(oid, "perfSaid"))
+
+		if (said == 0 or switches - said >= 2) and percent(self.switchSayChance) then
+			put(ckey(oid, "perfSaid"), switches)
+			self:groupSay(pBot, oid, want == 1 and "perfSwitchDance" or "perfSwitchMusic")
+		end
+	end
 
 	if now - readData(ckey(oid, "perfAt")) < 3 then
 		return
@@ -2578,6 +2696,7 @@ function BotCrew:perform(pBot, oid, now)
 				put(ckey(oid, "perfAt"), now)
 				putString(ckey(oid, "dance"), BotDancer ~= nil and BotDancer:pickDance("") or "exotic4")
 				botEnqueue(pBot, "startdance", 0, readStringData(ckey(oid, "dance")))
+				self:perfSetStart(oid, now)
 				print("BotJobs: " .. self:name(oid) .. " dances for the camp")
 			end
 
@@ -2611,6 +2730,7 @@ function BotCrew:perform(pBot, oid, now)
 				put(ckey(oid, "perfAt"), now)
 				putString(ckey(oid, "song"), BotMusician ~= nil and BotMusician:pickSong("") or "virtuoso")
 				botEnqueue(pBot, "startmusic", 0, readStringData(ckey(oid, "song")))
+				self:perfSetStart(oid, now)
 				print("BotJobs: " .. self:name(oid) .. " plays for the camp")
 			end
 
@@ -2667,6 +2787,269 @@ function BotCrew:perfPistol(pBot, oid)
 	print("BotJobs: " .. self:name(oid) .. " takes its pistol back")
 end
 
+-- Mind buffs (Phase 8b, specs/2026-10-25-crew-mind-buffs/). Core3 gives a performance buff to a patron: someone who used
+-- /watch (a dancer) or /listen (a musician) on the entertainer, and who is in her group or is her buff target. It builds
+-- while they watch and lands when they stop, she stops, or they move out of range (a minute after they began, at the
+-- earliest). The crew watch the cantina band in a session (dancer.lua) and Ilsi in camp. watch and listen need a clear view,
+-- an entertainer performing and a patron who is not performing; a sitting patron may be refused, so they stand first.
+
+local MIND_BUFFS = {"performance_enhance_dance_mind", "performance_enhance_music_focus", "performance_enhance_music_willpower"}
+local WATCH = {dance = {field = "watching", start = "watch", stop = "stopwatching"},
+	music = {field = "listening", start = "listen", stop = "stoplistening"}}
+
+-- kind: "dance" (watch) or "music" (listen). true when it sent the command (a new one, or again after rewatchEvery: the
+-- entertainer changing dance or a range blip can drop a patron, and Core3 ignores a watch it already has)
+function BotCrew:watch(pBot, oid, pEntertainer, kind)
+	local w = WATCH[kind]
+	local entOid = SceneObject(pEntertainer):getObjectID()
+	local now = os.time()
+	local same = readData(ckey(oid, w.field)) == entOid
+
+	if same and now - readData(ckey(oid, w.field .. "At")) < self.rewatchEvery then
+		return false
+	end
+
+	self:standUp(pBot, oid)
+
+	if not same then
+		put(ckey(oid, w.field .. "Since"), now)
+	end
+
+	put(ckey(oid, w.field), entOid)
+	put(ckey(oid, w.field .. "At"), now)
+	botEnqueue(pBot, w.start, entOid, "")
+
+	return true
+end
+
+function BotCrew:unwatch(pBot, oid, kind)
+	local w = WATCH[kind]
+
+	if readData(ckey(oid, w.field)) == 0 then
+		return
+	end
+
+	botEnqueue(pBot, w.stop, 0, "")
+	deleteData(ckey(oid, w.field))
+	deleteData(ckey(oid, w.field .. "At"))
+	deleteData(ckey(oid, w.field .. "Since"))
+end
+
+function BotCrew:unwatchAll(pBot, oid)
+	self:unwatch(pBot, oid, "dance")
+	self:unwatch(pBot, oid, "music")
+end
+
+-- Seconds left on the least of the three mind buffs (0 when one is missing)
+function BotCrew:mindBuffsLeft(pBot)
+	local left = {}
+
+	for _, buff in ipairs(bot("botGetBuffs", pBot) or {}) do
+		left[buff.name] = tonumber(buff.secondsLeft) or 0
+	end
+
+	local least = nil
+
+	for _, name in ipairs(MIND_BUFFS) do
+		local seconds = left[name] or 0
+
+		if least == nil or seconds < least then
+			least = seconds
+		end
+	end
+
+	return least or 0
+end
+
+-- In camp: watch the entertainer while she dances, listen while she plays, again after each change (the change drops the
+-- patrons). true while it should stay on its feet for that (she is in the group and not held), else it sits at the fire.
+function BotCrew:campWatch(pBot, oid, g)
+	local ent = nil
+
+	for _, m in ipairs(g.crew) do
+		if m.job == "entertainer" and m.oid ~= oid and not CreatureObject(m.p):isDead() then
+			ent = m
+			break
+		end
+	end
+
+	if ent == nil or readData(ckey(ent.oid, "perfHold")) == 1 then
+		self:unwatchAll(pBot, oid)
+		return false
+	end
+
+	if CreatureObject(ent.p):isDancing() then
+		self:unwatch(pBot, oid, "music")
+		self:watch(pBot, oid, ent.p, "dance")
+	elseif CreatureObject(ent.p):isPlayingMusic() then
+		self:unwatch(pBot, oid, "dance")
+		self:watch(pBot, oid, ent.p, "music")
+	end
+
+	return true
+end
+
+-- The cantina band's session (dancer.lua, BotBand): a crew bot in mode "band" is in the band's group, or is its buff target
+-- (bandTarget, not grouped). ckey "band" is the session it belongs to, 0 once it is leaving.
+
+function BotCrew:isCrew(job)
+	return CREW[job] == true
+end
+
+function BotCrew:inBand(oid)
+	return readStringData(ckey(oid, "mode")) == "band"
+end
+
+-- In a group of people to hunt with (the band's isn't)
+function BotCrew:grouped(pBot)
+	return CreatureObject(pBot):isGrouped() and not self:inBand(SceneObject(pBot):getObjectID())
+end
+
+-- Free to join a session: at home on its station near the dancer, whole and out of any fight
+function BotCrew:bandReady(pBot, oid, pDancer)
+	local creature = CreatureObject(pBot)
+	local station = self:station(oid)
+	local dist = BotJobs:distance(pBot, pDancer)
+
+	if readStringData(ckey(oid, "mode")) ~= "home" or station == nil or creature:isGrouped() or creature:isDead() or
+		creature:isIncapacitated() or creature:isInCombat() or dist == nil or dist > BotBand.bandRange or
+		SceneObject(pBot):getParentID() ~= (station.cell or 0) then
+		return false
+	end
+
+	return not (BotFight ~= nil and BotFight.fighting ~= nil and BotFight:fighting(oid) ~= 0)
+end
+
+function BotCrew:bandEnroll(oid, session, asTarget, now)
+	putString(ckey(oid, "mode"), "band")
+	put(ckey(oid, "band"), session)
+	put(ckey(oid, "bandAt"), now)
+	put(ckey(oid, "bandTarget"), asTarget and 1 or 0)
+	deleteData(ckey(oid, "bandLeft"))
+end
+
+-- Back at its station, idling as usual (no longer anyone's patron)
+function BotCrew:bandFinish(oid, now)
+	local pBot = getSceneObject(oid)
+
+	if pBot ~= nil then
+		self:unwatchAll(pBot, oid)
+	end
+
+	for _, field in ipairs({"band", "bandTarget", "bandLeft"}) do
+		deleteData(ckey(oid, field))
+	end
+
+	putString(ckey(oid, "mode"), "home")
+	put(ckey(oid, "nextIdle"), now + between(self.idleEvery))
+end
+
+-- Stop watching (the buffs land) and leave the group. The mode stays "band" until it is out of the group (bandTick)
+function BotCrew:bandExit(pBot, oid, now)
+	self:unwatchAll(pBot, oid)
+	self:bandDrop(oid)
+	deleteData(ckey(oid, "band"))
+	put(ckey(oid, "bandLeft"), now)
+
+	if CreatureObject(pBot):isGrouped() then
+		print("BotJobs: " .. self:name(oid) .. " leaves the band's group")
+		botEnqueue(pBot, "leavegroup", 0, "")
+	else
+		self:bandFinish(oid, now)
+	end
+end
+
+-- Off the session's member list (BotBand:keep would invite it back while the session is young)
+function BotCrew:bandDrop(oid)
+	local field = "band:" .. BotJobs:city(oid) .. ":members"
+	local kept = {}
+
+	for digits in string.gmatch(readStringData(field) or "", "%d+") do
+		if tonumber(digits) ~= oid then
+			table.insert(kept, digits)
+		end
+	end
+
+	writeStringData(field, table.concat(kept, ","))
+end
+
+-- Called when the session was ended for it too (BotBand): watching stopped, out of the group on its own account
+function BotCrew:bandRelease(pBot, oid, now)
+	self:unwatchAll(pBot, oid)
+	deleteData(ckey(oid, "band"))
+	put(ckey(oid, "bandLeft"), now)
+
+	if readData(ckey(oid, "bandTarget")) == 1 or not CreatureObject(pBot):isGrouped() then
+		self:bandFinish(oid, now)
+	end
+end
+
+-- A player (not one of the crew) who has this bot targeted: about to invite it or talk to it. Core3 refuses an invite to a
+-- bot in a group, and the bot never hears of it, so it steps out when it is targeted.
+function BotCrew:bandHumanTarget(pBot, oid)
+	for _, pPlayer in ipairs(SceneObject(pBot):getPlayersInRange(self.bandTargetRange) or {}) do
+		if self:human(pPlayer) and CreatureObject(pPlayer):getTargetID() == oid then
+			return pPlayer
+		end
+	end
+
+	return nil
+end
+
+-- From the tick, in mode "band": step out when the session is over (or isn't this bot's: a restart, the dancer gone), when it
+-- is in a fight or down, or when a player targets it
+function BotCrew:bandTick(pBot, oid, now, fighting)
+	local creature = CreatureObject(pBot)
+	local grouped = creature:isGrouped()
+	local session = readData(ckey(oid, "band"))
+
+	-- Leaving: done once it's out of the band's group (the leave is sent again if it hasn't gone after a while). A group
+	-- led by someone other than a band bot is one it joined since ("wanna hunt?" invites as it leaves): that's not ours
+	if session == 0 then
+		local info = grouped and botGroupInfo(pBot) or nil
+		local pHead = info ~= nil and getSceneObject(info.leader) or nil
+		local bandLed = pHead ~= nil and BotJobs:job(info.leader) == "dancer"
+
+		if not grouped or not bandLed then
+			self:bandFinish(oid, now)
+		elseif now - readData(ckey(oid, "bandLeft")) > self.bandLeaveWait then
+			self:bandExit(pBot, oid, now)
+		end
+
+		return
+	end
+
+	if BotBand == nil or BotBand:live(BotJobs:city(oid)) ~= session or creature:isDead() or creature:isIncapacitated() or
+		creature:isInCombat() or fighting then
+		self:bandExit(pBot, oid, now)
+		return
+	end
+
+	-- (a bot that was told to join gets its group a moment later)
+	if not grouped and readData(ckey(oid, "bandTarget")) ~= 1 and now - readData(ckey(oid, "bandAt")) > self.bandJoinWait then
+		self:bandFinish(oid, now)
+		return
+	end
+
+	-- In a group that isn't the dancer's (two accepts at once can each make one): out, and the session goes on without it
+	local pDancer = grouped and getSceneObject(readData("band:" .. BotJobs:city(oid) .. ":dancer")) or nil
+	local mine, theirs = grouped and botGroupInfo(pBot) or nil, pDancer ~= nil and botGroupInfo(pDancer) or nil
+
+	if grouped and (mine == nil or theirs == nil or mine.id ~= theirs.id) then
+		print("BotJobs: " .. self:name(oid) .. " is in a group that isn't the band's, leaving it")
+		self:bandExit(pBot, oid, now)
+		return
+	end
+
+	local pPlayer = self:bandHumanTarget(pBot, oid)
+
+	if pPlayer ~= nil then
+		print("BotJobs: " .. self:name(oid) .. " steps out of the band for " .. self:firstName(pPlayer))
+		self:bandExit(pBot, oid, now)
+		self:say(pBot, oid, SceneObject(pPlayer):getObjectID(), "spatial", "bandOut", self:firstName(pPlayer))
+	end
+end
+
 -- The nearest town's name, for "the closest cantina"
 function BotCrew:nearestTown(pBot)
 	local x, y = SceneObject(pBot):getWorldPositionX(), SceneObject(pBot):getWorldPositionY()
@@ -2714,16 +3097,18 @@ function BotCrew:entertainerAsk(pBot, oid, pSpeaker, channel, text)
 		return false
 	end
 
-	local camp = self:activeCamp(g, self:leaderOf(pBot, oid, g, os.time()))
+	local camp = (not self:inBand(oid)) and self:activeCamp(g, self:leaderOf(pBot, oid, g, os.time())) or nil
 
 	if kind == "perfstop" then
-		put(ckey(oid, "perf"), 0)
+		put(ckey(oid, "perfHold"), 1)
 		self:perfStop(pBot, oid, true)
 		self:say(pBot, oid, speakerOid, channel, "perfStop", name)
 	elseif camp == nil then
 		self:say(pBot, oid, speakerOid, channel, "noCamp", name)
 	else
+		deleteData(ckey(oid, "perfHold"))
 		put(ckey(oid, "perf"), kind == "music" and 2 or 1)
+		self:perfSetStart(oid, os.time())
 		self:say(pBot, oid, speakerOid, channel, kind == "music" and "musicOn" or "danceOn", name)
 	end
 
@@ -3938,9 +4323,14 @@ end
 function BotCrew:medicTurn(pBot, oid, g, now)
 	local fighting = CreatureObject(pBot):isInCombat() or self:groupFighting(g)
 
-	-- Buffing in a camp (BotDoctor's chain): carry on, unless a fight broke out
+	-- Buffing in a camp (BotDoctor's chain): carry on, unless a fight broke out. It watches and listens to the entertainer
+	-- meanwhile (medicCamp)
 	if readData(key(oid, "busy")) == 1 then
 		if not fighting then
+			if readData(ckey(oid, "inCamp")) == 1 then
+				self:campWatch(pBot, oid, g)
+			end
+
 			return true
 		end
 
@@ -4282,6 +4672,7 @@ function BotCrew:whileDead(pBot, oid, now)
 		deleteData(ckey(oid, "cloneAsked"))
 		deleteData(ckey(oid, "target"))
 		bot("botStop", pBot)
+		self:unwatchAll(pBot, oid)
 		print("BotJobs: " .. self:name(oid) .. " is dead")
 
 		if g ~= nil then
@@ -4333,6 +4724,8 @@ function BotCrew:afterClone(pBot, oid, now)
 	deleteData(ckey(oid, "dead"))
 	deleteData(ckey(oid, "cloneAsked"))
 	deleteData(ckey(oid, "target"))
+	-- (death cleared its buffs: a band session may start for it at once)
+	deleteData(ckey(oid, "bandAt"))
 
 	local repaired = bot("botRepairGear", pBot) or 0
 
@@ -4421,8 +4814,11 @@ function BotCrew:outOfCombat(pBot, oid, g, pLeader, now)
 		deleteStringData(ckey(oid, "campTried"))
 		self:standUp(pBot, oid)
 
+		self:unwatchAll(pBot, oid)
+
 		if role == "entertainer" then
 			self:perfStop(pBot, oid, true)
+			self:perfReset(oid)
 		end
 
 		if role == "medic" and BotDoctor ~= nil then
@@ -4467,7 +4863,8 @@ function BotCrew:activeCamp(g, pLeader)
 	if dist == nil or dist > self.campRange then
 		deleteData(gkey(leaderOid, "camp"))
 		deleteData(gkey(leaderOid, "campGrace"))
-		print("BotJobs: the camp of " .. self:firstName(pLeader) .. "'s group is over")
+		print("BotJobs: the camp of " .. self:firstName(pLeader) .. "'s group is over (" ..
+			(pCamp == nil and "the camp is gone" or dist == nil and "another planet" or string.format("the leader is %.0f m from it", dist)) .. ")")
 		return nil
 	end
 
@@ -4511,6 +4908,12 @@ function BotCrew:inCamp(pBot, oid, g, pLeader, camp, now)
 	if self:role(oid) == "entertainer" then
 		self:stopMoving(pBot)
 		self:perform(pBot, oid, now)
+		return
+	end
+
+	-- The rest watch or listen to her, on their feet; with her held or none, they sit at the fire
+	if self:campWatch(pBot, oid, g) then
+		self:stopMoving(pBot)
 		return
 	end
 
@@ -4602,7 +5005,18 @@ end
 -- each member who lacks them, in turn (BotDoctor's chain), the leader first, then the crew, then itself. It asks the
 -- leader over once if they're too far; someone who walked off mid-buff is taken on again after campRetry.
 function BotCrew:medicCamp(pBot, oid, g, pLeader, camp, now)
-	if BotDoctor == nil or not self:can(oid, "enhance") or readData(key(oid, "busy")) == 1 then
+	if BotDoctor == nil or not self:can(oid, "enhance") then
+		self:campWatch(pBot, oid, g)
+		return
+	end
+
+	-- At the fire it watches and listens while it treats (a patron may use its commands; only a posture change, range or the
+	-- performance ending stops it), so a member whose buffs keep failing doesn't keep it from the buffs
+	if worldDistance(pBot, camp.x, camp.y) <= 2.5 then
+		self:campWatch(pBot, oid, g)
+	end
+
+	if readData(key(oid, "busy")) == 1 then
 		return
 	end
 
@@ -4675,6 +5089,9 @@ function BotCrew:medicCamp(pBot, oid, g, pLeader, camp, now)
 			end
 		end
 	end
+
+	-- Nobody to treat just now: it watches or listens, as the rest do
+	self:campWatch(pBot, oid, g)
 end
 
 -- The ranger offers a camp when someone in the group is wounded or fatigued, out of a fight, outdoors, standing still
@@ -5479,7 +5896,7 @@ end
 
 -- Extra fields for the brain's request (BotJobs:ask): grouped is 1 while this bot is in a player's group
 function BotCrew:requestFields(pBot, oid, playerOid)
-	local fields = {grouped = (pBot ~= nil and CreatureObject(pBot):isGrouped()) and 1 or 0}
+	local fields = {grouped = (pBot ~= nil and self:grouped(pBot)) and 1 or 0}
 
 	if pBot == nil then
 		return fields
@@ -5742,7 +6159,7 @@ function BotCrew:huntLogText(leaderOid)
 end
 
 function BotCrew:onSaid(pBot, oid, playerOid, channel, line)
-	if CreatureObject(pBot):isGrouped() then
+	if self:grouped(pBot) then
 		self:huntNote(pBot, self:firstName(pBot), line)
 	end
 end
@@ -5836,7 +6253,7 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 	lastHeard, lastForGroup = nil, false
 
 	-- On a hunt, what the humans say goes in the hunt log (every crew bot hears group chat; it goes in once)
-	if text ~= nil and CreatureObject(pBot):isGrouped() and self:human(pSpeaker) then
+	if text ~= nil and self:grouped(pBot) and self:human(pSpeaker) then
 		self:huntNote(pBot, self:firstName(pSpeaker), text)
 	end
 
@@ -6146,7 +6563,13 @@ end
 function BotCrew:join(pBot, oid, pPlayer, channel, brainLine)
 	local playerOid = SceneObject(pPlayer):getObjectID()
 	local name = self:firstName(pPlayer)
-	local g = self:group(pBot)
+
+	-- In the cantina band's group: out of it first (the invite below queues behind the leave)
+	if self:inBand(oid) then
+		self:bandExit(pBot, oid, os.time())
+	end
+
+	local g = (not self:inBand(oid)) and self:group(pBot) or nil
 	local kind = nil
 
 	if g ~= nil then
@@ -6309,7 +6732,7 @@ function BotCrew:medicBuff(pBot, oid, pPlayer, kind, channel, brainLine)
 
 	local camp = nil
 
-	if g ~= nil then
+	if g ~= nil and not self:inBand(oid) then
 		camp = self:activeCamp(g, self:leaderOf(pBot, oid, g, os.time()))
 	end
 
@@ -6345,7 +6768,7 @@ function BotCrew:onEvent(pBot, oid, name, pOther, detail)
 			self:perfStop(pBot, oid, true)
 		end
 
-		if name == "died" and CreatureObject(pBot):isGrouped() then
+		if name == "died" and self:grouped(pBot) then
 			self:huntTallyAdd(pBot, "deaths", 1)
 			self:huntEvent(pBot, self:firstName(pBot) .. " died" ..
 				(pOther ~= nil and (" to " .. SceneObject(pOther):getDisplayedName()) or ""))

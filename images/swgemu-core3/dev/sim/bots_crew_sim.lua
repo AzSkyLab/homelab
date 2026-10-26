@@ -94,7 +94,7 @@ return function(ctx)
 	local function resetLog()
 		log = {taunts = {}, debuffs = {}, rescues = {}, dots = {}, loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
 			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
-			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}}
+			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}, landed = {}}
 	end
 	resetLog()
 
@@ -130,6 +130,8 @@ return function(ctx)
 	function methods.isDead(self) return self.dead == true end
 	function methods.isIncapacitated(self) return self.incap == true end
 	function methods.isInCombat(self) return self.inCombat == true end
+	-- (Core3: a patron's mood is "entertained" while it watches or listens)
+	function methods.getMoodString(self) return (self.watchTo ~= nil or self.listenTo ~= nil) and "entertained" or "neutral" end
 	function methods.getMainDefender(self)
 		-- A creature is on whoever it's after (its AI picks; Phase 7c: taunt, rescue)
 		if self.isMob then
@@ -239,8 +241,16 @@ return function(ctx)
 		table.insert(list, v)
 	end
 
+	local endPerformance -- (below)
+
 	local function startCombat(a, t)
 		a.inCombat, t.inCombat = true, true
+		-- Core3 ends a performance in combat (the patrons' buffs land)
+		for _, o in ipairs({a, t}) do
+			if o.dancing ~= nil then endPerformance(o, "dance") end
+			if o.music ~= nil then endPerformance(o, "music") end
+			o.dancing, o.music = nil, nil
+		end
 		a.combatTarget = t.oid
 		-- As Core3's startCombat: the attacker gets the defender; the victim only the combat state (a creature answers by
 		-- its AI, a player or bot only when it hits back) and, for botAttackers, a threat map entry
@@ -314,6 +324,51 @@ return function(ctx)
 		return 0
 	end
 
+	-- Phase 8b: Core3's entertaining session, as far as the mind buffs go. An entertainer's patrons (watch / listen) build a
+	-- buff each 10 s tick while within 60 m and in her group or her buff target; it lands (at least 60 s after they began)
+	-- when they stop, or she stops dancing, and lasts 2 minutes a tick up to 2 hours, at full strength
+	local MIND_NAMES = {dance = {"performance_enhance_dance_mind"}, music = {"performance_enhance_music_focus", "performance_enhance_music_willpower"}}
+	local PATRON_FIELD = {dance = "watchTo", music = "listenTo"}
+
+	local function landPatron(ent, p, kind)
+		local rec = ent ~= nil and ent.patrons ~= nil and ent.patrons[p.oid .. kind] or nil
+		if rec == nil then
+			return
+		end
+		ent.patrons[p.oid .. kind] = nil
+		p[PATRON_FIELD[kind]] = nil
+		if ent.buffTargetOid == p.oid then
+			ent.buffTargetOid = nil
+		end
+		if sim.now - rec.since < 60 or rec.ticks == 0 then
+			return
+		end
+		p.buffs = p.buffs or {}
+		for _, name in ipairs(MIND_NAMES[kind]) do
+			p.buffs[name] = {amount = 100, expires = sim.now + math.min(7200, rec.ticks * 120)}
+		end
+		table.insert(log.landed, {patron = p.oid, ent = ent.oid, kind = kind, ticks = rec.ticks, t = nowMs()})
+	end
+
+	function endPerformance(ent, kind)
+		for key, rec in pairs(ent.patrons or {}) do
+			if rec.kind == kind then
+				landPatron(ent, ctx.objects[rec.oid], kind)
+			end
+		end
+		ent.buffTargetOid = nil
+	end
+
+	local function perfTick(o)
+		for _, rec in pairs(o.patrons or {}) do
+			local p = ctx.objects[rec.oid]
+			local performing = (rec.kind == "dance" and o.dancing ~= nil) or (rec.kind == "music" and o.music ~= nil)
+			if performing and p ~= nil and dist(o, p) <= 60 and ((p.groupId ~= nil and p.groupId == o.groupId) or o.buffTargetOid == p.oid) then
+				rec.ticks = rec.ticks + 1
+			end
+		end
+	end
+
 	-- Core3's commands, as far as the crew depends on them
 	local function runCommand(b, cmd, target, args)
 		local t = ctx.objects[target]
@@ -321,7 +376,37 @@ return function(ctx)
 			local inviter = ctx.objects[b.inviter or 0]
 			if inviter == nil then return false, "no invite" end
 			if b.groupId ~= nil then return false, "already grouped" end
+			if inviter.groupId ~= nil and #groups[inviter.groupId].members >= 8 then return false, "group full" end
 			joinGroup(b, inviter)
+			return true
+		elseif cmd == "disband" then
+			local g = b.groupId and groups[b.groupId]
+			if g == nil or g.members[1] ~= b.oid then return false, "not the leader" end
+			for _, m in ipairs(g.members) do ctx.objects[m].groupId = nil end
+			groups[g.id] = nil
+			return true
+		elseif cmd == "watch" or cmd == "listen" then
+			local kind = cmd == "watch" and "dance" or "music"
+			if t == nil or not t.isPlayer then return false, "bad target" end
+			if b.dancing ~= nil or b.music ~= nil then return false, "performing" end
+			if (kind == "dance" and t.dancing == nil) or (kind == "music" and t.music == nil) then return false, "not performing" end
+			if b.posture == "sitting" then return false, "sitting" end
+			if b.noLineOfSight or t.noLineOfSight then return false, "no line of sight" end
+			if b[PATRON_FIELD[kind]] == t.oid then return true end
+			if b[PATRON_FIELD[kind]] ~= nil then landPatron(ctx.objects[b[PATRON_FIELD[kind]]], b, kind) end
+			b[PATRON_FIELD[kind]] = t.oid
+			t.patrons = t.patrons or {}
+			t.patrons[b.oid .. kind] = {oid = b.oid, kind = kind, since = sim.now, ticks = 0}
+			return true
+		elseif cmd == "stopwatching" or cmd == "stoplistening" then
+			local kind = cmd == "stopwatching" and "dance" or "music"
+			local entOid = b[PATRON_FIELD[kind]]
+			if entOid == nil then return false, "not watching" end
+			landPatron(ctx.objects[entOid], b, kind)
+			return true
+		elseif cmd == "setperformancebufftarget" then
+			if b.dancing == nil and b.music == nil then return false, "not performing" end
+			b.buffTargetOid = target ~= 0 and target or nil
 			return true
 		elseif cmd == "decline" then
 			b.inviter = nil
@@ -496,6 +581,8 @@ return function(ctx)
 			if cmd == "startdance" then b.dancing = args else b.music = args end
 			return true
 		elseif cmd == "stopdance" or cmd == "stopmusic" then
+			if b.dancing ~= nil then endPerformance(b, "dance") end
+			if b.music ~= nil then endPerformance(b, "music") end
 			b.dancing, b.music = nil, nil
 			return true
 		elseif cmd == "flourish" then
@@ -1406,6 +1493,11 @@ return function(ctx)
 				end
 				if o.isBotFlag then
 					o.skillMods.private_medical_rating = campRating(o)
+				end
+				-- The entertaining session ticks every 10 s
+				if o.patrons ~= nil and t >= (o.nextPerfTick or 0) then
+					o.nextPerfTick = t + 10000
+					perfTick(o)
 				end
 			end
 		end
@@ -5699,7 +5791,8 @@ return function(ctx)
 		groupSay(cameren, "camp?")
 		sim.run(60)
 
-		-- 5. Music again, then a fight: it stops, takes the pistol back and shoots at its band
+		-- 5. Music again, then a fight the others take: she plays on (Phase 8b); a creature on her: it stops, takes the
+		-- pistol back and shoots at its band
 		groupSay(cameren, "play something")
 		sim.run(30)
 		if ent.music == nil then fail("crewcamp: not playing before the fight") end
@@ -5707,6 +5800,9 @@ return function(ctx)
 		m.hits = 3
 		t = nowMs()
 		attack(cameren, m)
+		sim.run(10)
+		if ent.music == nil then fail("crewcamp: stopped playing for a fight the others take") end
+		attack(m, ent)
 		sim.run(20)
 		if ent.music ~= nil or ent.dancing ~= nil then fail("crewcamp: still performing in the fight") end
 		if ent.weapon ~= "pistol" then fail("crewcamp: the pistol isn't back in hand (" .. tostring(ent.weapon) .. ")") end
@@ -6119,6 +6215,538 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Phase 8b: crew mind buffs (specs/2026-10-25-crew-mind-buffs/): the cantina band's session and the camp loop.
+	-- crewmind: a band session from start to finish; crewmindask: a player asks the band for a buff, targets a crew bot and
+	-- invites it, calls the crew; crewmindfight: a fight on a member; crewmindout: the dancer logs out, a restart, a clone;
+	-- crewmindcamp: the camp's dance and music cycle, "play something", "stop", a fight, the camp ending
+
+	local SEVEN8B = {"tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando"}
+
+	-- The crew plus Mos Eisley's dancer and musician, all logged in
+	local function bandWorld()
+		setup("/nonexistent/sim-talk")
+		local band = {}
+		for _, entry in ipairs(BotRoster.bots) do
+			if entry.city == "mos_eisley" and (entry.job == "dancer" or entry.job == "musician") and band[entry.job] == nil then
+				local first = entry.name:match("^(%S+)")
+				local st = entry.station
+				local b = ctx.newObject({isBotFlag = true, isPlayer = true, first = first, name = entry.name, planet = st.planet,
+					x = st.x, y = st.y, z = st.z, cell = st.cell or 0, inWorld = false, online = false, cash = 100, bank = 1000,
+					packs = {}, buffs = {}, wounds = {}, skillPrefixes = {}, skillMods = {}, role = entry.job,
+					weapon = entry.job == "musician" and "instrument" or nil})
+				band[entry.job] = b
+				byFirst[first:lower()] = b
+				ctx.addPlayer(b)
+			end
+		end
+		return band
+	end
+
+	local function loginAll(band)
+		login(band.dancer)
+		login(band.musician)
+		for _, role in ipairs(SEVEN8B) do login(crew[role]) end
+	end
+
+	local function memberCount(b)
+		local g = b.groupId and groups[b.groupId]
+		return g and #g.members or 0
+	end
+
+	local function bandMode(b)
+		return readStringData("bot:" .. b.oid .. ":crew:mode")
+	end
+
+	-- Nobody left watching, no entertainer with patrons, nobody in a band mode or a band group: once a session or a set is over
+	local function quiet(label, band)
+		for _, b in pairs(ctx.objects) do
+			if b.isBotFlag and b.online then
+				if b.watchTo ~= nil or b.listenTo ~= nil then
+					fail(label .. ": " .. b.first .. " is still watching or listening")
+				end
+				if next(b.patrons or {}) ~= nil then
+					fail(label .. ": " .. b.first .. " still has patrons")
+				end
+				if readData("bot:" .. b.oid .. ":crew:watching") ~= 0 or readData("bot:" .. b.oid .. ":crew:listening") ~= 0 then
+					fail(label .. ": " .. b.first .. " still has a watching record")
+				end
+			end
+		end
+		for _, role in ipairs(SEVEN8B) do
+			local b = crew[role]
+			if bandMode(b) == "band" then
+				fail(label .. ": the " .. role .. " is still in band mode")
+			end
+			if band ~= nil and b.groupId ~= nil and b.groupId == band.dancer.groupId then
+				fail(label .. ": the " .. role .. " is still in the dancer's group")
+			end
+		end
+	end
+
+	-- Mind buffs left on a bot, in minutes (the least of the three)
+	local function mindMinutes(b)
+		local least = math.huge
+		for _, name in ipairs({"performance_enhance_dance_mind", "performance_enhance_music_focus", "performance_enhance_music_willpower"}) do
+			local buff = b.buffs[name]
+			local left = (buff ~= nil and buff.expires > sim.now) and (buff.expires - sim.now) / 60 or 0
+			least = math.min(least, left)
+		end
+		return least
+	end
+
+	-- Everyone in the group in band mode: the session forms and is watching
+	local function formed(label, band)
+		local d, m, ilsi = band.dancer, band.musician, crew.entertainer
+		local size = memberCount(d)
+		if size ~= 8 then
+			fail(label .. ": " .. size .. " in the band's group, expected the dancer, the musician and six crew")
+		end
+		if m.groupId ~= d.groupId then fail(label .. ": the musician isn't in the dancer's group") end
+		for _, role in ipairs(SEVEN8B) do
+			local b = crew[role]
+			if role == "entertainer" then
+				if b.groupId ~= nil then fail(label .. ": the entertainer, the buff target, is in a group") end
+				if d.buffTargetOid ~= b.oid or m.buffTargetOid ~= b.oid then
+					fail(label .. ": the band's buff target isn't the entertainer")
+				end
+			elseif b.groupId ~= d.groupId then
+				fail(label .. ": the " .. role .. " isn't in the band's group")
+			end
+			if bandMode(b) ~= "band" then fail(label .. ": the " .. role .. " is in mode " .. bandMode(b)) end
+			if b.watchTo ~= d.oid or b.listenTo ~= m.oid then
+				fail(label .. ": the " .. role .. " isn't watching and listening (" .. tostring(b.watchTo) .. "/" .. tostring(b.listenTo) .. ")")
+			end
+		end
+	end
+
+	function scenarios.crewmind()
+		local band = bandWorld()
+		local d, m, ilsi, rifleman = band.dancer, band.musician, crew.entertainer, crew.rifleman
+		-- One of them is sitting at home: she stands to watch
+		rifleman.posture = "sitting"
+		loginAll(band)
+		rifleman.posture = "sitting"
+		writeData("bot:" .. rifleman.oid .. ":crew:sitting", 1)
+		sim.run(70)
+		formed("crewmind", band)
+		-- The crew are invited only once the musician is in: on Core3 accepts that land together while the dancer has no group
+		-- yet each make a group of their own (seen on the local server)
+		local joined = okCommands(m, "join", 0)[1]
+		for _, c in ipairs(commands(d, "invite", 0)) do
+			if c.target ~= m.oid and (joined == nil or c.t < joined.t) then
+				fail("crewmind: the dancer invited a crew bot before the musician was in her group")
+				break
+			end
+		end
+		if #refused(rifleman, 0, {}) > 0 then fail("crewmind: refused " .. table.concat(refused(rifleman, 0, {}), "; ")) end
+		-- ... and it carries on to the end, then everyone stops and the dancer disbands
+		sim.run(480)
+		if memberCount(d) ~= 0 then fail("crewmind: the band's group wasn't disbanded") end
+		quiet("crewmind", band)
+		for _, role in ipairs(SEVEN8B) do
+			local minutes = mindMinutes(crew[role])
+			if minutes < 60 then fail(string.format("crewmind: the %s has only %.0f minutes of mind buffs", role, minutes)) end
+			if bandMode(crew[role]) ~= "home" then fail("crewmind: the " .. role .. " is in mode " .. bandMode(crew[role])) end
+		end
+		-- Nothing starts again while they all have the buffs
+		local before = readData("band:mos_eisley:seq")
+		sim.run(1200)
+		if readData("band:mos_eisley:seq") ~= before then fail("crewmind: a second session started with everyone buffed") end
+		-- The group holds 8: no command was refused for that
+		for _, c in ipairs(log.commands) do
+			if not c.ok and c.why == "group full" then fail("crewmind: a join was refused, the group was full") end
+		end
+		realPrint(string.format("crewmind session %d, mind buffs %.0f minutes", readData("band:mos_eisley:seq"), mindMinutes(ilsi)))
+		teardown()
+	end
+
+	function scenarios.crewmindask()
+		local band = bandWorld()
+		local d, m, ilsi, medic, rifleman = band.dancer, band.musician, crew.entertainer, crew.medic, crew.rifleman
+		loginAll(band)
+		local cameren = makeHuman("Cameren", m.x + 3, m.y)
+		cameren.cell = m.cell
+		sim.run(70)
+		formed("crewmindask", band)
+
+		-- 1. A player asks the musician for a buff: the band turns to them, the entertainer stops listening and watching
+		cameren.target = m.oid
+		speak(m, cameren, "can I get a buff?", "spatial")
+		sim.run(15)
+		if readData("bot:" .. m.oid .. ":buffTarget") ~= cameren.oid or readData("bot:" .. d.oid .. ":buffTarget") ~= cameren.oid then
+			fail("crewmindask: the band didn't make the player its buff target")
+		end
+		if m.buffTargetOid ~= cameren.oid then fail("crewmindask: Core3's buff target isn't the player") end
+		if ilsi.watchTo ~= nil or ilsi.listenTo ~= nil then fail("crewmindask: the entertainer still watches the band") end
+		for _, role in ipairs({"tank", "rifleman", "medic", "ranger", "squadleader", "commando"}) do
+			if crew[role].watchTo ~= d.oid or crew[role].listenTo ~= m.oid then fail("crewmindask: the " .. role .. " stopped watching") end
+		end
+		if memberCount(d) ~= 8 then fail("crewmindask: the group changed size") end
+
+		-- 2. The player targets the medic: it steps out of the group and says so, and takes their invite
+		local t = nowMs()
+		cameren.target = medic.oid
+		sim.run(12)
+		if medic.groupId ~= nil then fail("crewmindask: the medic is still in the band's group") end
+		if medic.watchTo ~= nil or medic.listenTo ~= nil then fail("crewmindask: the medic is still watching") end
+		if bandMode(medic) ~= "home" then fail("crewmindask: the medic is in mode " .. bandMode(medic)) end
+		local said = false
+		for _, l in ipairs(entries(log.says, medic, t)) do if isLine(l.text, "medic", "bandOut") then said = true end end
+		if not said then fail("crewmindask: the medic didn't say it was stepping out") end
+		if medic.buffs.performance_enhance_dance_mind == nil then fail("crewmindask: the medic's mind buff didn't land when it stopped") end
+		invite(cameren, medic, true)
+		sim.run(10)
+		if bandMode(medic) ~= "group" or medic.groupId == nil or medic.groupId ~= cameren.groupId then
+			fail("crewmindask: the medic didn't join the player's group (" .. bandMode(medic) .. ")")
+		end
+		cameren.target = 0
+		if memberCount(d) ~= 7 then fail("crewmindask: " .. memberCount(d) .. " in the band's group after the medic left, expected 7") end
+
+		-- 3. The player invites the buff target, the entertainer: it stops watching first, then joins
+		cameren.target = 0
+		-- (she isn't in a group, so the player's invite reaches her; the player already leads one, so it has to be that one)
+		d.buffTargetOid = nil
+		invite(cameren, ilsi, true)
+		sim.run(8)
+		-- (she was no longer the target: she has been watching nobody since the player took it)
+		if ilsi.groupId ~= cameren.groupId then fail("crewmindask: the entertainer didn't join the player's group") end
+		if ilsi.watchTo ~= nil or ilsi.listenTo ~= nil then fail("crewmindask: the entertainer is watching from the player's group") end
+
+		-- 4. The rest carry on to the end
+		sim.run(480)
+		quiet("crewmindask", band)
+		if memberCount(d) ~= 0 then fail("crewmindask: the band's group wasn't disbanded") end
+		for _, role in ipairs({"tank", "rifleman", "ranger", "squadleader", "commando"}) do
+			if mindMinutes(crew[role]) < 60 then fail("crewmindask: the " .. role .. " has no full buffs") end
+		end
+
+		-- 5. A call mid-session: the whole crew comes out of the band and none is left watching
+		sim.run(200)
+		cameren.groupId = nil
+		for _, role in ipairs(SEVEN8B) do
+			crew[role].buffs = {}
+			if crew[role].groupId ~= nil and groups[crew[role].groupId] ~= nil then end
+		end
+		realPrint("crewmindask done")
+		teardown()
+	end
+
+	function scenarios.crewmindjoin()
+		local band = bandWorld()
+		local d, m, senna = band.dancer, band.musician, crew.rifleman
+		loginAll(band)
+		local cameren = makeHuman("Cameren", m.x + 3, m.y)
+		cameren.cell = m.cell
+		sim.run(70)
+		formed("crewmindjoin", band)
+		-- "Wanna hunt?" to a bot in the band's group: it steps out and invites the player instead of saying it is in another group
+		local t = nowMs()
+		cameren.target = 0
+		speak(senna, cameren, "Senna, wanna hunt?", "spatial")
+		sim.run(2)
+		if senna.groupId == d.groupId then fail("crewmindjoin: the rifleman stayed in the band's group") end
+		if #okCommands(senna, "invite", t) == 0 then fail("crewmindjoin: the rifleman didn't invite the player") end
+		if senna.watchTo ~= nil or senna.listenTo ~= nil then fail("crewmindjoin: the rifleman is still watching") end
+		-- The player accepts at once (before the bot's next tick): the rifleman stays in the player's group (the band's leave
+		-- isn't sent again), and the dancer doesn't invite it back
+		local inviter = ctx.objects[cameren.inviter or 0]
+		if inviter ~= nil then
+			joinGroup(cameren, inviter)
+			cameren.inviter = nil
+		end
+		t = nowMs()
+		sim.run(40)
+		if senna.groupId == nil or senna.groupId ~= cameren.groupId then fail("crewmindjoin: the rifleman left the player's group") end
+		if bandMode(senna) == "band" then fail("crewmindjoin: the rifleman is still in band mode") end
+		for _, c in ipairs(commands(d, "invite", t)) do
+			if c.target == senna.oid then fail("crewmindjoin: the dancer invited the rifleman back") break end
+		end
+		teardown()
+	end
+
+	function scenarios.crewmindcall()
+		local band = bandWorld()
+		local d, m = band.dancer, band.musician
+		loginAll(band)
+		local cameren = makeHuman("Cameren", m.x + 3, m.y)
+		cameren.cell = m.cell
+		sim.run(70)
+		formed("crewmindcall", band)
+		speak(crew.tank, cameren, "crew, come to me", "tell")
+		sim.run(40)
+		for _, role in ipairs(SEVEN8B) do
+			local b = crew[role]
+			if bandMode(b) == "band" then fail("crewmindcall: the " .. role .. " is still in band mode") end
+			if b.watchTo ~= nil or b.listenTo ~= nil then fail("crewmindcall: the " .. role .. " is still watching") end
+			if b.groupId ~= nil and b.groupId == d.groupId then fail("crewmindcall: the " .. role .. " is still in the band's group") end
+		end
+		-- the first to arrive invited the player: they join one group, the band's gets disbanded at its end
+		sim.run(520)
+		if memberCount(d) ~= 0 then fail("crewmindcall: the band's group wasn't disbanded") end
+		for _, b in pairs({d, m}) do
+			if b.groupId ~= nil then fail("crewmindcall: " .. b.first .. " is still in a group") end
+			if next(b.patrons or {}) ~= nil then fail("crewmindcall: " .. b.first .. " still has patrons") end
+		end
+		teardown()
+	end
+
+	function scenarios.crewmindfight()
+		local band = bandWorld()
+		local d, m, senna = band.dancer, band.musician, crew.rifleman
+		loginAll(band)
+		sim.run(70)
+		formed("crewmindfight", band)
+		-- A creature goes for the rifleman: she stops watching, leaves the group and fights; the others carry on
+		local mob = makeMob("a womp rat", senna.x + 2, senna.y, 1e7)
+		mob.hits = 0
+		mob.rooted = true
+		startCombat(mob, senna)
+		mob.aggro = senna.oid
+		sim.run(15)
+		if senna.groupId == d.groupId then fail("crewmindfight: the rifleman stayed in the band's group during a fight") end
+		if senna.watchTo ~= nil or senna.listenTo ~= nil then fail("crewmindfight: the rifleman kept watching in a fight") end
+		if memberCount(d) ~= 7 then fail("crewmindfight: " .. memberCount(d) .. " in the band's group, expected 7") end
+		for _, role in ipairs({"tank", "medic", "ranger", "squadleader", "commando", "entertainer"}) do
+			if crew[role].watchTo ~= d.oid then fail("crewmindfight: the " .. role .. " stopped watching") end
+		end
+		damage(mob, 1e9)
+		sim.run(30)
+		sim.run(480)
+		quiet("crewmindfight", band)
+		if memberCount(d) ~= 0 then fail("crewmindfight: the band's group wasn't disbanded") end
+		teardown()
+	end
+
+	function scenarios.crewmindout()
+		local band = bandWorld()
+		local d, m, rifleman = band.dancer, band.musician, crew.rifleman
+		loginAll(band)
+		sim.run(70)
+		formed("crewmindout", band)
+
+		-- 1. The dancer logs out mid-session (Core3 takes her out of the group first)
+		leaveGroup(d)
+		d.online, d.inWorld = false, false
+		d.dancing = nil
+		sim.call("BotJobs", "onLogout", d)
+		sim.run(40)
+		quiet("crewmindout", band)
+		if m.groupId ~= nil then fail("crewmindout: the musician is still in the band's group") end
+		for _, role in ipairs(SEVEN8B) do
+			if crew[role].groupId ~= nil then fail("crewmindout: the " .. role .. " is still in a group") end
+		end
+
+		-- 2. She comes back: a new session starts for whoever needs it (the buffs from the first one landed and are partial)
+		for _, role in ipairs(SEVEN8B) do
+			crew[role].buffs = {}
+			deleteData("bot:" .. crew[role].oid .. ":crew:bandAt")
+		end
+		login(d)
+		sim.run(70)
+		formed("crewmindout", band)
+
+		-- 3. A restart mid-session (BotJobs:restart: every online bot's job starts afresh, the groups stay)
+		for _, b in ipairs({d, m, crew.tank, crew.rifleman, crew.medic, crew.ranger, crew.squadleader, crew.entertainer, crew.commando}) do
+			sim.call("BotJobs", "onLogin", b)
+		end
+		sim.run(40)
+		-- (a new session may have formed: nobody may be in the band's group, or in band mode, outside the live session)
+		local session = readData("band:mos_eisley:session")
+		for _, role in ipairs(SEVEN8B) do
+			local b = crew[role]
+			local inGroup = b.groupId ~= nil and b.groupId == d.groupId
+			local inBand = bandMode(b) == "band"
+			if (inGroup or inBand) and (session == 0 or readData("bot:" .. b.oid .. ":crew:band") ~= session) then
+				fail("crewmindout: the " .. role .. " is in the band's group or mode after the restart with no live session")
+			end
+		end
+		if session == 0 and (d.groupId ~= nil or m.groupId ~= nil) then fail("crewmindout: the band is still grouped with no session after the restart") end
+
+		-- 4. A session that was never ended (the dancer's ticks stopped): past its end by a minute, everyone leaves it
+		sim.run(1200)
+		for _, role in ipairs(SEVEN8B) do
+			crew[role].buffs = {}
+			deleteData("bot:" .. crew[role].oid .. ":crew:bandAt")
+		end
+		sim.run(70)
+		local until0 = readData("band:mos_eisley:until")
+		if readData("band:mos_eisley:session") == 0 then fail("crewmindout: no session to stop the driver of") end
+		if readData("band:mos_eisley:session") ~= 0 then
+			-- stop the dancer's driver: its tick gives up (the dancer logs out without the clear)
+			local gen = readData("bot:" .. d.oid .. ":gen")
+			writeData("bot:" .. d.oid .. ":gen", gen + 1)
+			sim.run(until0 - sim.now + 120)
+			for _, role in ipairs(SEVEN8B) do
+				if bandMode(crew[role]) == "band" then fail("crewmindout: the " .. role .. " is stuck in band mode after a dead session") end
+				if crew[role].watchTo ~= nil then fail("crewmindout: the " .. role .. " is still watching after a dead session") end
+				if crew[role].groupId ~= nil and crew[role].groupId == d.groupId then fail("crewmindout: the " .. role .. " is still in the dead session's group") end
+			end
+		end
+		teardown()
+	end
+
+	function scenarios.crewmindclone()
+		local band = bandWorld()
+		local d, m, rifleman = band.dancer, band.musician, crew.rifleman
+		loginAll(band)
+		sim.run(70)
+		formed("crewmindclone", band)
+		sim.run(560)
+		quiet("crewmindclone", band)
+		local seq = readData("band:mos_eisley:seq")
+		-- A session isn't started for a bot that has just had one, nor for one with plenty left
+		sim.run(200)
+		if readData("band:mos_eisley:seq") ~= seq then fail("crewmindclone: a session started with everyone buffed") end
+		-- A clone: no buffs, and its record of the last session is cleared
+		rifleman.buffs = {}
+		writeData("bot:" .. rifleman.oid .. ":crew:dead", 1)
+		sim.call("BotCrew", "afterClone", rifleman, rifleman.oid, os.time())
+		sim.run(60)
+		if readData("band:mos_eisley:seq") == seq then fail("crewmindclone: no session started for a cloned bot with no buffs") end
+		sim.run(540)
+		quiet("crewmindclone", band)
+		if mindMinutes(rifleman) < 60 then fail("crewmindclone: the cloned bot has no full buffs after the session") end
+		teardown()
+	end
+
+	function scenarios.crewmindcamp()
+		local cameren = sevenGroup("crewmindcamp")
+		local savedChance = BotCrew.switchSayChance
+		BotCrew.switchSayChance = 100
+		local ent = crew.entertainer
+		-- (the medic treats everyone first, so it joins in later)
+		local others = {"tank", "rifleman", "ranger", "squadleader", "commando"}
+		local function perfName() return ent.dancing ~= nil and "dance" or (ent.music ~= nil and "music" or "none") end
+		local function watchers(kind)
+			local n = 0
+			for _, role in ipairs(others) do
+				if kind == "dance" and crew[role].watchTo == ent.oid then n = n + 1 end
+				if kind == "music" and crew[role].listenTo == ent.oid then n = n + 1 end
+			end
+			return n
+		end
+		local function switchLines(since)
+			local n = 0
+			for _, l in ipairs(entries(log.group, ent, since)) do
+				if isLine(l.text, "entertainer", "perfSwitchMusic") or isLine(l.text, "entertainer", "perfSwitchDance") then n = n + 1 end
+			end
+			return n
+		end
+
+		groupSay(cameren, "camp?")
+		sim.run(60)
+		if #log.camps == 0 then fail("crewmindcamp: no camp") end
+		local start = readData("bot:" .. ent.oid .. ":crew:perfSetAt")
+		if perfName() ~= "dance" then fail("crewmindcamp: she isn't dancing in camp (" .. perfName() .. ")") end
+		sim.run(30)
+
+		-- 1. Everyone else stands and watches her
+		if watchers("dance") ~= 5 then
+			local missing = {}
+			for _, role in ipairs(others) do
+				if crew[role].watchTo ~= ent.oid then table.insert(missing, role .. " " .. bandMode(crew[role]) .. " " .. tostring(crew[role].posture)) end
+			end
+			fail("crewmindcamp: " .. watchers("dance") .. " of the five watching her dance (not: " .. table.concat(missing, ", ") .. ")")
+		end
+		for _, role in ipairs(others) do
+			if crew[role].posture == "sitting" then fail("crewmindcamp: the " .. role .. " is sitting while she dances") end
+		end
+
+		-- 2. About setMinutes later she plays; they stop watching, listen, and the dance buff has landed for them
+		local switchAt
+		for i = 1, 60 do
+			sim.run(10)
+			if perfName() == "music" then switchAt = sim.now break end
+		end
+		if switchAt == nil then
+			fail("crewmindcamp: she never changed to music")
+		else
+			local length = switchAt - start
+			if length < 8 * 60 - 40 or length > 8 * 60 + 50 then fail("crewmindcamp: the first set was " .. length .. " s") end
+		end
+		sim.run(30)
+		if watchers("music") ~= 5 or watchers("dance") ~= 0 then
+			fail("crewmindcamp: after the switch " .. watchers("dance") .. " watch and " .. watchers("music") .. " listen")
+		end
+		for _, role in ipairs({"tank", "ranger", "commando"}) do
+			if crew[role].buffs.performance_enhance_dance_mind == nil then fail("crewmindcamp: the " .. role .. " has no mind buff after the dance") end
+		end
+		if switchLines(0) ~= 1 then fail("crewmindcamp: " .. switchLines(0) .. " switch lines in the first half cycle, expected 1") end
+
+		-- 3. And back to dancing: all three buffs, full length, and at most one line a cycle
+		local backAt
+		for i = 1, 60 do
+			sim.run(10)
+			if perfName() == "dance" then backAt = sim.now break end
+		end
+		if backAt == nil then fail("crewmindcamp: she never danced again") end
+		sim.run(40)
+		if watchers("dance") ~= 5 or watchers("music") ~= 0 then
+			fail("crewmindcamp: after the second switch " .. watchers("dance") .. " watch and " .. watchers("music") .. " listen")
+		end
+		-- (the medic, done treating, has joined in)
+		if crew.medic.watchTo ~= ent.oid then fail("crewmindcamp: the medic isn't watching after its treatments") end
+		for _, role in ipairs({"tank", "ranger", "commando", "rifleman", "squadleader"}) do
+			if mindMinutes(crew[role]) < 60 then fail(string.format("crewmindcamp: the %s has %.0f minutes of mind buffs after a cycle", role, mindMinutes(crew[role]))) end
+		end
+		if switchLines(0) ~= 1 then fail("crewmindcamp: " .. switchLines(0) .. " switch lines in a cycle, expected 1") end
+
+		-- 4. "Play something" switches her at once and the set starts over; "dance for us" back
+		local t = nowMs()
+		groupSay(cameren, "play something")
+		sim.run(40)
+		if perfName() ~= "music" then fail("crewmindcamp: not playing after 'play something'") end
+		if watchers("music") ~= 5 then fail("crewmindcamp: " .. watchers("music") .. " listening after 'play something'") end
+		local setAt = readData("bot:" .. ent.oid .. ":crew:perfSetAt")
+		sim.run(7 * 60 - 60)
+		if perfName() ~= "music" then fail("crewmindcamp: she switched before the new set was over") end
+		groupSay(cameren, "dance for us")
+		sim.run(40)
+		if perfName() ~= "dance" or watchers("dance") ~= 5 then fail("crewmindcamp: not dancing for five after 'dance for us'") end
+
+		-- 5. "Stop" holds her until the camp ends: nobody watches, they sit, and no switch comes
+		groupSay(cameren, "stop playing")
+		sim.run(60)
+		if perfName() ~= "none" then fail("crewmindcamp: still performing after 'stop' (" .. perfName() .. ")") end
+		sim.run(20 * 60)
+		if perfName() ~= "none" then fail("crewmindcamp: she performed again after 'stop' (" .. perfName() .. ")") end
+		if watchers("dance") + watchers("music") ~= 0 then fail("crewmindcamp: they still watch after 'stop'") end
+		for _, role in ipairs(others) do
+			if crew[role].posture ~= "sitting" and role ~= "medic" then fail("crewmindcamp: the " .. role .. " isn't sitting while she's stopped") end
+		end
+		-- "Dance for us" brings her back
+		groupSay(cameren, "dance for us")
+		sim.run(40)
+		if perfName() ~= "dance" or watchers("dance") ~= 5 then fail("crewmindcamp: 'dance for us' didn't bring her back after 'stop'") end
+
+		-- 6. A fight the others take: she dances on and they keep watching (stopping would land a partial buff over a longer
+		-- one); after it she carries on
+		local m = makeCreature(cameren, "a kreetle", 30, 0, nil, nil, false)
+		m.hits = 3
+		attack(cameren, m)
+		sim.run(15)
+		if perfName() ~= "dance" then fail("crewmindcamp: she stopped dancing for a fight the others take") end
+		if watchers("dance") ~= 5 then fail("crewmindcamp: " .. watchers("dance") .. " still watching in a camp fight") end
+		damage(m, 1e9)
+		cameren.inCombat, cameren.target, cameren.defenders = false, 0, {}
+		sim.run(80)
+		if perfName() == "none" then fail("crewmindcamp: she didn't perform again after the fight") end
+
+		-- 7. The camp ends (the leader walks off): nobody is left watching
+		cameren.x = cameren.x + 90
+		sim.run(60)
+		for _, role in ipairs(others) do
+			if crew[role].watchTo ~= nil or crew[role].listenTo ~= nil then fail("crewmindcamp: the " .. role .. " is still watching after the camp") end
+			if readData("bot:" .. crew[role].oid .. ":crew:watching") ~= 0 or readData("bot:" .. crew[role].oid .. ":crew:listening") ~= 0 then
+				fail("crewmindcamp: the " .. role .. " kept a watching record after the camp")
+			end
+		end
+		if next(ent.patrons or {}) ~= nil then fail("crewmindcamp: she still has patrons after the camp") end
+		BotCrew.switchSayChance = savedChance
+		realPrint(string.format("crewmindcamp %d landings", #log.landed))
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -6138,4 +6766,12 @@ return function(ctx)
 	table.insert(order, "crewarea")
 	table.insert(order, "crewcall")
 	table.insert(order, "crewcallwords")
+	table.insert(order, "crewmind")
+	table.insert(order, "crewmindask")
+	table.insert(order, "crewmindjoin")
+	table.insert(order, "crewmindcall")
+	table.insert(order, "crewmindfight")
+	table.insert(order, "crewmindout")
+	table.insert(order, "crewmindclone")
+	table.insert(order, "crewmindcamp")
 end
