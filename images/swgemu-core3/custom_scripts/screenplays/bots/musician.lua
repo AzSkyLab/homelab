@@ -381,5 +381,16 @@ function BotMusician:requestFields(pBot, oid)
 	return {}
 end
 
+-- Phase 11: "buffs" in a tell opens the window with the buff times (no model is asked)
+function BotMusician:onSpoken(pBot, oid, pSpeaker, channel, text)
+	if channel == "tell" and text ~= nil and BotBuffs ~= nil and BotBuffs:wanted(text) and BotCrew ~= nil and BotCrew:human(pSpeaker) then
+		BotBuffs:window(pBot, pSpeaker, channel)
+
+		return true
+	end
+
+	return false
+end
+
 BotJobModules = BotJobModules or {}
 BotJobModules.musician = BotMusician

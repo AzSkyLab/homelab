@@ -122,6 +122,9 @@ spec:
           env:
             - name: TALK_DIR
               value: /run/talk
+            # Doctrines, lessons and base tables on the persistent volume (the bridge makes the folders)
+            - name: TALK_DOCTRINE_DIR
+              value: /data/doctrine
             - name: LITELLM_URL
               value: http://litellm.litellm.svc:4000/v1
             - name: TALK_MODEL
@@ -144,6 +147,10 @@ spec:
           volumeMounts:
             - name: talk
               mountPath: /run/talk
+            # Phase 9b: the crew's doctrines (scripts/swgemu-doctrine.sh load), what we taught them in game and the tactics
+            # the model made, in /data/doctrine, so they survive restarts
+            - name: data
+              mountPath: /data
       volumes:
         - name: data
           persistentVolumeClaim:

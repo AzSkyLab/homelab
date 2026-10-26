@@ -9,8 +9,20 @@ shared directory (an emptyDir in the core3 pod):
                     line 1: "ok" or "fallback"; line 2: a mood (may be empty); line 3: what the NPC says;
                     line 4 (bot players only): the action ("buff", "wounds", "bufftarget", "join", "follow",
                     "stay", "home", "camp", "track") or empty; line 5 (bot players only): flags, a comma list
-                    ("insult": the player insulted the bot) or empty
+                    ("insult": the player insulted the bot) or empty; lines 6 and 7 (crew bots only, Phase 9b): orders for
+                    the tactics table ("kragoth focus strongest;* range far", "clear": "as you were"; "*" is the whole crew) and
+                    the result of a lesson taught ("added quillan", "forgot crew") or empty
   alive           the time, rewritten 4 times a second; Lua sends nothing when it is over a minute old
+
+Phase 9b (specs/2026-10-25-crew-doctrine/, crew_doctrine.py): the crew's doctrine and tactics. A "plan" request (the crew's
+fight, written by Lua: "crew" and "creatures" lines, the "orders" standing and the "plan" so far, "reason", "leader") is
+answered first in the queue, in rep/<id>.txt: "ok", then "first entry value" lines and at most one "say first text", or
+"fallback"; one older than TALK_PLAN_DEADLINE (15 s) is dropped. Crew "say" requests carry "squad" ("kragoth:tank,..."), "fight"
+(the creatures, with their oids) and "standing" (the orders in force). Doctrines are the files <first>.txt in
+TALK_DOCTRINE_DIR/base (else the image's TALK_DOCTRINE_SEED), the lessons taught are TALK_DOCTRINE_DIR/taught/<first>.txt (and
+crew.txt), and each bot's base table, made by the model whenever its doctrine changes, is TALK_DOCTRINE_DIR/tables/<first>.json
+and, for all the crew, /run/talk/tactics/base.txt ("first entry value"). TALK_DOCTRINE_DIR defaults to /data/doctrine when that
+is writable, else <TALK_DIR>/doctrine, so the bridge runs in local development with no /data.
 
 "say" carries the NPC's persona (name, species, sex, kit, city, place), the player's name and what they said; the
 reply comes from the model with the NPC's city fact sheet and the last exchanges between the two. "gone" drops an
@@ -44,6 +56,7 @@ Standard library only. Settings come from the environment:
 """
 import argparse
 import collections
+import itertools
 import json
 import os
 import queue
@@ -56,6 +69,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import crew_doctrine as cd  # noqa: E402  (the crew's doctrine and orders, Phase 9b)
+
 TALK_DIR = os.environ.get("TALK_DIR", "/run/talk")
 LITELLM_URL = os.environ.get("LITELLM_URL", "http://litellm.litellm.svc:4000/v1").rstrip("/")
 LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
@@ -66,6 +82,20 @@ DEADLINE = float(os.environ.get("TALK_DEADLINE", "12"))
 BOT_DEADLINE = float(os.environ.get("TALK_BOT_DEADLINE", "40"))
 # Tokens a bot reply may use: a long paragraph, with room for the JSON around it
 BOT_MAX_TOKENS = 900
+
+# Phase 9b: a crew plan (the fight's table changes) that takes longer than this from when Lua wrote the request is dropped
+PLAN_DEADLINE = float(os.environ.get("TALK_PLAN_DEADLINE", "15"))
+PLAN_MAX_TOKENS = 500
+# The doctrine files are looked at this often (seconds); a table the model failed to make is tried again after TABLE_RETRY
+DOCTRINE_WATCH = 5
+TABLE_RETRY = 60
+TABLE_RETRY_MAX = 600
+TABLE_TIMEOUT = 20
+# A table waits while the crew is fighting (a plan asked within this many seconds), so it never holds the worker past a plan's
+# deadline
+TABLE_QUIET = 30
+# The queue's order: a fight can't wait, a crowd reply can
+PRIO_PLAN, PRIO_BOT, PRIO_CROWD, PRIO_BACKGROUND = 0, 1, 2, 3
 
 # Exchanges remembered per NPC and player, and for how long
 MEMORY_TURNS = 8
@@ -248,7 +278,7 @@ WORDS = {
         r"cease fire)\b", re.I),
     # "stay here", "wait up", "hold position", "stop following me"
     "stay": re.compile(
-        r"\b(stay\w*(?! out| away| with| close| together)( here| put| back| there)?|wait (here|there|up|for me)|"
+        r"\b(stay\w*(?! out| away| back| with| close| together)( here| put| there)?|wait (here|there|up|for me)|"
         r"hold (up|here|position|back|it)|halt|stop (here|there|following\w*)|quit following|stand (by|still)|"
         r"sit tight|hang (back|here|tight)|don'?t (move|follow( me)?)|dont (move|follow( me)?))\b", re.I),
     # "go home", "you can go", "we're done", "back to town"
@@ -532,12 +562,27 @@ def write_atomic(path, text):
 
 
 class Bridge:
-    def __init__(self, facts):
+    def __init__(self, facts, doctrines=None):
         self.facts = facts
         self.memory = {}
-        self.jobs = queue.Queue()
+        # (priority, order, kind, request, queued): plans first, then bot chat, crowd chat, and the background work
+        self.jobs = queue.PriorityQueue()
+        self.order = itertools.count()
         self.last_warm = 0
         self.lock = threading.Lock()
+        # Phase 9b: the crew's doctrines and base tables
+        self.doctrines = doctrines or cd.Doctrines()
+        self.signatures = {}
+        self.table_pending = set()
+        self.table_retry = {}
+        # (a model that doesn't answer is not asked for tables again for a while, growing to TABLE_RETRY_MAX: tables are
+        # background work and must not hold up the chat)
+        self.table_pause = 0
+        self.table_failures = 0
+        self.plan_asked = 0
+
+    def enqueue(self, priority, kind, r, queued=None):
+        self.jobs.put((priority, next(self.order), kind, r, queued if queued is not None else time.time()))
 
     # Prompt
 
@@ -593,6 +638,45 @@ class Bridge:
         raw = os.path.basename(str(r.get("instrument") or "")).replace(".iff", "")
         raw = {"flute_droopy": "chidinkalu horn", "nalargon": "nalargon", "omni_box": "omni box"}.get(raw, raw)
         return "your " + raw.replace("_", " ") if raw else "your instrument"
+
+    def crew_prompt(self, r):
+        """Phase 9b, for a crew bot: its doctrine, who is in the group and what it is fighting, and how it takes orders
+        about how to fight and lessons (the JSON fields "orders", "teach" and "teach_to")."""
+        first = str(r.get("first") or str(r.get("name") or "").split(" ")[0]).lower()
+        squad = cd.parse_squad(r.get("squad"))
+        player = r.get("playerName", "The player")
+        text = self.doctrines.text(first)
+        out = ""
+        if text:
+            out += ("Your doctrine is how you fight: what your creator wrote for you, and any lessons the group has taught "
+                    "you since. It is part of who you are in a fight. If someone asks how you fight, what your doctrine is or "
+                    "what you've been taught, sum it up in a line or two in your own words, from this and nothing else:\n" +
+                    text + "\n\n")
+        if squad:
+            out += ("The group you're in, with each member's job: " +
+                    ", ".join(f"{f} ({role})" for f, role in squad.items()) + ".\n\n")
+        if r.get("fight"):
+            out += ("The creatures attacking the group right now (oid, name, level, health, whom it is on, distance):\n" +
+                    str(r.get("fight")).strip() + "\n\n")
+        if r.get("standing"):
+            out += "Standing orders in force (member, entry, value):\n" + str(r.get("standing")).strip() + "\n\n"
+        roles = sorted({role for role in squad.values() if role in cd.ALL_ROLES}) or [str(r.get("job"))]
+        out += (
+            f"{player} may tell the crew how to fight (an ORDER) or teach you a lesson (a LESSON). An order changes entries "
+            "of a tactics table that the fight logic reads. The entries by role:\n" + cd.describe_entries(roles) + "\n\n"
+            'The "orders" field is a list of changes, each {"to": "<a member\'s first name in lowercase, or crew for '
+            'everyone>", "entry": "<entry>", "value": "<value>"}, e.g. [{"to": "quillan", "entry": "shoot", "value": "no"}, '
+            '{"to": "quillan", "entry": "packs", "value": "none"}] for "Quillan, just heal". "as you were" or "back to '
+            'normal" is [{"to": "crew", "entry": "clear", "value": ""}]. Give orders ONLY when the player\'s words are an '
+            "instruction about how to fight; for chat, thanks, praise, jokes, questions, or anything else, orders is []. "
+            "Never invent an order the words don't give. A creature may be named only from the list above. When you take "
+            "an order, say in character what you took, in a line (\"Heals only. I'll keep my head down.\").\n"
+            'The "teach" field is a lesson to add to the doctrine when they say "from now on...", "always...", "never...", "when '
+            'X, do Y": one short imperative sentence in your own words ("Revive first, everything else after."), with '
+            '"teach_to" "crew" if they teach everyone and "self" otherwise. "forget what I told you" is teach "forget"; "forget the '
+            'bit about grenades" is "forget:grenades". Otherwise teach is "". When you take a lesson, say back in character '
+            'what you took ("Revive first, everything else after. Got it.").\n\n')
+        return out
 
     def bot_prompt(self, r):
         """A bot player: a veteran of its job who has parked at its spot for years, and knows the work in the
@@ -878,6 +962,9 @@ class Bridge:
         if crew and r.get("huntTally"):
             hunting += ("The hunt in numbers so far (use them when asked how it's going or how many; don't make up "
                         "others): " + str(r.get("huntTally")).strip() + ".\n\n")
+        if crew:
+            # Phase 9b: the doctrine, and orders and lessons about how to fight
+            hunting += self.crew_prompt(r)
         if actions:
             act = (f"The action is what you do for them now: {actions} It happens right after you speak, so say what "
                    "you're about to do, not that it's done.\n\n")
@@ -885,6 +972,8 @@ class Bridge:
             shape = f'"action": "<one of: {choices}>", '
         else:
             act, shape = "", ""
+        if crew:
+            shape += '"orders": [<tactics changes, or none>], "teach": "<a lesson, or empty>", "teach_to": "<self or crew>", '
         return (
             f"{who} It is {self.time_of_day(int(r.get('hour', 20)))}. This is the Star Wars galaxy during the Galactic "
             "Civil War, around the time of the Battle of Yavin: the Empire rules, the Rebel Alliance fights it, and "
@@ -921,8 +1010,8 @@ class Bridge:
 
     # The model
 
-    def complete(self, messages, max_tokens, timeout):
-        body = {"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.8, "think": False,
+    def complete(self, messages, max_tokens, timeout, temperature=0.8):
+        body = {"model": MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature, "think": False,
                 "keep_alive": KEEP_ALIVE}
         req = urllib.request.Request(LITELLM_URL + "/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Authorization": "Bearer " + LITELLM_KEY, "Content-Type": "application/json"})
@@ -934,8 +1023,9 @@ class Bridge:
     def clean(content, asked="", bot=False):
         """The model's JSON (or bare text) -> (mood, text), or None if it's unusable. Out-of-world words are only
         allowed when the player used them first (a puzzled "NPC? Never heard the term" is fine). For a bot player
-        -> (mood, text, the action the model proposed as written, whether the model thought it an insult)."""
-        mood, text, action, insult = "", content.strip(), "", False
+        -> (mood, text, the action the model proposed as written, whether the model thought it an insult, the crew's
+        orders and lesson as the model wrote them)."""
+        mood, text, action, insult, extra = "", content.strip(), "", False, {}
         match = re.search(r"\{.*\}", text, re.S)
         if match:
             try:
@@ -951,6 +1041,8 @@ class Bridge:
                 return None
             text, mood, action = obj["say"], str(obj.get("mood") or ""), str(obj.get("action") or "")
             insult = obj.get("insult") is True or str(obj.get("insult")).strip().lower() in ("true", "yes", "1")
+            # Phase 9b, the crew: orders about how to fight and a lesson, checked later against the player's words
+            extra = {"orders": obj.get("orders"), "teach": obj.get("teach"), "teach_to": obj.get("teach_to")}
         elif text.startswith("{"):
             # JSON cut off at max_tokens: don't speak half an object
             return None
@@ -968,7 +1060,7 @@ class Bridge:
         if len(text) > limit:
             cut = max(text.rfind(c, 0, limit) for c in ".!?")
             text = text[:cut + 1] if cut > 40 else text[:limit - 3].rstrip() + "..."
-        return (mood, text, action, insult) if bot else (mood, text)
+        return (mood, text, action, insult, extra) if bot else (mood, text)
 
     @staticmethod
     def two_sentences(text):
@@ -1123,7 +1215,7 @@ class Bridge:
                           for t in list(turns)[-2:])
         if hunt:
             before = self.hunt_before(r, text)
-        mood, say, proposed, model_insult = result
+        mood, say, proposed, model_insult, extra = result
         job = r.get("job")
         # A typo inside a word ("cam,p") still asks for it
         action = self.decide(job, re.sub(r"(?<=[A-Za-z])[,.;](?=[A-Za-z])", "", text), proposed, before)
@@ -1133,19 +1225,39 @@ class Bridge:
         remembered = {"action": action or "none"} if BOT_ACTIONS.get(job) else {}
         remembered.update({"insult": "insult" in flags, "say": say, "mood": mood})
         turns.append({"role": "assistant", "content": json.dumps(remembered)})
-        return mood, say, action, flags
+        orders, teach = "", None
+        if job in CREW_JOBS:
+            orders, teach = self.crew_changes(r, text, action, extra)
+            # An order or a lesson about healing isn't a request for treatment ("Quillan, just heal" started a wound
+            # treatment on the local server)
+            if (orders or teach is not None) and action in ("wounds", "buff"):
+                action = ""
+        return mood, say, action, flags, orders, teach
+
+    @staticmethod
+    def crew_changes(r, text, action, extra):
+        """Phase 9b: the orders (reply line 6) and the lesson a crew reply may carry. The model proposes; they stand only
+        when the player's words give them (crew_doctrine.py). The lesson is returned, not written: the worker commits it."""
+        first = str(r.get("first") or str(r.get("name") or "").split(" ")[0]).lower()
+        squad = cd.parse_squad(r.get("squad"))
+        creatures = cd.parse_creatures(r.get("fight"))
+        extra = extra or {}
+        teach = cd.check_teach(text, extra.get("teach"), extra.get("teach_to"), squad, first)
+        orders = "" if teach is not None else cd.check_orders(text, extra.get("orders"), squad, creatures, first, action)
+        return orders, teach
 
     # Requests and replies
 
     def reply(self, rid, result, bot=False):
         path = os.path.join(TALK_DIR, "rep", rid + ".txt")
         if result is None:
-            write_atomic(path, "fallback\n\n\n\n" if bot else "fallback\n\n\n")
+            write_atomic(path, "fallback\n\n\n\n\n\n\n" if bot else "fallback\n\n\n")
         elif bot:
-            # Five lines: status, mood, text, action, flags (a bot request with a job we don't know got a crowd
-            # persona, and no action or flags)
-            write_atomic(path, "ok\n%s\n%s\n%s\n%s\n" % (result[0], result[1], result[2] if len(result) > 2 else "",
-                                                       result[3] if len(result) > 3 else ""))
+            # Seven lines: status, mood, text, action, flags, orders, the lesson's result (a bot request with a job we
+            # don't know got a crowd persona, and no action, flags, orders or lesson)
+            def part(i):
+                return result[i] if len(result) > i and isinstance(result[i], str) else ""
+            write_atomic(path, "ok\n%s\n%s\n%s\n%s\n%s\n%s\n" % (result[0], result[1], part(2), part(3), part(4), part(5)))
         else:
             write_atomic(path, "ok\n%s\n%s\n" % result)
 
@@ -1159,18 +1271,137 @@ class Bridge:
         elif kind == "warm":
             if time.time() - self.last_warm >= WARM_EVERY:
                 self.last_warm = time.time()
-                self.jobs.put(("warm", r, time.time()))
+                self.enqueue(PRIO_BACKGROUND, "warm", r)
+        elif kind == "plan" and re.fullmatch(r"[A-Za-z0-9_-]+", rid):
+            self.plan_asked = time.time()
+            self.enqueue(PRIO_PLAN, "plan", r)
         elif kind == "say" and re.fullmatch(r"[A-Za-z0-9_-]+", rid):
-            self.jobs.put(("say", r, time.time()))
+            self.enqueue(PRIO_BOT if r.get("bot") else PRIO_CROWD, "say", r)
+
+    # Phase 9b: plans, base tables and lessons
+
+    @staticmethod
+    def clean_say(text):
+        """A line a bot says in group chat from a plan: one line in the setting, no out-of-world words."""
+        text = text.translate(ASCII).encode("ascii", "ignore").decode("ascii")
+        text = re.sub(r"\s+", " ", text.replace("*", "")).strip().strip('"').strip()
+        if not text or BANNED.search(text) or BOT_BANNED.search(text):
+            return ""
+        if len(text) > MAX_CHARS:
+            cut = max(text.rfind(c, 0, MAX_CHARS) for c in ".!?")
+            text = text[:cut + 1] if cut > 20 else text[:MAX_CHARS - 3].rstrip() + "..."
+        return text
+
+    def plan(self, r, timeout):
+        """A plan request -> reply lines ("first entry value", "say first text"), or None when the model gave nothing usable."""
+        members = cd.parse_members(r.get("crew"))
+        doctrines = {first: self.doctrines.text(first) for first in members if members[first]["role"] in cd.ALL_ROLES}
+        bases = {}
+        for first in doctrines:
+            saved = self.doctrines.load_table(first)
+            role = members[first]["role"]
+            bases[first] = [line.split(" ", 1)[1] for line in
+                            cd.table_lines(first, cd.clean_table(role, saved["table"], (), list(doctrines)))] if saved else []
+        messages = cd.plan_messages(r, doctrines, bases)
+        return cd.parse_plan(self.complete(messages, PLAN_MAX_TOKENS, timeout, 0.3), r, self.clean_say)
+
+    def make_table(self, first, timeout=TABLE_TIMEOUT):
+        """The base table the model makes of a bot's doctrine: {entry: value} (checked), or None."""
+        role = self.doctrines.role(first)
+        text = self.doctrines.text(first)
+        if role is None:
+            return None
+        if not text:
+            return {}
+        return cd.parse_table(self.complete(cd.table_messages(first, role, text), 400, timeout, 0.2), role,
+                              list(cd.CREW_ROLE))
+
+    def write_base(self):
+        """/run/talk/tactics/base.txt from the tables on disk: what the crew's Lua reads, at most once a minute."""
+        folder = os.path.join(TALK_DIR, "tactics")
+        os.makedirs(folder, exist_ok=True)
+        write_atomic(os.path.join(folder, "base.txt"), self.doctrines.base_text())
+
+    def watch_doctrine(self):
+        """Look at the doctrine files; queue a table for each bot whose doctrine (file or lessons) changed since its table."""
+        now = time.time()
+        for first in self.doctrines.firsts():
+            signature = self.doctrines.signature(first)
+            if signature == self.signatures.get(first):
+                continue
+            digest = self.doctrines.digest(first)
+            saved = self.doctrines.load_table(first)
+            self.signatures[first] = signature
+            if saved and saved.get("digest") == digest:
+                continue
+            if first not in self.table_pending and now >= max(self.table_retry.get(first, 0), self.table_pause) and \
+                    self.doctrines.role(first):
+                self.table_pending.add(first)
+                self.enqueue(PRIO_BACKGROUND, "table", {"first": first})
+            else:
+                # (not yet: look again at the next pass)
+                self.signatures.pop(first, None)
+
+    def do_table(self, first):
+        started = time.time()
+        if started - self.plan_asked < TABLE_QUIET:
+            # (a fight on: the next doctrine pass queues it again)
+            self.table_pending.discard(first)
+            self.signatures.pop(first, None)
+            return
+        if started < self.table_pause:
+            # (queued before the model stopped answering: not now)
+            self.table_pending.discard(first)
+            self.signatures.pop(first, None)
+            return
+        digest = self.doctrines.digest(first)
+        try:
+            table = self.make_table(first)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as e:
+            log("table error", first, type(e).__name__, str(e)[:120])
+            table = None
+        self.table_pending.discard(first)
+        if table is None:
+            self.table_failures += 1
+            wait = min(TABLE_RETRY * 2 ** (self.table_failures - 1), TABLE_RETRY_MAX)
+            self.table_pause = time.time() + wait
+            self.signatures.pop(first, None)
+            log("table", first, "no table made, trying again in %d s" % wait)
+            return
+        self.table_failures = 0
+        self.doctrines.save_table(first, table, digest)
+        self.write_base()
+        log("table", first, "%.1fs" % (time.time() - started), ", ".join(cd.table_lines(first, table)) or "all defaults")
+
+    def commit_teach(self, teach):
+        """Write a lesson (or forget some): the result for reply line 7 ("added quillan", "forgot crew", "none")."""
+        if not isinstance(teach, dict):
+            return ""
+        target = teach.get("to") or ""
+        try:
+            if teach.get("op") == "add":
+                return ("added " + target) if self.doctrines.add_taught(target, teach["line"]) else "none"
+            if teach.get("op") == "forget":
+                gone = self.doctrines.forget(target, teach.get("words"))
+                return ("forgot " + target) if gone else "none"
+        except OSError as e:
+            log("teach error", target, type(e).__name__, str(e)[:120])
+        return "none"
 
     def worker(self):
         while True:
-            kind, r, queued = self.jobs.get()
+            _priority, _order, kind, r, queued = self.jobs.get()
             try:
                 if kind == "warm":
                     started = time.time()
                     self.complete([{"role": "user", "content": "Say hi."}], 1, 120)
                     log("warm", "%.1fs" % (time.time() - started))
+                    continue
+                if kind == "table":
+                    self.do_table(r["first"])
+                    continue
+                if kind == "plan":
+                    self.do_plan(r, queued)
                     continue
                 # A bot player's reply has a fourth and a fifth line, the action and the flags
                 bot = bool(r.get("bot"))
@@ -1186,26 +1417,69 @@ class Bridge:
                 except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as e:
                     log("error", r.get("name"), type(e).__name__, str(e)[:120])
                     result = None
+                if result is not None and len(result) > 5:
+                    # (the lesson is written now; Lua is told the result)
+                    result = result[:5] + (self.commit_teach(result[5]),)
                 self.reply(r["id"], result, bot)
                 log(r.get("channel") if r.get("channel") in ("tell", "group") else "say",
                     "%.1fs" % (time.time() - started), r.get("city"), r.get("name"), "<-",
                     repr(r.get("text", "")[:60]), "->", repr(result[1]) if result else "fallback",
                     *(["[%s]" % (result[2] or "none")] if bot and result and len(result) > 2 else []),
-                    *(["{%s}" % result[3]] if bot and result and len(result) > 3 and result[3] else []))
+                    *(["{%s}" % result[3]] if bot and result and len(result) > 3 and result[3] else []),
+                    *(["orders(%s)" % result[4]] if bot and result and len(result) > 4 and result[4] else []),
+                    *(["taught(%s)" % result[5]] if bot and result and len(result) > 5 and result[5] != "none" else []))
             except Exception as e:  # keep the bridge alive whatever one request does
                 log("failed", type(e).__name__, str(e)[:200])
 
+    def do_plan(self, r, queued):
+        """A plan for a fight: the reply file has the changes, or says fallback. A plan older than PLAN_DEADLINE (from when
+        Lua wrote it) is not made, and one that comes back after it is dropped (Lua drops it too)."""
+        started = time.time()
+        age = started - float(r.get("at", queued))
+        left = PLAN_DEADLINE - age
+        if left < 2:
+            self.reply_plan(r["id"], None)
+            log("plan late", "%.1fs old" % age, "-> dropped")
+            return
+        try:
+            lines = self.plan(r, left)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as e:
+            log("plan error", type(e).__name__, str(e)[:120])
+            lines = None
+        took = time.time() - started
+        if lines is not None and time.time() - float(r.get("at", queued)) > PLAN_DEADLINE:
+            lines = None
+        self.reply_plan(r["id"], lines)
+        log("plan", r.get("reason"), "%.1fs" % took, "(waited %.1fs)" % age,
+            "fallback" if lines is None else "; ".join(lines) or "no changes")
+
+    def reply_plan(self, rid, lines):
+        path = os.path.join(TALK_DIR, "rep", rid + ".txt")
+        write_atomic(path, "fallback\n" if lines is None else "ok\n" + "".join(line + "\n" for line in lines))
+
     def run(self):
-        for sub in ("req", "rep"):
+        for sub in ("req", "rep", "tactics"):
             os.makedirs(os.path.join(TALK_DIR, sub), exist_ok=True)
         threading.Thread(target=self.worker, daemon=True).start()
         log("talk bridge up:", MODEL, "via", LITELLM_URL, "facts for", ", ".join(sorted(self.facts)) or "no cities")
         req_dir = os.path.join(TALK_DIR, "req")
+        # The crew's base tables as they were (the pod's emptyDir starts empty), then look for doctrines that changed
+        try:
+            firsts = self.doctrines.firsts()
+            self.write_base()
+            log("doctrine:", len(firsts), "bots,", "files in", self.doctrines.data_dir + "/base or the image's",
+                "tables written to", os.path.join(TALK_DIR, "tactics", "base.txt"))
+        except Exception as e:
+            log("doctrine error", type(e).__name__, str(e)[:200])
+        last_watch = 0
         while True:
             try:
                 # Lua writes requests only while this is fresh, so a dead bridge doesn't fill the shared volume
                 write_atomic(os.path.join(TALK_DIR, "alive"), "%d\n" % time.time())
                 self.poll(req_dir)
+                if time.time() - last_watch >= DOCTRINE_WATCH:
+                    last_watch = time.time()
+                    self.watch_doctrine()
             except Exception as e:  # a bad file or a full disk must not stop the bridge (or the pod)
                 log("loop error", type(e).__name__, str(e)[:200])
                 time.sleep(1)
