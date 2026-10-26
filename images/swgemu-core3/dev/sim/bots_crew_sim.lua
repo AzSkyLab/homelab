@@ -742,7 +742,8 @@ return function(ctx)
 		for _, entry in ipairs(BotRoster.bots) do
 			local b = byFirst[entry.name:match("^(%S+)"):lower()]
 			table.insert(out, {name = entry.name, firstName = entry.name:match("^(%S+)"), job = entry.job, city = entry.city,
-				oid = b and b.oid or 0, online = b ~= nil and b.online == true})
+				oid = b and b.oid or 0, online = b ~= nil and b.online == true, owner = entry.owner or 0, species = entry.species,
+				sex = entry.sex})
 		end
 		return out
 	end
@@ -1125,6 +1126,140 @@ return function(ctx)
 		for i, oid in ipairs(g.members) do members[i] = oid end
 		return {id = g.id, leader = members[1] or 0, members = members}
 	end
+	-- Own crews (Phase 9, Part 1): the bindings of BotCrewsLua, over entries added to the roster table (removed again by
+	-- ownClear). An own-crew bot is a roster entry with an owner and online "owner"
+	local ownLog = {hired = {}, letGo = {}}
+
+	local function addOwnBot(entry)
+		local first = entry.name:match("^(%S+)")
+		local st = entry.station
+		local role = entry.job
+		local b = ctx.newObject({isBotFlag = true, isPlayer = true, first = first, name = entry.name, planet = st.planet, x = st.x, y = st.y,
+			z = st.z, cell = st.cell or 0, inWorld = false, online = false, cash = 100, bank = 1000, packs = {}, buffs = {}, wounds = {},
+			skillPrefixes = ROLE_SKILLS[role], skillMods = {}, weapon = ROLE_WEAPON[role], role = role, ownerOid = entry.owner})
+		for k, v in pairs(ROLE_MODS[role]) do
+			b.skillMods[k] = v
+		end
+		byFirst[first:lower()] = b
+		ctx.addPlayer(b)
+		return b
+	end
+
+	local function ownEntries(owner)
+		local out = {}
+		for _, entry in ipairs(BotRoster.bots) do
+			if (entry.owner or 0) ~= 0 and (owner == nil or entry.owner == owner) then
+				table.insert(out, entry)
+			end
+		end
+		return out
+	end
+
+	local function ownClear()
+		for i = #BotRoster.bots, 1, -1 do
+			local entry = BotRoster.bots[i]
+			if (entry.owner or 0) ~= 0 then
+				byFirst[entry.name:match("^(%S+)"):lower()] = nil
+				table.remove(BotRoster.bots, i)
+			end
+		end
+		ownLog = {hired = {}, letGo = {}}
+	end
+
+	function api.botOwner(oid)
+		local o = ctx.objects[oid]
+		return o ~= nil and o.ownerOid or 0
+	end
+	function api.botCrewOf(owner)
+		local out = {}
+		for _, entry in ipairs(ownEntries(owner)) do
+			local b = byFirst[entry.name:match("^(%S+)"):lower()]
+			table.insert(out, {oid = b.oid, name = entry.name, firstName = entry.name:match("^(%S+)"), job = entry.job, species = entry.species,
+				sex = entry.sex, city = entry.city, hiredAt = 0, online = b.online == true, ready = true, state = b.online and "online" or "offline"})
+		end
+		return out
+	end
+	function api.botEntry(first)
+		for _, entry in ipairs(BotRoster.bots) do
+			if entry.name:match("^(%S+)"):lower() == tostring(first):lower() then return entry end
+		end
+		return nil
+	end
+	function api.botNameFree(first)
+		for _, entry in ipairs(BotRoster.bots) do
+			if entry.name:match("^(%S+)"):lower() == tostring(first):lower() then
+				return false, "a crew member already has that name"
+			end
+		end
+		for _, o in pairs(ctx.objects) do
+			if o.isPlayer and not o.isBotFlag and tostring(o.first):lower() == tostring(first):lower() then
+				return false, "a character already has that name"
+			end
+		end
+		return true, ""
+	end
+	function api.botNameCheck(name, species)
+		if species == "wookiee" and name:find(" ") then
+			return false, "That name doesn't suit the species."
+		end
+		if name:lower():find("fuck") then
+			return false, "That name is not allowed."
+		end
+		return true, ""
+	end
+	function api.botBoxCount(oid)
+		local o = ctx.objects[oid]
+		return o ~= nil and o.boxes or 0
+	end
+	function api.botHire(owner, entry)
+		assert(math.type(owner) == "integer", "botHire: owner must be an integer oid")
+		assert(type(entry) == "table" and type(entry.name) == "string" and type(entry.skills) == "table" and type(entry.station) == "table", "botHire: bad entry")
+		local first = entry.name:match("^(%S+)")
+		local free, why = api.botNameFree(first)
+		if not free then return false, why end
+		for _, other in ipairs(ownEntries(owner)) do
+			if other.job == entry.job then return false, "the crew already has a " .. entry.job end
+		end
+		if #ownEntries(owner) >= 7 then return false, "a crew has seven at most" end
+		local copy = {}
+		for k, v in pairs(entry) do copy[k] = v end
+		copy.owner, copy.online, copy.hiredAt = owner, "owner", sim.now
+		table.insert(BotRoster.bots, copy)
+		addOwnBot(copy)
+		table.insert(ownLog.hired, copy)
+		return true, first
+	end
+	function api.botLetGo(oid)
+		local o = ctx.objects[oid]
+		if o == nil or (o.ownerOid or 0) == 0 then return false, "that bot isn't in an own crew" end
+		if o.online then
+			sim.call("BotJobs", "onLogout", o)
+			o.online, o.inWorld = false, false
+		end
+		for i, entry in ipairs(BotRoster.bots) do
+			if (entry.owner or 0) ~= 0 and entry.name:match("^(%S+)") == o.first then
+				table.remove(BotRoster.bots, i)
+				break
+			end
+		end
+		byFirst[o.first:lower()] = nil
+		table.insert(ownLog.letGo, o.first)
+		return true, ""
+	end
+	-- The input window of the recruiter (Core3's SuiInputBox template): what it was given is logged with the windows
+	api.SuiInputBox = {new = function(play, callback)
+		local box = {props = {}}
+		function box.setTargetNetworkId(id) box.target = id end
+		function box.setTitle(t) box.title = t end
+		function box.setPrompt(t) box.prompt = t end
+		function box.setProperty(w, p, v) box.props[w .. "." .. p] = v end
+		function box.sendTo(pPlayer)
+			table.insert(log.windows, {to = pPlayer.oid, title = box.title, prompt = box.prompt, screenplay = play, callback = callback,
+				input = true, text = box.props["txtInput.Text"], t = nowMs()})
+		end
+		return box
+	end}
+
 	-- The players online with a client (Phase 8's group cap): the humans a scenario made
 	function api.botHumansOnline()
 		local out = {}
@@ -7752,6 +7887,307 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Scenario: Phase 9 Part 1, the crew job for an own crew (invites, calls, the cap of three each, "make room")
+
+	function scenarios.crewown()
+		setup("/nonexistent/sim-talk")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewown: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		local dana = makeHuman("Dana", crew.tank.x + 4, crew.tank.y + 2)
+		local eve = makeHuman("Eve", crew.tank.x + 6, crew.tank.y - 2)
+		cameren.boxes, dana.boxes = 6, 12
+
+		local used = {}
+		local function hire(owner, role, name)
+			local station = BotCrewKit:station("mos_eisley", used)
+			table.insert(used, {station.x, station.y})
+			local entry = BotCrewKit:entry({role = role, species = "human", sex = "male", name = name, look = {}, boxes = owner.boxes,
+				city = "mos_eisley", station = station})
+			local ok, first = botHire(owner.oid, entry)
+			if not ok then fail("crewown: hiring " .. name .. ": " .. tostring(first)) end
+			local b = byFirst[first:lower()]
+			login(b)
+			return b
+		end
+		local venn = hire(cameren, "tank", "Venn Farrow")
+		local oren = hire(cameren, "rifleman", "Oren Marsh")
+		local aleka = hire(cameren, "medic", "Aleka Ives")
+		local holt = hire(cameren, "ranger", "Holt Jaxon")
+		local lorn = hire(dana, "tank", "Lorn Yarrow")
+		hire(dana, "medic", "Brisa Fendrel")
+		sim.run(5)
+		eq("the owner Venn knows", readData("bot:" .. venn.oid .. ":crew:owner"), cameren.oid)
+		eq("the Mos Eisley crew's owner", readData("bot:" .. crew.tank.oid .. ":crew:owner"), 0)
+
+		-- 1. A stranger's invite is refused, politely; the owner's is taken
+		local t = nowMs()
+		invite(dana, venn, true)
+		sim.run(4)
+		eq("grouped after a stranger's invite", members(dana), 0)
+		eq("a decline", #commands(venn, "decline", t), 1)
+		eq("no join", #commands(venn, "join", t), 0)
+		if not anyLine(entries(log.says, venn, t), "tank", "notYours") then fail("crewown: no polite no to the stranger") end
+		invite(cameren, venn, true)
+		sim.run(4)
+		eq("Venn with Cameren", members(cameren), 2)
+
+		-- 2. The Mos Eisley crew takes anyone's invite, as before
+		invite(dana, crew.rifleman, true)
+		sim.run(4)
+		eq("a Mos Eisley bot with Dana", members(dana), 2)
+
+		-- 3. Three each when two humans are online: Cameren's group gets Venn, Oren, Aleka; Holt sits out
+		invite(cameren, oren, true)
+		sim.run(3)
+		invite(cameren, aleka, true)
+		sim.run(3)
+		eq("Cameren's group", members(cameren), 4)
+		t = nowMs()
+		invite(cameren, holt, true)
+		sim.run(4)
+		eq("Cameren's group after the fourth", members(cameren), 4)
+		eq("Holt declined", #commands(holt, "decline", t), 1)
+		if not anyLine(entries(log.says, holt, t), "ranger", "sitOut") then fail("crewown: Holt didn't say he sits this one out") end
+
+		-- 4. "Make room": the newest of Cameren's own crew in the group goes home
+		groupSay(cameren, "make room")
+		sim.run(20)
+		eq("the group after make room", members(cameren), 3)
+		eq("the newest (Aleka) went", aleka.groupId, nil)
+		invite(cameren, holt, true)
+		sim.run(4)
+		eq("Holt fits now", members(cameren), 4)
+
+		-- 5. "Crew, come to me": the caller's own crew, never another's. Eve has none: the Mos Eisley crew.
+		local function called(b) return readStringData("bot:" .. b.oid .. ":crew:mode") == "called" end
+		-- (Dana's Brisa and Lorn are at home; Cameren has nobody at home but... Aleka)
+		speak(aleka, cameren, "crew, come to me", "tell")
+		sim.run(40)
+		if not (called(aleka) or aleka.groupId ~= nil) then fail("crewown: Cameren's own Aleka didn't come") end
+		for _, role in ipairs(SEVEN) do
+			if called(crew[role]) then fail("crewown: a Mos Eisley bot came for Cameren, who has a crew (" .. role .. ")") end
+		end
+		if called(lorn) then fail("crewown: Dana's Lorn came for Cameren") end
+		-- a stranger asks Cameren's bot: refused, and nobody comes
+		t = nowMs()
+		speak(aleka, eve, "crew, come to me", "tell")
+		sim.run(5)
+		if not anyLine(entries(log.says, aleka, t), "medic", "notYours") and #entries(log.tells, aleka, t) == 0 then
+			fail("crewown: Eve got no polite no from Cameren's Aleka")
+		end
+		for _, role in ipairs(SEVEN) do
+			if called(crew[role]) then fail("crewown: a Mos Eisley bot came for Eve through Cameren's bot") end
+		end
+		-- Eve has no crew: she calls the Mos Eisley crew
+		speak(crew.ranger, eve, "crew, come to me", "tell")
+		sim.run(40)
+		local came = 0
+		for _, role in ipairs(SEVEN) do
+			if called(crew[role]) or crew[role].groupId ~= nil then came = came + 1 end
+		end
+		if came < 3 then fail("crewown: only " .. came .. " of the Mos Eisley crew came for Eve") end
+		if called(lorn) then fail("crewown: Dana's Lorn came for Eve") end
+
+		-- 6. With one human online the cap is the group's: no sitting out
+		realPrint(string.format("crewown %d own bots, group of %d, %d hired", #ownEntries(), members(cameren), #ownLog.hired))
+		ownClear()
+		teardown()
+	end
+
+	-- Scenario: Phase 9 Part 1, the recruiter's windows (mock SUI)
+
+	function scenarios.crewrecruit()
+		setup("/nonexistent/sim-talk")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewrecruit: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		BotRecruiter:start()
+		local pNpc = ctx.objects[readData("recruit:npc:mos_eisley")]
+		if pNpc == nil then fail("crewrecruit: no recruiter in the Mos Eisley cantina") return end
+		local cameren = makeHuman("Cameren", pNpc.x - 1, pNpc.y + 1)
+		makeHuman("Dana", pNpc.x + 30, pNpc.y)
+		cameren.boxes = 6
+		local function last() return log.windows[#log.windows] end
+		local function answer(w, row, event)
+			sim.call(w.screenplay, w.callback, cameren, nil, event or 0, row ~= nil and tostring(row) or "")
+			sim.run(1)
+		end
+		local function say(text)
+			cameren.target = pNpc.oid
+			pNpc:fire("SPATIALCHAT", {text = text}, cameren.oid)
+			sim.run(1)
+		end
+
+		-- 1. Talking: a nudge without the word, the windows with it; not heard from far away
+		sim.chatLog = {}
+		say("hello there")
+		eq("windows for a hello", #log.windows, 0)
+		if #sim.chatLog ~= 1 then fail("crewrecruit: no nudge for a hello") end
+		cameren.x = pNpc.x + 60
+		say("I want a crew")
+		eq("windows from far", #log.windows, 0)
+		cameren.x = pNpc.x - 1
+		sim.run(2)
+		say("Torrin, I want a crew")
+		eq("first window", #log.windows, 1)
+		local w = last()
+		eq("a role list", w.title, "A crew of your own")
+		eq("rows: seven roles and Continue", #w.options, 8)
+		if not w.options[1][1]:find("^%[  %] Tank:") then fail("crewrecruit: first row " .. w.options[1][1]) end
+
+		-- 2. Roles: tank and medic; Continue; nothing picked doesn't go on
+		answer(w, 7)
+		eq("Continue with none stays", last().title, "A crew of your own")
+		answer(last(), 0)
+		answer(last(), 2)
+		if not last().options[1][1]:find("^%[x%] Tank:") or not last().options[3][1]:find("^%[x%] Combat medic:") then
+			fail("crewrecruit: the picks aren't marked: " .. last().options[1][1] .. " / " .. last().options[3][1])
+		end
+		eq("Continue says 2", last().options[8][1], "Continue with 2 roles")
+		answer(last(), 7)
+		w = last()
+		eq("species window", w.callback, "onSpecies")
+		eq("species rows", #w.options, 20)
+		answer(w, 0)
+		w = last()
+		eq("name window", w.callback, "onName")
+		if not w.input or w.text == nil or w.text == "" then fail("crewrecruit: the name window has no suggestion") end
+		local suggestion = w.text
+		if not w.prompt:find(suggestion, 1, true) then fail("crewrecruit: the prompt doesn't carry the suggestion") end
+
+		-- 3. Names: too short, a bot's, a character's, a crowd member's, bad letters; each shows the window again with why
+		local function badName(text, why)
+			local before = #log.windows
+			answer(last(), text)
+			eq("a window again for " .. text, #log.windows, before + 1)
+			eq("still the name window for " .. text, last().callback, "onName")
+			if not last().prompt:find(why, 1, true) then fail("crewrecruit: '" .. text .. "' should say '" .. why .. "', said: " .. last().prompt) end
+		end
+		badName("Xo", "too short")
+		badName("Kragoth Ssival", "crew member already has that name")
+		badName("Dana", "character already has that name")
+		badName("Bo9b Kell", "letters only")
+		badName("Anne-Marie Kell", "letters only")
+		badName("Torrin Kell", "recruiter")
+		badName("Aren Vosk Dane", "first name")
+		-- A name in the crowd's use
+		writeData("lc:mos_eisley:name:zorbo", 1234)
+		badName("Zorbo Kell", "someone in Mos Eisley has that name")
+		-- The suggestion taken as it is
+		answer(last(), "")
+		w = last()
+		eq("look window", w.callback, "onLook")
+		eq("four looks", #w.options, 4)
+		local tankFirst = suggestion:match("^(%S+)")
+		if readData("crew:name:" .. tankFirst:lower()) <= sim.now then fail("crewrecruit: the picked name isn't kept from the crowd") end
+		answer(w, 1)
+		w = last()
+		eq("the next bot's species window", w.callback, "onSpecies")
+		if not w.title:find("2 of 2", 1, true) then fail("crewrecruit: " .. w.title) end
+		answer(w, 5)	-- Bothan female? row 5 = species 3 (Mon Calamari) female
+		answer(last(), "Aleka Ives")
+		w = last()
+		eq("medic look window", w.callback, "onLook")
+		eq("a species with no hair gets skin tones", w.options[1][1], "Skin tone 1")
+		answer(w, 2)
+		w = last()
+		eq("confirm window", w.callback, "onConfirm")
+		eq("confirm rows", #w.options, 2)
+		if not w.options[2][1]:find("^Aleka Ives: Combat medic, female Mon Calamari, Skin tone 3") then fail("crewrecruit: row " .. w.options[2][1]) end
+		eq("nobody hired before the confirm", #ownLog.hired, 0)
+
+		-- 4. Hire them
+		answer(w, nil)
+		eq("hired", #ownLog.hired, 2)
+		if #ownLog.hired < 2 then
+			ownClear()
+			teardown()
+			return
+		end
+		local tank, medic = ownLog.hired[1], ownLog.hired[2]
+		eq("the tank", tank.job, "tank")
+		eq("the medic", medic.job, "medic")
+		eq("owner", tank.owner, cameren.oid)
+		eq("online rule", tank.online, "owner")
+		-- At six boxes: the first six counted boxes of the order, with the novice boxes they need
+		local counted = BotCrewKit:boxesIn(tank.skills)
+		eq("the tank's boxes", counted, 6)
+		eq("the medic's skin tone", medic.skinTone, 10)
+		eq("the medic's doctrine seed", medic.doctrine, "quillan")
+		if tank.station.x == medic.station.x and tank.station.y == medic.station.y then fail("crewrecruit: both at one station") end
+		eq("they wait in the cantina they were hired in", tank.city, "mos_eisley")
+		eq("a station in the Mos Eisley cantina", tank.station.cell, 1082877)
+		local armor = false
+		for _, t in ipairs(tank.outfit) do if t:find("/armor/padded/", 1, true) then armor = true end end
+		if not armor then fail("crewrecruit: no padded armor on a six box tank") end
+		local weapon = false
+		for _, t in ipairs(medic.outfit) do if t:find("/weapon/", 1, true) then weapon = true end end
+		if not weapon then fail("crewrecruit: the medic has no weapon") end
+		if readData("crew:name:" .. tankFirst:lower()) ~= BotRecruiter.keptForever then fail("crewrecruit: the hired bot's name isn't kept from the crowd") end
+		local told = false
+		for _, m in ipairs(log.sysmsgs) do if m.to == cameren.oid and m.text:find("Your crew is hired", 1, true) then told = true end end
+		if not told then fail("crewrecruit: no word to the player") end
+
+		-- 5. Talking again: the crew list, let one go
+		say("crew please")
+		w = last()
+		eq("crew window", w.title, "Your crew")
+		eq("rows: two and hire more", #w.options, 3)
+		answer(w, 0)
+		w = last()
+		eq("let go confirm", w.callback, "onLetGo")
+		answer(w, 0, 1)	-- keep
+		eq("kept", #ownLog.letGo, 0)
+		say("crew")
+		answer(last(), 1)
+		answer(last(), 0)
+		eq("let go", #ownLog.letGo, 1)
+		eq("one left", #botCrewOf(cameren.oid), 1)
+		-- ...and hire again for the role: only the roles the crew lacks are on the list
+		say("crew")
+		answer(last(), 1)	-- the second row: hire more? (rows: the medic, hire more)
+		w = last()
+		if #w.options ~= 7 then fail("crewrecruit: the role list should hold the six roles the crew lacks plus Continue, " .. #w.options .. " rows") end
+		eq("six roles and Continue", #w.options, 7)
+		answer(w, 0, 1)	-- cancel
+
+		-- 5b. The kit puts only armor a new bot can wear: a Wookiee tank is too weak for the hunting chest plate (Core3 counts the
+		-- encumbrance against its stats) and gets the ceremonial set; a human tank at the same level wears bone; no pants with leggings
+		local function has(list, part)
+			for _, t in ipairs(list) do if t:find(part, 1, true) then return true end end
+			return false
+		end
+		local wook = BotCrewKit:gear("tank", "wookiee", "male", 57, "Rrawrok")
+		if has(wook.outfit, "kashyyykian_hunting_chest_plate") or not has(wook.outfit, "kashyyykian_ceremonial_chest_plate") then
+			fail("crewrecruit: a Wookiee tank's armor: " .. table.concat(wook.outfit, " "))
+		end
+		local ith = BotCrewKit:gear("medic", "ithorian", "female", 57, "Holmaw")
+		if has(ith.outfit, "ithorian_sentinel") or not has(ith.outfit, "ithorian_") then
+			fail("crewrecruit: an Ithorian medic's armor: " .. table.concat(ith.outfit, " "))
+		end
+		local human = BotCrewKit:gear("tank", "human", "male", 57, "Venn")
+		if not has(human.outfit, "/armor/bone/") or has(human.outfit, "/pants/") then
+			fail("crewrecruit: a human tank's gear: " .. table.concat(human.outfit, " "))
+		end
+
+		-- 6. Another player's window can't let go of Cameren's crew, whatever it is told
+		local eve = makeHuman("Eve", pNpc.x - 1, pNpc.y)
+		local crewNow = botCrewOf(cameren.oid)
+		eq("one in Cameren's crew", #crewNow, 1)
+		writeStringData("recruit:" .. eve.oid .. ":stage", "letgo")
+		writeData("recruit:" .. eve.oid .. ":let", crewNow[1].oid)
+		sim.call("BotRecruiter", "onLetGo", eve, nil, 0, "")
+		eq("still one", #botCrewOf(cameren.oid), 1)
+		eq("let go still one", #ownLog.letGo, 1)
+
+		realPrint(string.format("crewrecruit %d windows, %d hired, %d let go", #log.windows, #ownLog.hired, #ownLog.letGo))
+		ownClear()
+		teardown()
+	end
+
 	table.insert(order, "crew")
 	table.insert(order, "crewbrain")
 	table.insert(order, "crewmissions")
@@ -7790,4 +8226,6 @@ return function(ctx)
 	table.insert(order, "crewordering")
 	table.insert(order, "crewordernobrain")
 	table.insert(order, "crewbuffs")
+	table.insert(order, "crewown")
+	table.insert(order, "crewrecruit")
 end

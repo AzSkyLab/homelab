@@ -18,6 +18,14 @@ BotLines.crew = {
 	sitOut = {
 		"Sitting this one out.",
 	},
+	-- An own-crew bot (Phase 9) asked to join, follow or be called by someone it doesn't work for. {owner} is the first name of the
+	-- one it works for
+	notYours = {
+		"Sorry, {name}, I work for {owner}. Ask them.",
+		"I'm with {owner}, {name}. Not for hire.",
+		"Can't, {name}. {owner} hired me.",
+		"I only take orders from {owner} and whoever {owner} runs with.",
+	},
 	-- A player targeted a crew bot that was with the cantina band (Phase 8b): it steps out of the band's group
 	bandOut = {
 		"One moment, {name}, I'm stepping out of the band's circle. Ask me again.",

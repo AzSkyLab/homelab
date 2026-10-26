@@ -333,7 +333,9 @@ function BotBand:start(pDancer, oid, city, pMusician, musicianOid, now)
 	local ready, due = {}, false
 
 	for _, entry in ipairs(botList() or {}) do
-		local pCrew = (entry.online and entry.city == city and entry.oid ~= 0 and BotCrew:isCrew(entry.job)) and getSceneObject(entry.oid) or nil
+		-- (Phase 9: the Mos Eisley crew only; the bots a player hired are theirs)
+		local pCrew = (entry.online and entry.city == city and entry.oid ~= 0 and (entry.owner or 0) == 0 and BotCrew:isCrew(entry.job)) and
+			getSceneObject(entry.oid) or nil
 
 		if pCrew ~= nil and BotCrew:bandReady(pCrew, entry.oid, pDancer) then
 			local left = BotCrew:mindBuffsLeft(pCrew)

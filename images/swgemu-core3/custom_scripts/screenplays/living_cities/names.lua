@@ -5,7 +5,9 @@
 -- Kaavo, Doran Halcott, Selka Marrovan, Ilyra Seawell, Saela Dawnmere. Phase 4: Tibbo Kressik, Dorvan Haldis, Vianne
 -- Corsell, Tarkon Veyle, Rhaan Telluro, Ylessa Tor'vani. Phase 5: Kragoth Ssival, Senna Delmont, Quillan Desh, Weeta
 -- Valsk. Phase 6: Aldren Vasche, Talia Marise, Ossin Valcourt, Brynna Solace, Garvik Thal, Mareth Kaine, Mowsha
--- Glenhallow, Sarra Venlo, Neebo Tulluk, Rrowkarr. Phase 8: Tavik Drennor, Ilsi Nuura, Brask Tor'vel. A first name a player calls out means one character.
+-- Glenhallow, Sarra Venlo, Neebo Tulluk, Rrowkarr. Phase 8: Tavik Drennor, Ilsi Nuura, Brask Tor'vel. Phase 9: the recruiters Torrin Vale, Mirela Sandor and Kessa Aldrin; the
+-- crew bots players hire are made at runtime, so makeName (living_cities.lua) asks the server (botNameFree) and the names being picked
+-- (crew:name:<first>). A first name a player calls out means one character.
 LivingCitiesNames = {
 	first = {
 		"Aren", "Bela", "Corvan", "Dahla", "Davin", "Eris", "Faela", "Garen", "Halia", "Ivo", "Jaela", "Jarek", "Kael",

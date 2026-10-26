@@ -4,6 +4,7 @@
 
 #include "BotManager.h"
 #include "BotFactory.h"
+#include "BotCrews.h"
 #include "BotLua.h"
 #include "BotTrade.h"
 #include "server/zone/ZoneServer.h"
@@ -13,6 +14,7 @@
 #include "server/zone/objects/cell/CellObject.h"
 #include "server/zone/CloseObjectsVector.h"
 #include "server/zone/managers/player/PlayerManager.h"
+#include "server/db/ServerDatabase.h"
 #include "server/zone/managers/skill/SkillModManager.h"
 #include "server/zone/managers/collision/CollisionManager.h"
 #include "server/zone/packets/creature/CreatureObjectDeltaMessage6.h"
@@ -92,6 +94,44 @@ void BotManager::start(ZoneServer* server) {
 		return;
 	}
 
+	int rosterBots = roster.size();
+
+	// Phase 9: the own crews hired at runtime (a fresh volume has no file)
+	{
+		String crewsPath = BotCrews::getPath();
+		File crewsFile(crewsPath);
+
+		if (crewsFile.setReadOnly()) {
+			crewsFile.close();
+
+			BotRosterList crews, declined;
+			BotSettings unused;
+
+			if (BotFactory::loadRoster(crewsPath, crews, unused, "BotOwnCrews", &roster, &declined)) {
+				for (int i = 0; i < crews.size(); ++i) {
+					roster.add(crews.get(i));
+					crewEntries.add(crews.get(i));
+				}
+
+				for (int i = 0; i < declined.size(); ++i)
+					crewEntries.add(declined.get(i));
+
+				BotCrews::loadPending(crewsPath, pendingDeletes);
+			} else {
+				// Never overwrite what could not be read: keep a copy, and let no hire or let-go write the file until a restart
+				// has read a good one
+				String copy;
+
+				crewsBroken = true;
+				BotCrews::copyAside(crewsPath, copy);
+				error() << "BotManager: " << crewsPath << " exists but did not load; a copy is in " << copy
+					<< ". No crew can be hired or let go until it is fixed and the server restarted";
+			}
+		} else {
+			info(true) << "BotManager: no own crews yet (" << crewsPath << " is not there)";
+		}
+	}
+
 	{
 		Locker locker(&stateMutex);
 
@@ -99,17 +139,57 @@ void BotManager::start(ZoneServer* server) {
 			Reference<BotRuntime*> bot = new BotRuntime();
 			bot->entry = roster.get(i);
 			bot->firstNameLower = bot->entry->firstName.toLowerCase();
+			bot->index = i;
 			bots.add(bot);
 		}
 	}
 
-	info(true) << "BotManager: started, " << roster.size() << " bots in the roster, login delay " << settings.loginDelay
-		<< " s, logout delay " << settings.logoutDelay << " s";
+	info(true) << "BotManager: started, " << rosterBots << " bots in the roster and " << (roster.size() - rosterBots)
+		<< " in own crews, login delay " << settings.loginDelay << " s, logout delay " << settings.logoutDelay << " s";
 
 	// Make any bot that doesn't exist yet, once the zones have loaded; then the online rule starts
 	Core::getTaskManager()->scheduleTask([this]() {
-		for (int i = 0; i < roster.size(); ++i) {
-			BotEntry* entry = roster.get(i);
+		// Characters of bots let go in an earlier session: gone for good (the rows could have come back with a save, or the
+		// server stopped before the deletion ran)
+		for (int i = 0; i < 600 && zoneServer->isServerLoading(); ++i)
+			Thread::sleep(500);
+
+		PendingDeletionList sweep;
+
+		{
+			Locker locker(&stateMutex);
+
+			sweep = pendingDeletes;
+		}
+
+		for (int i = 0; i < sweep.size(); ++i) {
+			info(true) << "BotManager: checking that " << sweep.get(i)->firstName << " (oid " << sweep.get(i)->oid << ") is gone";
+			deleteCharacter(sweep.get(i)->oid, sweep.get(i)->firstName);
+			BotCrews::removeDoctrine(sweep.get(i)->firstName);
+		}
+
+		if (!sweep.isEmpty()) {
+			{
+				Locker locker(&stateMutex);
+
+				pendingDeletes.removeAll();
+			}
+
+			writeCrews();
+		}
+
+		Vector<Reference<BotRuntime*>> todo;
+
+		{
+			Locker locker(&stateMutex);
+
+			todo = bots;
+		}
+
+		for (int i = 0; i < todo.size(); ++i) {
+			BotRuntime* runtime = todo.get(i);
+			BotEntry* entry = runtime->entry;
+
 			uint64 oid = BotFactory::ensureCharacter(zoneServer, *entry);
 
 			if (oid == 0) {
@@ -122,8 +202,8 @@ void BotManager::start(ZoneServer* server) {
 			{
 				Locker locker(&stateMutex);
 
-				bots.get(i)->oid = oid;
-				botIndexByOid.put(oid, i);
+				runtime->oid = oid;
+				botIndexByOid.put(oid, runtime->index);
 			}
 
 			// After a crash Core3 loads a character saved in a building back into its cell, link-dead, and unloads it
@@ -170,7 +250,7 @@ BotRuntime* BotManager::findByFirstName(const String& firstName) const {
 	for (int i = 0; i < bots.size(); ++i) {
 		BotRuntime* bot = bots.get(i);
 
-		if (bot->firstNameLower == lower)
+		if (!bot->gone && bot->firstNameLower == lower)
 			return bot;
 	}
 
@@ -201,7 +281,8 @@ bool BotManager::isOnlineBot(CreatureObject* creature) const {
 
 	BotRuntime* bot = findByOid(creature->getObjectID());
 
-	return bot != nullptr && bot->state == BotRuntime::ONLINE;
+	// (a bot that has been let go is out of the game's lists at once, even while it is still logging out)
+	return bot != nullptr && !bot->gone && bot->state == BotRuntime::ONLINE;
 }
 
 Reference<CreatureObject*> BotManager::getOnlineBot(const String& firstName) const {
@@ -223,7 +304,7 @@ void BotManager::getOnlineBots(Vector<Reference<CreatureObject*>>& out) const {
 	for (int i = 0; i < bots.size(); ++i) {
 		BotRuntime* bot = bots.get(i);
 
-		if (bot->state != BotRuntime::ONLINE)
+		if (bot->gone || bot->state != BotRuntime::ONLINE)
 			continue;
 
 		ManagedReference<CreatureObject*> creature = bot->creature.get();
@@ -240,6 +321,9 @@ void BotManager::getBotList(Vector<Reference<BotListEntry*>>& out) const {
 		BotRuntime* bot = bots.get(i);
 		BotEntry* entry = bot->entry;
 
+		if (bot->gone)
+			continue;
+
 		Reference<BotListEntry*> item = new BotListEntry();
 		item->name = entry->name;
 		item->firstName = entry->firstName;
@@ -249,9 +333,484 @@ void BotManager::getBotList(Vector<Reference<BotListEntry*>>& out) const {
 		item->online = bot->state == BotRuntime::ONLINE;
 		item->state = BotRuntime::stateName(bot->state);
 		item->forced = bot->forced;
+		item->species = entry->species;
+		item->sex = entry->sex;
+		item->owner = entry->owner;
+		item->hiredAt = entry->hiredAt;
 
 		out.add(item);
 	}
+}
+
+// --- Own crews (Phase 9) ---
+
+bool BotManager::ownerOnline(uint64 owner, const SortedVector<uint64>& online) const {
+	// pre: stateMutex locked
+	if (online.contains(owner))
+		return true;
+
+	// A bot standing in for a human on the local server (BotCrew:devLead) counts while it is logged in
+	BotRuntime* stand = findByOid(owner);
+
+	return stand != nullptr && !stand->gone && stand->state == BotRuntime::ONLINE;
+}
+
+bool BotManager::ownerWants(uint64 owner, const SortedVector<uint64>& online) {
+	// pre: stateMutex locked. The global rule's delays, for one owner: in loginDelay seconds after the character is
+	// online, out logoutDelay seconds after it left
+	int pos = ownerRules.find(owner);
+	Reference<OwnerRule*> rule;
+
+	if (pos == -1) {
+		rule = new OwnerRule();
+		rule->changed.updateToCurrentTime();
+		ownerRules.put(owner, rule);
+	} else {
+		rule = ownerRules.elementAt(pos).getValue();
+	}
+
+	bool now = ownerOnline(owner, online);
+
+	if (now != rule->online) {
+		rule->online = now;
+		rule->changed.updateToCurrentTime();
+	}
+
+	int64 since = rule->changed.miliDifference();
+	bool want = rule->rule;
+
+	if (rule->online && !rule->rule && since >= (int64)settings.loginDelay * 1000)
+		want = true;
+	else if (!rule->online && rule->rule && since >= (int64)settings.logoutDelay * 1000)
+		want = false;
+
+	if (want != rule->rule) {
+		rule->rule = want;
+
+		// A forced state lasts until the rule next changes
+		for (int i = 0; i < bots.size(); ++i) {
+			if (bots.get(i)->entry->owner == owner)
+				bots.get(i)->forced = false;
+		}
+
+		info(true) << "BotManager: the online rule for " << owner << "'s crew says " << (want ? "online" : "offline");
+	}
+
+	return rule->rule;
+}
+
+void BotManager::requestSave() {
+	// pre: stateMutex locked. One write at a time waits in a task; it copies the lists when it runs, so a burst of hires is one write
+	if (saveQueued)
+		return;
+
+	saveQueued = true;
+
+	Core::getTaskManager()->executeTask([this]() { writeCrews(); }, "BotSaveCrews", "slowQueue");
+}
+
+void BotManager::writeCrews() {
+	BotRosterList entries;
+	PendingDeletionList pending;
+
+	{
+		Locker locker(&stateMutex);
+
+		saveQueued = false;
+
+		if (crewsBroken)
+			return;
+
+		entries = crewEntries;
+		pending = pendingDeletes;
+	}
+
+	BotCrews::save(entries, pending);
+}
+
+Reference<BotEntry*> BotManager::getEntry(const String& firstName) const {
+	Locker locker(&stateMutex);
+
+	BotRuntime* bot = findByFirstName(firstName);
+
+	if (bot == nullptr)
+		return nullptr;
+
+	return bot->entry;
+}
+
+uint64 BotManager::getOwner(uint64 botOid) const {
+	Locker locker(&stateMutex);
+
+	BotRuntime* bot = findByOid(botOid);
+
+	return bot != nullptr && !bot->gone ? bot->entry->owner : 0;
+}
+
+void BotManager::getCrewOf(uint64 owner, Vector<Reference<BotListEntry*>>& out) const {
+	if (owner == 0)
+		return;
+
+	Locker locker(&stateMutex);
+
+	for (int i = 0; i < bots.size(); ++i) {
+		BotRuntime* bot = bots.get(i);
+		BotEntry* entry = bot->entry;
+
+		if (bot->gone || entry->owner != owner)
+			continue;
+
+		Reference<BotListEntry*> item = new BotListEntry();
+		item->name = entry->name;
+		item->firstName = entry->firstName;
+		item->job = entry->job;
+		item->city = entry->city;
+		item->oid = bot->oid;
+		item->online = bot->state == BotRuntime::ONLINE;
+		item->state = BotRuntime::stateName(bot->state);
+		item->forced = bot->forced;
+		item->species = entry->species;
+		item->sex = entry->sex;
+		item->owner = entry->owner;
+		item->hiredAt = entry->hiredAt;
+
+		out.add(item);
+	}
+}
+
+bool BotManager::nameFree(const String& firstName, String& reason) const {
+	if (firstName.isEmpty()) {
+		reason = "no name";
+		return false;
+	}
+
+	{
+		Locker locker(&stateMutex);
+
+		if (findByFirstName(firstName) != nullptr) {
+			reason = "a crew member already has that name";
+			return false;
+		}
+
+		for (int i = 0; i < pendingDeletes.size(); ++i) {
+			if (!pendingDeletes.get(i)->done && pendingDeletes.get(i)->firstName.toLowerCase() == firstName.toLowerCase()) {
+				reason = "that name is still being cleared";
+				return false;
+			}
+		}
+	}
+
+	PlayerManager* playerManager = zoneServer != nullptr ? zoneServer->getPlayerManager() : nullptr;
+
+	if (playerManager != nullptr && playerManager->existsName(firstName)) {
+		reason = "a character already has that name";
+		return false;
+	}
+
+	return true;
+}
+
+bool BotManager::hire(BotEntry* given, String& reason) {
+	Reference<BotEntry*> entry = given;
+	Reference<BotRuntime*> runtime;
+
+	if (entry == nullptr || zoneServer == nullptr) {
+		reason = "no entry";
+		return false;
+	}
+
+	// A runtime entry is always an own-crew bot
+	entry->online = "owner";
+
+	if (entry->account.isEmpty())
+		entry->account = BotCrews::accountFor(entry->firstName);
+
+	{
+		Locker locker(&stateMutex);
+
+		if (crewsBroken) {
+			reason = "the crews file is broken";
+			return false;
+		}
+
+		if (!ready || shuttingDown) {
+			reason = "the server is still starting";
+			return false;
+		}
+
+		if (entry->owner == 0) {
+			reason = "no owner";
+			return false;
+		}
+
+		// (a let-go bot's character is still being cleared: its name, and so its account, can't be used yet)
+		for (int i = 0; i < pendingDeletes.size(); ++i) {
+			if (!pendingDeletes.get(i)->done && pendingDeletes.get(i)->firstName.toLowerCase() == entry->firstName.toLowerCase()) {
+				reason = "that name is still being cleared";
+				return false;
+			}
+		}
+
+		BotRosterList scope;
+		int ownerCrew = 0;
+
+		for (int i = 0; i < bots.size(); ++i) {
+			BotRuntime* other = bots.get(i);
+
+			if (other->gone)
+				continue;
+
+			scope.add(other->entry);
+
+			if (other->entry->owner == entry->owner) {
+				++ownerCrew;
+
+				if (other->entry->job == entry->job) {
+					reason = "the crew already has a " + entry->job;
+					return false;
+				}
+			}
+		}
+
+		if (ownerCrew >= 7) {
+			reason = "a crew has seven at most";
+			return false;
+		}
+
+		if (!BotFactory::validateEntry(*entry, scope, reason))
+			return false;
+
+		runtime = new BotRuntime();
+		runtime->entry = entry;
+		runtime->firstNameLower = entry->firstName.toLowerCase();
+		runtime->index = bots.size();
+		bots.add(runtime);
+		crewEntries.add(entry);
+		requestSave();
+	}
+
+	PlayerManager* playerManager = zoneServer->getPlayerManager();
+
+	if (playerManager != nullptr && playerManager->existsName(entry->firstName)) {
+		removeUnmade(runtime);
+		reason = "a character already has that name";
+		return false;
+	}
+
+	info(true) << "BotManager: hired " << entry->name << " (" << entry->species << " " << entry->sex << ", " << entry->job
+		<< ") for " << entry->owner << ", " << entry->skills.size() << " boxes listed";
+
+	// The account and the character, in a task (the factory sleeps while the server loads and writes to the database)
+	Core::getTaskManager()->executeTask([this, runtime, entry]() {
+		uint64 oid = 0;
+
+		// (the file first: a character the file does not list would be lost to a crash)
+		writeCrews();
+
+		try {
+			oid = BotFactory::ensureCharacter(zoneServer, *entry);
+		} catch (Exception& e) {
+			error() << "BotManager: exception making " << entry->name << ": " << e.getMessage();
+		}
+
+		if (oid == 0) {
+			error() << "BotManager: " << entry->name << " could not be made, dropping the hire";
+			removeUnmade(runtime);
+			return;
+		}
+
+		{
+			Locker locker(&stateMutex);
+
+			if (runtime->gone)
+				return;
+
+			runtime->oid = oid;
+			botIndexByOid.put(oid, runtime->index);
+		}
+
+		BotCrews::writeDoctrine(*entry);
+
+		info(true) << "BotManager: " << entry->name << " ready, oid " << oid;
+	}, "BotHire", "slowQueue");
+
+	return true;
+}
+
+void BotManager::removeUnmade(BotRuntime* bot) {
+	Locker locker(&stateMutex);
+
+	bot->gone = true;
+
+	for (int i = 0; i < crewEntries.size(); ++i) {
+		if (crewEntries.get(i) == bot->entry) {
+			crewEntries.remove(i);
+			break;
+		}
+	}
+
+	requestSave();
+}
+
+bool BotManager::letGo(uint64 oid, String& reason) {
+	Reference<BotRuntime*> runtime;
+	Reference<BotEntry*> entry;
+
+	{
+		Locker locker(&stateMutex);
+
+		if (crewsBroken) {
+			reason = "the crews file is broken";
+			return false;
+		}
+
+		runtime = findByOid(oid);
+
+		if (runtime == nullptr || runtime->gone) {
+			reason = "no such crew member";
+			return false;
+		}
+
+		if (runtime->entry->owner == 0) {
+			reason = "that bot isn't in an own crew";
+			return false;
+		}
+
+		entry = runtime->entry;
+		runtime->gone = true;
+
+		for (int i = 0; i < crewEntries.size(); ++i) {
+			if (crewEntries.get(i) == entry) {
+				crewEntries.remove(i);
+				break;
+			}
+		}
+
+		Reference<PendingDeletion*> pending = new PendingDeletion();
+
+		pending->oid = oid;
+		pending->firstName = entry->firstName;
+		pending->account = entry->account;
+		pendingDeletes.add(pending);
+
+		requestSave();
+	}
+
+	info(true) << "BotManager: letting " << entry->name << " go";
+
+	finishLetGo(runtime, 0);
+
+	return true;
+}
+
+// The character goes in steps: wait for a login in progress to finish, log it out the way the online rule does (BotJobs:onLogout
+// ends its Lua chains), give the tasks a bot leaves behind a few seconds, then delete it. The file lists the deletion from the
+// let-go on, so a stop in between, or a save that writes the row back, is put right at the next boot.
+void BotManager::finishLetGo(Reference<BotRuntime*> runtime, int step) {
+	Reference<BotEntry*> entry = runtime->entry;
+	uint64 oid = runtime->oid;
+
+	if (step < 100) {
+		int state;
+
+		{
+			Locker locker(&stateMutex);
+
+			state = runtime->state;
+
+			if (state == BotRuntime::ONLINE && step < 90) {
+				runtime->state = BotRuntime::LOGGINGOUT;
+				runtime->stateSince.updateToCurrentTime();
+				state = -1;
+			}
+		}
+
+		if (state == -1) {
+			scheduleLogout(runtime, false);
+			Core::getTaskManager()->scheduleTask([this, runtime, step]() { finishLetGo(runtime, step + 1); }, "BotLetGoWait", 1000);
+		} else if (state == BotRuntime::OFFLINE || step >= 90) {
+			Core::getTaskManager()->scheduleTask([this, runtime]() { finishLetGo(runtime, 100); }, "BotLetGoSettle", LET_GO_SETTLE_MS);
+		} else {
+			// (a login or logout in progress)
+			Core::getTaskManager()->scheduleTask([this, runtime, step]() { finishLetGo(runtime, step + 1); }, "BotLetGoWait", 1000);
+		}
+
+		return;
+	}
+
+	Core::getTaskManager()->executeTask([this, runtime, entry, oid]() {
+		writeCrews();	// (the deletion is listed on disk before it runs)
+		deleteCharacter(oid, entry->firstName);
+		BotCrews::removeDoctrine(entry->firstName);
+
+		// Not a bot any more: nothing refers to the oid
+		Locker locker(&stateMutex);
+
+		botIndexByOid.drop(oid);
+		runtime->state = BotRuntime::OFFLINE;
+		runtime->creature = nullptr;
+
+		for (int i = 0; i < pendingDeletes.size(); ++i) {
+			if (pendingDeletes.get(i)->oid == oid)
+				pendingDeletes.get(i)->done = true;
+		}
+
+		requestSave();
+	}, "BotLetGo", "slowQueue");
+}
+
+void BotManager::deleteCharacter(uint64 oid, const String& firstName) {
+	// Core3's character deletion (LoginPacketHandler, then DeleteCharactersTask) in one go: the row moves to
+	// deleted_characters, the name is released, and the character and what it owns are destroyed
+	ManagedReference<SceneObject*> object = zoneServer->getObject(oid, true);
+	ManagedReference<CreatureObject*> creature = object != nullptr && object->isPlayerCreature() ? object->asCreatureObject() : nullptr;
+
+	if (creature != nullptr) {
+		Locker locker(creature);
+
+		PlayerObject* ghost = creature->getPlayerObject();
+
+		// (BotCrew's onLogout runs; a trade or group it is in ends)
+		if (ghost != nullptr && (ghost->isOnline() || ghost->isLinkDead() || creature->getZone() != nullptr))
+			logoutBot(creature, true);
+
+		ChatManager* chatManager = zoneServer->getChatManager();
+
+		if (chatManager != nullptr)
+			chatManager->removePlayer(firstName);
+	}
+
+	PlayerManager* playerManager = zoneServer->getPlayerManager();
+
+	if (playerManager != nullptr)
+		playerManager->removePlayer(oid);
+
+	// (each statement on its own: the copy into deleted_characters fails when a boot checks a character that was already moved)
+	StringBuffer statements[3];
+
+	statements[0] << "INSERT INTO deleted_characters SELECT *, 1 as db_deleted FROM characters WHERE character_oid = " << oid;
+	statements[1] << "DELETE FROM characters WHERE character_oid = " << oid;
+	statements[2] << "DELETE FROM characters_dirty WHERE character_oid = " << oid;
+
+	for (int i = 0; i < 3; ++i) {
+		try {
+			UniqueReference<ResultSet*> result(ServerDatabase::instance()->executeQuery(statements[i]));
+		} catch (const DatabaseException& e) {
+			if (i != 0)
+				error() << "BotManager: deleting " << firstName << "'s rows: " << e.getMessage();
+		}
+	}
+
+	if (creature != nullptr) {
+		Locker locker(creature);
+
+		if (creature->getZone() != nullptr)
+			creature->destroyObjectFromWorld(false);
+
+		creature->destroyPlayerCreatureFromDatabase(true);
+	}
+
+	info(true) << "BotManager: " << firstName << " deleted (oid " << oid << ")";
 }
 
 // --- Controls ---
@@ -360,8 +919,10 @@ void BotManager::notePlanets() {
 
 	if (isDevHuman()) {
 		// The dev switch stands in for a human everywhere
-		for (int i = 0; i < bots.size(); ++i)
-			planetSeen.put(bots.get(i)->entry->planet, now);
+		for (int i = 0; i < bots.size(); ++i) {
+			if (!bots.get(i)->gone)
+				planetSeen.put(bots.get(i)->entry->planet, now);
+		}
 	}
 }
 
@@ -419,14 +980,33 @@ void BotManager::tick() {
 		updateRule();
 		notePlanets();
 
+		// The owners of own crews who are online with a client (or are a bot standing in for one, see ownerOnline)
+		SortedVector<uint64> onlineOwners;
+		{
+			PlayerManager* playerManager = zoneServer->getPlayerManager();
+
+			if (playerManager != nullptr) {
+				Vector<uint64> online = playerManager->getOnlinePlayerList();
+
+				for (int i = 0; i < online.size(); ++i)
+					onlineOwners.put(online.get(i));
+			}
+		}
+
 		for (int i = 0; i < bots.size(); ++i) {
 			BotRuntime* bot = bots.get(i);
 
-			if (bot->oid == 0)
+			if (bot->oid == 0 || bot->gone)
 				continue;
 
-			bool desired = bot->forced ? bot->forcedOnline
-				: ruleOnline && (bot->entry->online != "planet" || planetOccupied(bot->entry->planet));
+			bool desired;
+
+			if (bot->forced)
+				desired = bot->forcedOnline;
+			else if (bot->entry->online == "owner")
+				desired = ownerWants(bot->entry->owner, onlineOwners);
+			else
+				desired = ruleOnline && (bot->entry->online != "planet" || planetOccupied(bot->entry->planet));
 
 			if (desired && bot->state == BotRuntime::OFFLINE) {
 				if (!bot->nextAttempt.isPast())
@@ -742,7 +1322,11 @@ void BotManager::sceneReady(CreatureObject* creature) {
 	if (ghost->getCharacterAgeInDays() < 1) {
 		Reference<CreatureObject*> ref = creature;
 
-		Core::getTaskManager()->scheduleTask([ref]() {
+		Core::getTaskManager()->scheduleTask([this, ref]() {
+			// (a bot let go in the meantime is gone: leave it)
+			if (!isOnlineBot(ref))
+				return;
+
 			Locker locker(ref);
 
 			PlayerObject* ghost = ref->getPlayerObject();
@@ -828,6 +1412,9 @@ void BotManager::logoutBot(CreatureObject* creature, bool callLua) {
 
 void BotManager::shutdown() {
 	Vector<Reference<BotRuntime*>> toLogout;
+
+	// (a write that is still waiting in a task would not run before the process ends)
+	writeCrews();
 
 	{
 		Locker locker(&stateMutex);

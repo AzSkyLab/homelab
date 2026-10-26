@@ -805,6 +805,20 @@ class Bridge:
                 "with the group, and at a mission terminal you can each take two destroy missions in the direction "
                 "the leader names."
             )
+            # A bot a player hired at a recruiter (Phase 9): it works for that one player, and is only as good as its boxes
+            if r.get("owner"):
+                try:
+                    boxes = int(r.get("boxes") or 0)
+                except (TypeError, ValueError):
+                    boxes = 0
+                level = ("a novice" if boxes < 6 else "an apprentice" if boxes < 18 else "a journeyman" if boxes < 36
+                         else "a seasoned hand" if boxes < 55 else "a master")
+                if boxes < 55:
+                    who += (f" Careful: you are only {level} so far, with {boxes} of about 57 skill boxes. The skills "
+                            "described above are the ones you are training towards, not ones you have: don't claim to be a "
+                            "master, and don't boast of abilities a beginner would not have.")
+                who += (f" You were hired by {r.get('owner')} and you work for them: you take {r.get('owner')}'s invites "
+                        "and orders, and anyone running with them, but nobody else's. You wait in the cantina until they come back.")
             # What the ranger harvests (the Lua reads it from the hunt): anyone can be asked what it is taking
             if r.get("harvest"):
                 who += (f" About the harvest: {r.get('harvest')}. The ranger chooses what to take by the stats a crafter "
@@ -1313,8 +1327,9 @@ class Bridge:
             return None
         if not text:
             return {}
+        # (the names a "protect" may name: every crew bot with a doctrine, the ones players hired at a recruiter too)
         return cd.parse_table(self.complete(cd.table_messages(first, role, text), 400, timeout, 0.2), role,
-                              list(cd.CREW_ROLE))
+                              self.doctrines.firsts())
 
     def write_base(self):
         """/run/talk/tactics/base.txt from the tables on disk: what the crew's Lua reads, at most once a minute."""

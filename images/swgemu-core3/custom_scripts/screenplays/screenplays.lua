@@ -5,3 +5,5 @@ includeFile("../custom_scripts/screenplays/living_cities/talk.lua")
 -- Bot players (Phase 3): the roster (also read by the C++ BotManager), then their jobs
 includeFile("../custom_scripts/bots/roster.lua")
 includeFile("../custom_scripts/screenplays/bots/bot_jobs.lua")
+-- Own crews (Phase 9): the recruiter in each cantina, the crews' data and the kit made from it
+includeFile("../custom_scripts/screenplays/bots/recruiter.lua")

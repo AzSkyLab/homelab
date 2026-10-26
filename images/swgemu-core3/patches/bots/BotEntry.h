@@ -22,10 +22,20 @@ public:
 	String hair;		// hair object template, or empty
 	String job;			// "doctor" or "dancer"
 	String city;		// Living Cities city key, e.g. "mos_eisley"
-	String online;		// "" (online while a human is) or "planet" (only while a human is on its station's planet)
+	String online;		// "" (online while a human is), "planet" (only while a human is on its station's planet) or "owner"
+						// (an own-crew bot, Phase 9: online while its owner's character is)
 	Vector<String> skills;	// each awarded with every skill it requires
 	Vector<String> outfit;	// wearable templates, equipped
 	Vector<String> carry;	// templates kept in the inventory (a spare weapon, a camp kit), not equipped
+
+	// Phase 9 (own crews, BotCrews). The jobs read weapon and campKit through botEntry; the factory reads the rest.
+	uint64 owner = 0;		// the human character this bot belongs to; 0 for a roster bot
+	int64 hiredAt = 0;		// unix seconds
+	int hairColor = -1;		// a palette index for the hair, or -1 for the template's own colour
+	int skinTone = -1;		// a palette index for the skin, or -1
+	String weapon;			// the weapon in hand, when the outfit has none or has several
+	String campKit;			// the ranger's camp kit, when it carries none
+	String doctrine;		// the Mos Eisley crew bot's first name (lower case) whose doctrine file seeds this bot's
 
 	// Station: where it stands while online. cell 0 means world coordinates.
 	String planet;
@@ -35,6 +45,19 @@ public:
 };
 
 typedef Vector<Reference<BotEntry*>> BotRosterList;
+
+// A character of a bot that was let go, recorded in the own-crews file from the let-go until the next boot has checked it is
+// gone (a save running at the moment of the deletion could write the row back; a stop between the let-go and the deletion would
+// leave it). done: the deletion has run in this session.
+class PendingDeletion : public Object {
+public:
+	uint64 oid = 0;
+	String firstName;
+	String account;
+	bool done = false;
+};
+
+typedef Vector<Reference<PendingDeletion*>> PendingDeletionList;
 
 // roster.lua's settings table (the jobs screenplay reads the rest of it itself)
 class BotSettings : public Object {

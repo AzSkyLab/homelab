@@ -28,6 +28,8 @@
 #include "templates/manager/TemplateManager.h"
 #include "templates/creature/PlayerCreatureTemplate.h"
 #include "templates/customization/CustomizationIdManager.h"
+#include "templates/customization/AssetCustomizationManagerTemplate.h"
+#include "templates/params/PaletteColorCustomizationVariable.h"
 #include "templates/datatables/DataTableIff.h"
 #include "templates/datatables/DataTableRow.h"
 #include "engine/lua/Lua.h"
@@ -104,7 +106,71 @@ String BotFactory::getStartingProfession(const String& job) {
 	return "";
 }
 
-bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings& settings) {
+bool BotFactory::parseEntry(LuaObject& bot, BotEntry& entry) {
+	entry.name = bot.getStringField("name").trim();
+	entry.account = bot.getStringField("account").trim();
+	entry.species = bot.getStringField("species").trim().toLowerCase();
+	entry.sex = bot.getStringField("sex").trim().toLowerCase();
+	entry.hair = bot.getStringField("hair").trim();
+	entry.job = bot.getStringField("job").trim().toLowerCase();
+	entry.city = bot.getStringField("city").trim();
+	entry.online = bot.getStringField("online").trim().toLowerCase();
+	entry.owner = bot.getLongField("owner");
+	entry.hiredAt = bot.getLongField("hiredAt");
+	entry.hairColor = bot.getSignedIntField("hairColor", -1);
+	entry.skinTone = bot.getSignedIntField("skinTone", -1);
+	entry.weapon = bot.getStringField("weapon").trim();
+	entry.campKit = bot.getStringField("campKit").trim();
+	entry.doctrine = bot.getStringField("doctrine").trim().toLowerCase();
+
+	int space = entry.name.indexOf(" ");
+	entry.firstName = space == -1 ? entry.name : entry.name.subString(0, space);
+
+	LuaObject skills = bot.getObjectField("skills");
+
+	if (skills.isValidTable()) {
+		for (int j = 1; j <= skills.getTableSize(); ++j)
+			entry.skills.add(skills.getStringAt(j));
+	}
+
+	skills.pop();
+
+	LuaObject outfit = bot.getObjectField("outfit");
+
+	if (outfit.isValidTable()) {
+		for (int j = 1; j <= outfit.getTableSize(); ++j)
+			entry.outfit.add(outfit.getStringAt(j));
+	}
+
+	outfit.pop();
+
+	LuaObject carry = bot.getObjectField("carry");
+
+	if (carry.isValidTable()) {
+		for (int j = 1; j <= carry.getTableSize(); ++j)
+			entry.carry.add(carry.getStringAt(j));
+	}
+
+	carry.pop();
+
+	LuaObject station = bot.getObjectField("station");
+
+	if (station.isValidTable()) {
+		entry.planet = station.getStringField("planet");
+		entry.x = station.getFloatField("x");
+		entry.z = station.getFloatField("z");
+		entry.y = station.getFloatField("y");
+		entry.cell = station.getLongField("cell");
+		entry.heading = station.getFloatField("heading");
+	}
+
+	station.pop();
+
+	return true;
+}
+
+bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings& settings, const char* globalName,
+		const BotRosterList* known, BotRosterList* invalid) {
 	Logger& logger = factoryLog();
 
 	{
@@ -128,10 +194,10 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 		return false;
 	}
 
-	LuaObject roster = lua->getGlobalObject("BotRoster");
+	LuaObject roster = lua->getGlobalObject(globalName);
 
 	if (!roster.isValidTable()) {
-		logger.error() << path << " has no BotRoster table";
+		logger.error() << path << " has no " << globalName << " table";
 
 		roster.pop();
 		delete lua;
@@ -150,13 +216,20 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 	LuaObject bots = roster.getObjectField("bots");
 
 	if (!bots.isValidTable()) {
-		logger.error() << path << " has no BotRoster.bots table";
+		logger.error() << path << " has no " << globalName << ".bots table";
 
 		bots.pop();
 		roster.pop();
 		delete lua;
 		return false;
 	}
+
+	// What an entry must differ from: the entries already in the manager (the roster, for the own crews), then the
+	// ones accepted from this file
+	BotRosterList scope;
+
+	if (known != nullptr)
+		scope = *known;
 
 	for (int i = 1; i <= bots.getTableSize(); ++i) {
 		LuaObject bot = bots.getObjectAt(i);
@@ -170,66 +243,21 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 
 		Reference<BotEntry*> entry = new BotEntry();
 
-		entry->name = bot.getStringField("name").trim();
-		entry->account = bot.getStringField("account").trim();
-		entry->species = bot.getStringField("species").trim().toLowerCase();
-		entry->sex = bot.getStringField("sex").trim().toLowerCase();
-		entry->hair = bot.getStringField("hair").trim();
-		entry->job = bot.getStringField("job").trim().toLowerCase();
-		entry->city = bot.getStringField("city").trim();
-		entry->online = bot.getStringField("online").trim().toLowerCase();
-
-		int space = entry->name.indexOf(" ");
-		entry->firstName = space == -1 ? entry->name : entry->name.subString(0, space);
-
-		LuaObject skills = bot.getObjectField("skills");
-
-		if (skills.isValidTable()) {
-			for (int j = 1; j <= skills.getTableSize(); ++j)
-				entry->skills.add(skills.getStringAt(j));
-		}
-
-		skills.pop();
-
-		LuaObject outfit = bot.getObjectField("outfit");
-
-		if (outfit.isValidTable()) {
-			for (int j = 1; j <= outfit.getTableSize(); ++j)
-				entry->outfit.add(outfit.getStringAt(j));
-		}
-
-		outfit.pop();
-
-		LuaObject carry = bot.getObjectField("carry");
-
-		if (carry.isValidTable()) {
-			for (int j = 1; j <= carry.getTableSize(); ++j)
-				entry->carry.add(carry.getStringAt(j));
-		}
-
-		carry.pop();
-
-		LuaObject station = bot.getObjectField("station");
-
-		if (station.isValidTable()) {
-			entry->planet = station.getStringField("planet");
-			entry->x = station.getFloatField("x");
-			entry->z = station.getFloatField("z");
-			entry->y = station.getFloatField("y");
-			entry->cell = station.getLongField("cell");
-			entry->heading = station.getFloatField("heading");
-		}
-
-		station.pop();
+		parseEntry(bot, *entry);
 		bot.pop();
 
 		String reason;
 
-		if (!validateEntry(*entry, out, reason)) {
+		if (!validateEntry(*entry, scope, reason)) {
 			logger.error() << "roster bot " << i << " (" << entry->name << ") skipped: " << reason;
+
+			if (invalid != nullptr)
+				invalid->add(entry);
+
 			continue;
 		}
 
+		scope.add(entry);
 		out.add(entry);
 	}
 
@@ -256,6 +284,21 @@ bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accep
 
 	if (entry.sex != "male" && entry.sex != "female") {
 		reason = "sex must be male or female";
+		return false;
+	}
+
+	if (entry.online == "owner" && entry.owner == 0) {
+		reason = "online \"owner\" with no owner";
+		return false;
+	}
+
+	if (entry.owner != 0 && entry.online != "owner") {
+		reason = "an own-crew bot is online \"owner\"";
+		return false;
+	}
+
+	if (entry.hairColor < -1 || entry.skinTone < -1) {
+		reason = "a palette index below -1";
 		return false;
 	}
 
@@ -293,6 +336,11 @@ bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accep
 
 		if (hairData->getServerPlayerTemplate() != raceFile) {
 			reason = "hair " + entry.hair + " is for " + hairData->getServerPlayerTemplate();
+			return false;
+		}
+
+		if (entry.owner != 0 && !hairData->isAvailableAtCreation()) {
+			reason = "hair " + entry.hair + " is not offered at character creation";
 			return false;
 		}
 	}
@@ -399,6 +447,7 @@ uint64 BotFactory::ensureCharacter(ZoneServer* zoneServer, const BotEntry& entry
 
 	awardSkills(creature, entry);
 	ensureHair(zoneServer, creature, entry);
+	ensureLook(zoneServer, creature, entry);
 	ensureOutfit(zoneServer, creature, entry);
 	ensureCarry(zoneServer, creature, entry);
 
@@ -585,6 +634,7 @@ uint64 BotFactory::createCharacter(ZoneServer* zoneServer, const BotEntry& entry
 	ghost->setBirthDate(now.getTime());
 
 	ensureHair(zoneServer, playerCreature, entry);
+	ensureLook(zoneServer, playerCreature, entry);
 
 	SceneObject* inventory = playerCreature->getSlottedObject("inventory");
 
@@ -692,6 +742,77 @@ void BotFactory::awardSkills(CreatureObject* creature, const BotEntry& entry) {
 		// With every skill it requires, and no experience needed
 		if (!skillManager->awardSkill(skillName, creature, false, true, true) || !creature->hasSkill(skillName))
 			factoryLog().error() << entry.name << ": could not award " << skillName << " (skill points left: " << creature->getPlayerObject()->getSkillPoints() << ")";
+	}
+}
+
+// Sets each palette variable of the appearance whose palette file name contains `needle` ("hair", "skin") to an index,
+// kept within the palette's creation colours. Returns how many it set. object must be locked.
+static int setPalette(TangibleObject* object, const String& appearance, const char* needle, int index, bool notify) {
+	VectorMap<String, Reference<CustomizationVariable*> > variables;
+	variables.setNullValue(nullptr);
+
+	AssetCustomizationManagerTemplate::instance()->getCustomizationVariables(appearance.hashCode(), variables, false);
+
+	int count = 0;
+
+	for (int i = 0; i < variables.size(); ++i) {
+		String name = variables.elementAt(i).getKey();
+		PaletteColorCustomizationVariable* palette = dynamic_cast<PaletteColorCustomizationVariable*>(variables.elementAt(i).getValue().get());
+
+		if (palette == nullptr)
+			continue;
+
+		String file = palette->getPaletteFileName();
+
+		if (!file.toLowerCase().contains(needle))
+			continue;
+
+		int slash = file.lastIndexOf("/");
+		String paletteName = slash == -1 ? file : file.subString(slash + 1);
+		int dot = paletteName.indexOf(".");
+
+		if (dot != -1)
+			paletteName = paletteName.subString(0, dot);
+
+		int value = index;
+		PaletteData* data = CustomizationIdManager::instance()->getPaletteData(paletteName);
+
+		if (data != nullptr && data->getCreationIndexes() > 0 && value >= data->getCreationIndexes())
+			value = data->getCreationIndexes() - 1;
+
+		object->setCustomizationVariable(name, value, notify);
+		factoryLog().info() << "look: " << name << " (" << file << ") set to " << value << " of "
+			<< (data != nullptr ? data->getCreationIndexes() : -1);
+		++count;
+	}
+
+	return count;
+}
+
+
+void BotFactory::ensureLook(ZoneServer* zoneServer, CreatureObject* creature, const BotEntry& entry) {
+	bool inWorld = creature->getZone() != nullptr;
+
+	if (entry.hairColor >= 0) {
+		Reference<SceneObject*> current = creature->getSlottedObject("hair");
+
+		if (current != nullptr && current->isTangibleObject()) {
+			TangibleObject* hair = cast<TangibleObject*>(current.get());
+			SharedObjectTemplate* shared = hair->getObjectTemplate();
+
+			if (shared != nullptr) {
+				Locker locker(hair, creature);
+
+				setPalette(hair, shared->getAppearanceFilename(), "hair", entry.hairColor, inWorld);
+			}
+		}
+	}
+
+	if (entry.skinTone >= 0) {
+		SharedObjectTemplate* shared = creature->getObjectTemplate();
+
+		if (shared != nullptr)
+			setPalette(creature, shared->getAppearanceFilename(), "skin", entry.skinTone, inWorld);
 	}
 }
 
