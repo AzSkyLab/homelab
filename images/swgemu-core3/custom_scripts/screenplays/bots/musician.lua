@@ -95,6 +95,10 @@ function BotMusician:start(pBot, oid)
 end
 
 function BotMusician:clear(oid)
+	if BotBand ~= nil then
+		BotBand:left(oid)
+	end
+
 	deleteData(key(oid, "pendingTarget"))
 	deleteData(key(oid, "buffTarget"))
 	deleteData(key(oid, "retarget"))
@@ -140,6 +144,10 @@ end
 -- From BotJobs:tick every few seconds
 function BotMusician:tick(pBot, oid, now)
 	self:checkPending(pBot, oid, now)
+
+	if BotBand ~= nil then
+		BotBand:strays(pBot, oid, now)
+	end
 
 	if not self:canPlay(pBot, oid) then
 		return

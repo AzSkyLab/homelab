@@ -18,6 +18,11 @@ BotLines.crew = {
 	sitOut = {
 		"Sitting this one out.",
 	},
+	-- A player targeted a crew bot that was with the cantina band (Phase 8b): it steps out of the band's group
+	bandOut = {
+		"One moment, {name}, I'm stepping out of the band's circle. Ask me again.",
+		"Give me a second, {name}. Then invite me.",
+	},
 	-- "Crew, come to me": the bot that heard it says the crew is coming, or that it is out with another group
 	callOn = {
 		"On my way, {name}.",
@@ -432,6 +437,17 @@ BotLines.entertainer = {
 	perfStop = {
 		"Done for now.",
 		"Alright, that's enough for the camp.",
+	},
+	-- She changes from dancing to music, or back (group chat, now and then, at most once a cycle)
+	perfSwitchMusic = {
+		"Something slower now.",
+		"Time for a tune. Come and listen.",
+		"Putting the flute to use. Listen a while.",
+	},
+	perfSwitchDance = {
+		"Back on my feet, then.",
+		"Enough music. Watch me dance.",
+		"Let's liven it up. Watch me.",
 	},
 	-- Asked to play or dance with no camp up
 	noCamp = {
