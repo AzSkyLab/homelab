@@ -48,7 +48,7 @@ spec:
       terminationGracePeriodSeconds: 600
       containers:
         - name: core3
-          image: ghcr.io/azskylab/swgemu-core3:403893d9-db205a7
+          image: ghcr.io/azskylab/swgemu-core3:403893d9-97a93e0
           env:
             - name: DBHOST
               value: mariadb
@@ -117,7 +117,7 @@ spec:
         # The shell loop restarts the bridge in place if it ever exits, so a bridge crash can't CrashLoop the pod
         # (that would mark it NotReady and drop the game's LoadBalancer endpoint); it exits on SIGTERM.
         - name: talk
-          image: ghcr.io/azskylab/swgemu-core3:403893d9-db205a7
+          image: ghcr.io/azskylab/swgemu-core3:403893d9-97a93e0
           command: ["sh", "-c", "trap 'exit 0' TERM INT; while :; do python3 /opt/swgemu/talk/talk_bridge.py & wait $!; sleep 10; done"]
           env:
             - name: TALK_DIR
