@@ -11,6 +11,7 @@
 #include "server/zone/Zone.h"
 #include "server/zone/objects/creature/CreatureObject.h"
 #include "server/zone/objects/player/PlayerObject.h"
+#include "server/zone/objects/group/GroupObject.h"
 #include "server/zone/objects/cell/CellObject.h"
 #include "server/zone/CloseObjectsVector.h"
 #include "server/zone/managers/player/PlayerManager.h"
@@ -426,6 +427,100 @@ void BotManager::writeCrews() {
 	}
 
 	BotCrews::save(entries, pending);
+}
+
+bool BotManager::updateGear(uint64 oid, const BotEntry& fresh) {
+	Reference<BotRuntime*> runtime;
+	Reference<BotEntry*> entry;
+	bool online = false;
+
+	// A template that doesn't resolve would get the bot refused at its next login: nothing is swapped
+	String reason;
+
+	if (!BotFactory::validateGear(fresh, reason)) {
+		error() << "BotManager: gear update for " << oid << " refused: " << reason;
+
+		return false;
+	}
+
+	{
+		Locker locker(&stateMutex);
+
+		runtime = findByOid(oid);
+
+		if (runtime == nullptr || runtime->gone || runtime->entry->owner == 0 || crewsBroken)
+			return false;
+
+		// A new entry replaces the old one, so a job reading the old one (botEntry) is never half way through a change
+		entry = new BotEntry(*runtime->entry);
+		entry->skills = fresh.skills;
+		entry->outfit = fresh.outfit;
+		entry->carry = fresh.carry;
+		entry->weapon = fresh.weapon;
+		entry->campKit = fresh.campKit;
+
+		for (int i = 0; i < crewEntries.size(); ++i) {
+			if (crewEntries.get(i) == runtime->entry) {
+				crewEntries.set(i, entry);
+				break;
+			}
+		}
+
+		runtime->entry = entry;
+		online = runtime->state == BotRuntime::ONLINE;
+
+		requestSave();
+	}
+
+	if (online) {
+		Core::getTaskManager()->executeTask([this, runtime, entry, oid]() {
+			ManagedReference<SceneObject*> object = zoneServer->getObject(oid);
+			ManagedReference<CreatureObject*> creature = object != nullptr && object->isPlayerCreature() ? object->asCreatureObject() : nullptr;
+
+			if (creature == nullptr)
+				return;
+
+			Locker locker(creature);
+
+			try {
+				BotFactory::refreshGear(zoneServer, creature, *entry);
+			} catch (Exception& e) {
+				error() << "BotManager: exception dressing " << entry->name << ": " << e.getMessage();
+			}
+		}, "BotUpdateGear", "slowQueue");
+	}
+
+	return true;
+}
+
+bool BotManager::refreshSquadAura(uint64 oid) {
+	ManagedReference<SceneObject*> object = zoneServer->getObject(oid);
+
+	if (object == nullptr || !object->isPlayerCreature() || object->asCreatureObject()->getGroup() == nullptr)
+		return false;
+
+	// A task of its own: the group is locked before its members, so no creature lock is held when it runs
+	Core::getTaskManager()->executeTask([this, oid]() {
+		ManagedReference<SceneObject*> object = zoneServer->getObject(oid);
+		ManagedReference<CreatureObject*> creature = object != nullptr && object->isPlayerCreature() ? object->asCreatureObject() : nullptr;
+		ManagedReference<GroupObject*> group = creature != nullptr ? creature->getGroup() : nullptr;
+
+		if (group == nullptr)
+			return;
+
+		try {
+			Locker locker(group);
+
+			if (group->hasSquadLeader()) {
+				group->removeGroupModifiers();
+				group->addGroupModifiers();
+			}
+		} catch (Exception& e) {
+			error() << "BotManager: exception rebuilding the squad leader modifiers for " << oid << ": " << e.getMessage();
+		}
+	}, "BotSquadAura", "slowQueue");
+
+	return true;
 }
 
 Reference<BotEntry*> BotManager::getEntry(const String& firstName) const {

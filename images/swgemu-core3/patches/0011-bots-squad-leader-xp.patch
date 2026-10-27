@@ -1,0 +1,57 @@
+diff --git a/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp b/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
+index dc61426..6e2fc03 100644
+--- a/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
++++ b/MMOCoreORB/src/server/zone/managers/player/PlayerManagerImplementation.cpp
+@@ -2028,6 +2028,8 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 	int playerHitCount = playerList.size();
+ 
++	uint32 allDamage = totalDamage;
++
+ 	// Bot players' damage isn't an XP share of its own: the humans split the XP as if they had fought alone (our patch)
+ 	totalDamage = BotGroup::getRewardDamage(threatMap, totalDamage);
+ 
+@@ -2118,8 +2120,8 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 			awardExperience(owner, "creaturehandler", xpAmount);
+ 		} else if (attacker->isPlayerCreature()) {
+-			// Bot players earn no XP from kills (our patch)
+-			if (BotGroup::skipReward(attacker, "the XP share"))
++			// Roster bots earn no XP from kills; an own-crew bot earns its damage share of all the damage (our patch)
++			if (BotGroup::skipXp(attacker))
+ 				continue;
+ 
+ 			if (!(attacker->getZone() == zone && destructedObject->isInRangeZoneless(attacker, 80))) {
+@@ -2161,7 +2163,7 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 				float xpAmount = baseXp;
+ 				int playerLevel = calculatePlayerLevel(attackerCreo, xpType);
+ 
+-				xpAmount *= (float) damage / totalDamage;
++				xpAmount *= (float) damage / (BotGroup::isBotPlayer(attacker) ? allDamage : totalDamage);
+ 
+ 				//Cap xp based on level
+ 				xpAmount = Math::min(xpAmount, playerLevel * 300.f);
+@@ -2201,6 +2203,13 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 			crossLocker.release();
+ 
++			// The own-crew squad leader bots in the group earn the squad leader experience too, though they never lead (our patch)
++			Vector<CreatureObject*> squadLeaderBots;
++			BotGroup::trainingSquadLeadersIn(group, squadLeaderBots);
++
++			for (int sl = 0; sl < squadLeaderBots.size(); ++sl)
++				slExperience.put(squadLeaderBots.get(sl), slExperience.get(squadLeaderBots.get(sl)) + squadXp);
++
+ 			ManagedReference<CreatureObject*> groupLeader = group->getLeader();
+ 
+ 			if (groupLeader == nullptr || !groupLeader->isPlayerCreature())
+@@ -2213,7 +2222,8 @@ void PlayerManagerImplementation::disseminateExperience(TangibleObject* destruct
+ 
+ 			//If he is a squad leader, and is in range of this player, then add the combat exp for him to use.
+ 			//Removed distance check to keep current functionality. Attacker was previously comparing its location to itself
+-			if (groupLeader->hasSkill("outdoors_squadleader_novice")) {
++			// (a human leader gets none from an own-crew bot's kills, as before bots earned experience)
++			if (groupLeader->hasSkill("outdoors_squadleader_novice") && !(BotGroup::isBotPlayer(attacker) && !BotGroup::isBotPlayer(groupLeader))) {
+ 				int v = slExperience.get(groupLeader) + squadXp;
+ 				slExperience.put(groupLeader, v);
+ 			}

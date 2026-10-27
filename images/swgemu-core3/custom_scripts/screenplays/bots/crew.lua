@@ -792,6 +792,7 @@ function BotCrew:start(pBot, oid)
 	self:learn(pBot, oid, role)
 	self:restock(pBot, oid)
 	self:equip(pBot, oid)
+	self:trainStart(pBot, oid, now)
 	self:lootStart(pBot, oid)
 	self:missionLogin(pBot, oid)
 
@@ -835,7 +836,7 @@ function BotCrew:clear(oid)
 		"pP", "dP", "pS", "dS", "slCallAt", "slRallyAt", "slVolleyAt", "slFormUpAt", "slAimAt", "slMoraleAt", "retreatSeen",
 		"held", "swapAt", "grenadeAt", "coneAt", "perf", "perfAt", "perfNext", "perfStart", "instrument", "flourishes", "calledUntil", "calledBy", "invitedByAt", "capAt",
 		"perfHold", "perfSetAt", "perfSetFor", "perfSwitches", "perfSaid", "watching", "watchingAt", "listening", "listeningAt",
-		"band", "bandTarget", "bandAt", "bandLeft", "owner", "joinAt"}) do
+		"band", "bandTarget", "bandAt", "bandLeft", "owner", "joinAt", "trainAt", "trainSayAt"}) do
 		deleteData(ckey(oid, field))
 	end
 
@@ -1049,6 +1050,9 @@ function BotCrew:tick(pBot, oid, now)
 	if now - readData(ckey(oid, "restockAt")) >= self.restockEvery and not creature:isInCombat() then
 		self:restock(pBot, oid)
 	end
+
+	-- Part 2: an own-crew bot trains every few minutes
+	self:trainTick(pBot, oid, now)
 
 	if self:role(oid) == "entertainer" and readData(ckey(oid, "inCamp")) ~= 1 then
 		self:perfPistol(pBot, oid)
@@ -2916,7 +2920,7 @@ function BotCrew:perform(pBot, oid, now)
 			if now - readData(ckey(oid, "perfStart")) >= self.perfRestart then
 				put(ckey(oid, "perfStart"), now)
 				put(ckey(oid, "perfAt"), now)
-				putString(ckey(oid, "dance"), BotDancer ~= nil and BotDancer:pickDance("") or "exotic4")
+				putString(ckey(oid, "dance"), self:performChoice(pBot, oid, "Dance", BotDancer ~= nil and BotDancer:pickDance("") or "exotic4"))
 				botEnqueue(pBot, "startdance", 0, readStringData(ckey(oid, "dance")))
 				self:perfSetStart(oid, now)
 				print("BotJobs: " .. self:name(oid) .. " dances for the camp")
@@ -2950,7 +2954,7 @@ function BotCrew:perform(pBot, oid, now)
 			if now - readData(ckey(oid, "perfStart")) >= self.perfRestart then
 				put(ckey(oid, "perfStart"), now)
 				put(ckey(oid, "perfAt"), now)
-				putString(ckey(oid, "song"), BotMusician ~= nil and BotMusician:pickSong("") or "virtuoso")
+				putString(ckey(oid, "song"), self:performChoice(pBot, oid, "Music", BotMusician ~= nil and BotMusician:pickSong("") or "virtuoso"))
 				botEnqueue(pBot, "startmusic", 0, readStringData(ckey(oid, "song")))
 				self:perfSetStart(oid, now)
 				print("BotJobs: " .. self:name(oid) .. " plays for the camp")
@@ -4476,6 +4480,9 @@ function BotCrew:endFight(pBot, oid, now)
 
 	print("BotJobs: " .. self:name(oid) .. " makes peace (" .. readData(ckey(oid, "specialCount")) .. " specials so far)")
 	self:restock(pBot, oid)
+
+	-- Part 2: the fight's experience is in; an own-crew bot trains what it can
+	self:trainAfterFightPass(pBot, oid, now)
 end
 
 -- Healing
@@ -6563,6 +6570,13 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		end
 	end
 
+	-- Part 2: "how far to your next box?" from an own-crew bot to the people it works for: the box and the experience left, no model
+	if text ~= nil and self:ownerOf(oid) ~= 0 and self:human(pSpeaker) and self:mine(oid, pSpeaker) and self:progressWanted(text) then
+		self:progressAnswer(pBot, oid, pSpeaker, channel)
+
+		return true
+	end
+
 	-- "buffs" (Phase 11): the window with the group's buff times; no model is asked
 	if text ~= nil and BotBuffs ~= nil and (channel == "group" or channel == "tell") and self:human(pSpeaker) and
 		BotBuffs:wanted(text) then
@@ -7785,3 +7799,6 @@ includeFile("../custom_scripts/screenplays/bots/crew_loot.lua")
 
 -- Phase 9b: the tactics table, plans, orders and lessons (adds to BotCrew)
 includeFile("../custom_scripts/screenplays/bots/crew_doctrine.lua")
+
+-- Part 2 (Phase 9): own-crew bots train, and say how far they are (adds to BotCrew)
+includeFile("../custom_scripts/screenplays/bots/crew_train.lua")

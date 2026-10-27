@@ -820,6 +820,28 @@ bool BotGroup::skipReward(SceneObject* object, const char* reward) {
 	return true;
 }
 
+bool BotGroup::isOwnCrewBot(SceneObject* object) {
+	return isBotPlayer(object) && BotManager::instance()->getOwner(object->getObjectID()) != 0;
+}
+
+bool BotGroup::skipXp(SceneObject* object) {
+	return isBotPlayer(object) && !isOwnCrewBot(object);
+}
+
+void BotGroup::trainingSquadLeadersIn(GroupObject* group, Vector<CreatureObject*>& out) {
+	if (group == nullptr)
+		return;
+
+	CreatureObject* leader = group->getLeader();
+
+	for (int i = 0; i < group->getGroupSize(); ++i) {
+		CreatureObject* member = group->getGroupMember(i);
+
+		if (member != nullptr && member != leader && isSquadLeaderBot(member) && isOwnCrewBot(member))
+			out.add(member);
+	}
+}
+
 uint32 BotGroup::getRewardDamage(ThreatMap* threatMap, uint32 totalDamage) {
 	if (threatMap == nullptr)
 		return totalDamage;

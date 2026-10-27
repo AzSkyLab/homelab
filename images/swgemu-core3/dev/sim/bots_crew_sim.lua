@@ -162,12 +162,44 @@ return function(ctx)
 	function methods.hasState(self, state) return ((self.states or 0) & state) ~= 0 and 1 or 0 end
 	function methods.getQueueSize(self) return nowMs() < (self.queueUntil or 0) and 1 or 0 end
 	function methods.hasSkill(self, skill)
+		-- (an own-crew bot owns exactly the boxes it was hired with and has trained: Part 2)
+		if self.ownedSkills ~= nil then
+			return self.ownedSkills[skill] == true
+		end
 		for _, prefix in ipairs(self.skillPrefixes or {}) do
 			if skill:sub(1, #prefix) == prefix then
 				return true
 			end
 		end
 		return false
+	end
+	-- Experience (Part 2): the character is its own PlayerObject here
+	function methods.getPlayerObject(self) return self end
+	function methods.hasAbility(self, ability) return not (self.noAbilities and self.noAbilities[ability]) end
+	function methods.getExperience(self, kind) return (self.xp or {})[kind] or 0 end
+	-- (Core3's PlayerObject::addExperience: a pool is capped at the highest cap of the boxes owned, else at xp_limits.iff's default, else 2000;
+	-- a pool taken to nothing is gone)
+	function methods.experienceCap(self, kind)
+		local cap
+		for box in pairs(self.ownedSkills or {}) do
+			local info = BotCrewData.boxes[box]
+			if info ~= nil and info.t == kind and info.x > 0 and (cap == nil or info.x > cap) then cap = info.x end
+		end
+		return cap or BotCrewData.limits[kind] or 2000
+	end
+	function methods.awardExperience(self, kind, amount, send)
+		self.xp = self.xp or {}
+		local value = (self.xp[kind] or 0) + amount
+		if value <= 0 then
+			self.xp[kind] = nil
+		else
+			self.xp[kind] = math.min(value, self:experienceCap(kind))
+		end
+	end
+	function methods.getExperienceList(self)
+		local out = {}
+		for kind in pairs(self.xp or {}) do table.insert(out, kind) end
+		return out
 	end
 	function methods.getWorldPositionX(self) return self:getPositionX() end
 	function methods.getWorldPositionY(self) return self:getPositionY() end
@@ -1129,6 +1161,9 @@ return function(ctx)
 	-- Own crews (Phase 9, Part 1): the bindings of BotCrewsLua, over entries added to the roster table (removed again by
 	-- ownClear). An own-crew bot is a roster entry with an owner and online "owner"
 	local ownLog = {hired = {}, letGo = {}}
+	local START_NOVICE = {tank = "combat_brawler_novice", rifleman = "combat_marksman_novice", medic = "science_medic_novice",
+		ranger = "outdoors_scout_novice", squadleader = "outdoors_scout_novice", entertainer = "social_entertainer_novice",
+		commando = "combat_marksman_novice"}
 
 	local function addOwnBot(entry)
 		local first = entry.name:match("^(%S+)")
@@ -1163,7 +1198,47 @@ return function(ctx)
 				table.remove(BotRoster.bots, i)
 			end
 		end
-		ownLog = {hired = {}, letGo = {}}
+		ownLog = {hired = {}, letGo = {}, gear = {}}
+	end
+
+	-- Part 2: training (LuaSkillManager over BotCrewData.boxes; the prerequisites are the order's, which is how the bot picks) and gear
+	function api.PlayerObject(p) return p end
+	function api.botSkillPoints(p) return p ~= nil and p.skillPoints or 0 end
+	function api.LuaSkillManager()
+		local manager = {}
+		function manager.canLearnSkill(_, p, box, noXp)
+			local info = BotCrewData.boxes[box]
+			if info == nil or p.ownedSkills == nil or p.ownedSkills[box] then return false end
+			if (p.skillPoints or 0) < info.p then return false end
+			if not noXp and info.c > 0 and ((p.xp or {})[info.t] or 0) < info.c then return false end
+			return true
+		end
+		function manager.awardSkill(self, p, box)
+			if not self:canLearnSkill(p, box, false) then return false end
+			local info = BotCrewData.boxes[box]
+			p.skillPoints = p.skillPoints - info.p
+			if info.c > 0 then p:awardExperience(info.t, -info.c) end
+			p.ownedSkills[box] = true
+			table.insert(ownLog.trained or {}, box)
+			return true
+		end
+		return manager
+	end
+	ownLog.gear = {}
+	function api.botSquadAura(oid)
+		ownLog.aura = (ownLog.aura or 0) + 1
+		return true
+	end
+	function api.botSetGear(oid, gear)
+		local o = ctx.objects[oid]
+		if o == nil or (o.ownerOid or 0) == 0 then return false end
+		for _, entry in ipairs(BotRoster.bots) do
+			if (entry.owner or 0) ~= 0 and entry.name:match("^(%S+)") == o.first then
+				entry.skills, entry.outfit, entry.carry, entry.weapon, entry.campKit = gear.skills, gear.outfit, gear.carry, gear.weapon, gear.campKit
+			end
+		end
+		table.insert(ownLog.gear, {oid = oid, outfit = gear.outfit, weapon = gear.weapon})
+		return true
 	end
 
 	function api.botOwner(oid)
@@ -1225,7 +1300,12 @@ return function(ctx)
 		for k, v in pairs(entry) do copy[k] = v end
 		copy.owner, copy.online, copy.hiredAt = owner, "owner", sim.now
 		table.insert(BotRoster.bots, copy)
-		addOwnBot(copy)
+		local made = addOwnBot(copy)
+		-- It owns what it was hired with and the novice box of its starting profession; the points are what the boxes leave of 250
+		made.ownedSkills = {[START_NOVICE[copy.job]] = true}
+		for _, box in ipairs(copy.skills) do made.ownedSkills[box] = true end
+		made.xp = {}
+		made.skillPoints = 250
 		table.insert(ownLog.hired, copy)
 		return true, first
 	end
@@ -7997,6 +8077,321 @@ return function(ctx)
 		teardown()
 	end
 
+	-- Scenario: Phase 9 Part 2, training: the order, the points, the full build, cross-training, "how far", the Mos Eisley crew
+
+	function scenarios.crewtrain()
+		setup("/nonexistent/sim-talk")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewtrain: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		for _, role in ipairs(SEVEN) do login(crew[role]) end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		cameren.boxes = 0
+		local entry = BotCrewKit:entry({role = "rifleman", species = "human", sex = "male", name = "Oren Marsh", look = {}, boxes = 0, city = "mos_eisley",
+			station = BotCrewKit:station("mos_eisley", {})})
+		local ok, first = botHire(cameren.oid, entry)
+		if not ok then fail("crewtrain: hire: " .. tostring(first)) return end
+		local oren = byFirst["oren"]
+		login(oren)
+		sim.run(3)
+		local order = BotCrewData.order.rifleman
+		local function owned() local n = 0 for _, b in ipairs(order) do if oren.ownedSkills[b] then n = n + 1 end end return n end
+		local function prefixOk()
+			-- it owns a prefix of the order: no gaps
+			local gap = false
+			for _, b in ipairs(order) do
+				if oren.ownedSkills[b] then
+					if gap then return false end
+				else
+					gap = true
+				end
+			end
+			return true
+		end
+		eq("a new bot with no boxes owns none of its order", owned(), 0)
+
+		-- 1. Nothing to spend: nothing trained
+		local t0 = os.time()
+		eq("nothing trained with no experience", #BotCrew:trainPass(oren, oren.oid, t0), 0)
+		-- 2. The first box asks for its experience; one box short of it trains nothing, enough trains it
+		local first_box = order[1]
+		local info = BotCrewData.boxes[first_box]
+		oren.xp[info.t] = info.c - 1
+		eq("one point of experience short", #BotCrew:trainPass(oren, oren.oid, t0 + 1), 0)
+		-- (and says how far it is)
+		local line = BotCrew:progressLine(oren, oren.oid)
+		if not line:find(BotCrew:boxTitle(first_box), 1, true) or not line:find("1 more", 1, true) then fail("crewtrain: how far: " .. line) end
+		oren.xp[info.t] = info.c
+		local got = BotCrew:trainPass(oren, oren.oid, t0 + 2)
+		eq("trained the first box", got[1], first_box)
+		eq("its experience was taken", oren.xp[info.t], nil)
+		eq("its points were taken", oren.skillPoints, 250 - info.p - (got[2] and BotCrewData.boxes[got[2]].p or 0) - (got[3] and BotCrewData.boxes[got[3]].p or 0) - (got[4] and BotCrewData.boxes[got[4]].p or 0))
+		-- the entry and its gear moved on
+		local stored = BotJobs:entry("oren")
+		eq("the entry has the box", stored.skills[#stored.skills] ~= nil, true)
+		eq("a gear update was sent", #ownLog.gear >= 1, true)
+		eq("owned a prefix", prefixOk(), true)
+
+		-- 3. Plenty of experience, few points: it trains in order and stops when the points run out
+		local kinds = (function() local k = {} for _, b in ipairs(order) do local i = BotCrewData.boxes[b] if i and i.t ~= "" then k[i.t] = true end end return k end)()
+		-- (Core3 clamps a pool to its cap when a box takes experience, so the pools are filled again before each pass)
+		local function fill() for kind in pairs(kinds) do oren.xp[kind] = 1e8 end end
+		oren.skillPoints = 7
+		local before = owned()
+		for i = 1, 6 do fill() BotCrew:trainPass(oren, oren.oid, t0 + 10 * i) end
+		eq("owned a prefix after the points ran out", prefixOk(), true)
+		if oren.skillPoints < 0 then fail("crewtrain: points went negative: " .. oren.skillPoints) end
+		local nextBox = BotCrew:nextBox(oren, order)
+		if BotCrewData.boxes[nextBox].p <= oren.skillPoints then fail("crewtrain: stopped with points to spare for " .. nextBox) end
+		fill()
+		eq("no more trained", #BotCrew:trainPass(oren, oren.oid, t0 + 100), 0)
+		line = BotCrew:progressLine(oren, oren.oid)
+		if not line:find("skill points", 1, true) then fail("crewtrain: out of points: " .. line) end
+		if owned() <= before then fail("crewtrain: trained nothing with 7 points") end
+
+		-- 4. Points and experience for everything: the full build, never past it
+		oren.skillPoints = 1000
+		for i = 1, 40 do fill() BotCrew:trainPass(oren, oren.oid, t0 + 200 + 10 * i) end
+		eq("the full build", owned(), #order)
+		eq("nothing left to train", BotCrew:nextBox(oren, order), nil)
+		fill()
+		eq("a pass past the build trains nothing", #BotCrew:trainPass(oren, oren.oid, t0 + 900), 0)
+		if not BotCrew:progressLine(oren, oren.oid):find("everything", 1, true) then fail("crewtrain: the built bot's answer") end
+		eq("boxes counted at the full build", BotCrewKit:boxesIn(BotJobs:entry("oren").skills), BotCrewKit:boxesIn(order))
+
+		-- 5. The wording
+		eq("a title", BotCrew:boxTitle("combat_marksman_rifle_03"), "Marksman Rifle III")
+		eq("a master", BotCrew:boxTitle("social_dancer_master"), "Master Dancer")
+		eq("Teras Kasi", BotCrew:boxTitle("combat_unarmed_accuracy_01"), "Teras Kasi Accuracy I")
+		eq("a novice", BotCrew:boxTitle("combat_brawler_novice"), "Novice Brawler")
+		eq("the progress words", BotCrew:progressWanted("how far to your next box?"), true)
+		eq("the progress words 2", BotCrew:progressWanted("Oren, what are you working on?"), true)
+		eq("not the progress words", BotCrew:progressWanted("how far to the lair?"), false)
+		-- (ordinary talk is left alone: only a box, skill or training noun makes it the question)
+		for _, text in ipairs({"how far are you?", "how close are you to the door", "remember your training, stay behind the tank", "what are you doing",
+			"I'm working on a project", "next level of the dungeon", "oren how far to the camp"}) do
+			eq("not the progress words: " .. text, BotCrew:progressWanted(text), false)
+		end
+		for _, text in ipairs({"Oren, what's your next skill?", "what are you training?", "how far to your next box", "how far to your next level?"}) do
+			eq("the progress words: " .. text, BotCrew:progressWanted(text), true)
+		end
+
+		-- 6. The question, answered with no model: by tell to the owner, not to a stranger
+		local t = nowMs()
+		speak(oren, cameren, "how far to your next box?", "tell")
+		sim.run(3)
+		eq("a tell for the owner", #entries(log.tells, oren, t), 1)
+
+		-- 7. A fed box (a type its play never earns) is paid for out of its pay pool, part at a time, and the answer says what it waits on
+		local cfg = BotCrewData.cross.rifleman
+		oren.xp = {}
+		oren.ownedSkills = {combat_marksman_novice = true}
+		oren.skillPoints = 250
+		local fedBox, fedAt
+		for i, b in ipairs(order) do
+			local bi = BotCrewData.boxes[b]
+			if bi ~= nil and bi.c > 0 and cfg.fed[bi.t] == true then fedBox, fedAt = b, i break end
+		end
+		if fedBox == nil then fail("crewtrain: the rifleman's order has no fed box") return end
+		for i = 1, fedAt - 1 do oren.ownedSkills[order[i]] = true end
+		local fi = BotCrewData.boxes[fedBox]
+		local half = math.floor(fi.c / 2)
+		oren.xp[cfg.main] = half
+		eq("the pool holds half the cost: nothing learned", #BotCrew:trainPass(oren, oren.oid, t0 + 1000), 0)
+		eq("half went to the fed type", oren.xp[fi.t], half)
+		eq("and left the pay pool", oren.xp[cfg.main], nil)
+		line = BotCrew:progressLine(oren, oren.oid)
+		if not line:find("train out of my", 1, true) or not line:find((fi.c - half) .. " more", 1, true) then fail("crewtrain: the fed answer: " .. line) end
+		oren.xp[cfg.main] = fi.c
+		got = BotCrew:trainPass(oren, oren.oid, t0 + 1100)
+		eq("the fed box is learned", got[1], fedBox)
+		eq("the fed type was all spent on the box", oren.xp[fi.t], nil)
+		if (oren.xp[cfg.main] or 0) > half then fail("crewtrain: the pay pool didn't pay the rest: " .. tostring(oren.xp[cfg.main])) end
+		-- a pass with nothing in the pool pays nothing and takes nothing else
+		oren.xp = {}
+		local nextFed = BotCrew:nextBox(oren, order)
+		local before2 = owned()
+		BotCrew:trainPass(oren, oren.oid, t0 + 1200)
+		eq("nothing learned with no pay", owned(), before2)
+		eq("and nothing is made out of nothing", next(oren.xp), nil)
+
+		-- 7b. The lines about it: one a crew a minute at most; a master line waits for the next free slot, the others are dropped
+		invite(cameren, oren, true)
+		sim.run(3)
+		eq("grouped", cameren.groupId ~= nil, true)
+		local owner = BotCrew:ownerOf(oren.oid)
+		writeData("crew:trainSayAt:" .. owner, 0)
+		t = nowMs()
+		local base = os.time() + 5000
+		BotCrew:trainedSay(oren, oren.oid, {"combat_marksman_rifle_04"}, base)
+		BotCrew:trainedSay(oren, oren.oid, {"combat_marksman_rifle_03"}, base + 10)
+		BotCrew:trainedSay(oren, oren.oid, {"combat_marksman_support_04"}, base + 20)
+		sim.run(2)
+		eq("three trainings in 20 s: one line", #entries(log.group, oren, t), 1)
+		BotCrew:trainedSay(oren, oren.oid, {"combat_marksman_master"}, base + 30)
+		sim.run(2)
+		eq("the master line waits for a free slot", #entries(log.group, oren, t), 1)
+		BotCrew:trainTick(oren, oren.oid, base + 40)
+		sim.run(2)
+		eq("...still waiting at 40 s", #entries(log.group, oren, t), 1)
+		BotCrew:trainTick(oren, oren.oid, base + 65)
+		sim.run(2)
+		eq("...said at the next free slot", #entries(log.group, oren, t), 2)
+		BotCrew:trainTick(oren, oren.oid, base + 130)
+		sim.run(2)
+		eq("...once", #entries(log.group, oren, t), 2)
+
+		-- 8. The Mos Eisley crew is master and never trains
+		local kragoth = crew.rifleman
+		kragoth.xp = {combat_rangedspecialize_rifle = 1e9}
+		eq("the Mos Eisley rifleman trains nothing", #BotCrew:trainPass(kragoth, kragoth.oid, t0 + 1200), 0)
+		eq("the Mos Eisley crew's progress keeps for the brain", BotCrew:progressWanted("next box"), true)
+		t = nowMs()
+		speak(kragoth, cameren, "how far to your next box?", "tell")
+		sim.run(3)
+		eq("no canned progress line from a Mos Eisley bot", #entries(log.tells, kragoth, t) == 0 or not entries(log.tells, kragoth, t)[1].text:find("working on", 1, true), true)
+
+		realPrint(string.format("crewtrain %d boxes in the order, %d gear updates", #order, #ownLog.gear))
+		ownClear()
+		teardown()
+	end
+
+	-- Scenario: Phase 9 Part 2, a low-level own-crew bot's turns use only what it has
+
+	function scenarios.crewlow()
+		setup("/nonexistent/sim-talk")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewlow: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		cameren.boxes = 0
+		local used = {}
+		local function hire(role, name, mutate)
+			local station = BotCrewKit:station("mos_eisley", used)
+			table.insert(used, {station.x, station.y})
+			local entry = BotCrewKit:entry({role = role, species = "human", sex = "male", name = name, look = {}, boxes = 0, city = "mos_eisley", station = station})
+			local ok, f = botHire(cameren.oid, entry)
+			if not ok then fail("crewlow: hire " .. name .. ": " .. tostring(f)) end
+			local b = byFirst[f:lower()]
+			if mutate then mutate(b) end
+			login(b)
+			return b
+		end
+		-- A tank that has not even the brawler's novice box has no taunt; a medic with the novice medic box has stims and no revive
+		local tank = hire("tank", "Venn Farrow", function(b) b.ownedSkills = {} end)
+		local medic = hire("medic", "Aleka Ives")
+		local rifleman = hire("rifleman", "Oren Marsh")
+		sim.run(3)
+		eq("a tank without the box has no taunt", BotCrew:can(tank.oid, "taunt"), false)
+		eq("a medic has stims", BotCrew:can(medic.oid, "stims"), true)
+		eq("a medic at its first boxes has no revive", BotCrew:can(medic.oid, "revive"), false)
+		eq("a medic at its first boxes has no state cures", BotCrew:can(medic.oid, "states"), false)
+		for _, b in ipairs({tank, medic, rifleman}) do invite(cameren, b, true) sim.run(3) end
+		eq("grouped", (cameren.groupId ~= nil and #groups[cameren.groupId].members or 0), 4)
+
+		-- A fight: the tank does not taunt
+		local rat = makeMob("a womp rat", cameren.x + 20, cameren.y + 4, 4000)
+		rat.hits = 60
+		local t = nowMs()
+		attack(cameren, rat)
+		sim.run(40)
+		eq("the tank didn't taunt", #commands(tank, "taunt", t), 0)
+		if #entries(log.targets, tank, t) == 0 then fail("crewlow: the tank didn't fight at all") end
+
+		-- ...and with the box (trained since), it does
+		sim.run(30)
+		tank.ownedSkills["combat_brawler_novice"] = true
+		BotCrew:learn(tank, tank.oid, "tank")
+		eq("the novice box brings the taunt", BotCrew:can(tank.oid, "taunt"), true)
+		local rat2 = makeMob("a womp rat", cameren.x + 20, cameren.y + 6, 4000)
+		rat2.hits = 60
+		t = nowMs()
+		attack(cameren, rat2)
+		sim.run(30)
+		if #commands(tank, "taunt", t) == 0 then fail("crewlow: the tank with the box didn't taunt") end
+
+		-- A bot that falls is not revived by a medic without the box, and is by one with it
+		t = nowMs()
+		rifleman.dead = true
+		dropFromCombat(rifleman)
+		sim.run(25)
+		eq("no revive without the box", #commands(medic, "reviveplayer", t), 0)
+		medic.ownedSkills["science_doctor_wound_04"] = true
+		medic.ownedSkills["science_doctor_novice"] = true
+		BotCrew:learn(medic, medic.oid, "medic")
+		eq("the box brings the revive", BotCrew:can(medic.oid, "revive"), true)
+		t = nowMs()
+		rifleman.dead = true
+		sim.run(25)
+		if #commands(medic, "reviveplayer", t) == 0 and rifleman.dead then fail("crewlow: the medic with the box didn't revive") end
+
+		realPrint("crewlow turns follow the boxes")
+		ownClear()
+		teardown()
+	end
+
+	-- Scenario: Phase 9 Part 2, every role from no boxes to its full build with Core3's experience caps and a plausible experience per
+	-- fight. The experience a role's play doesn't earn is paid for out of the pools it does earn; nothing may stall.
+
+	function scenarios.crewfull()
+		setup("/nonexistent/sim-talk")
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		cameren.boxes = 0
+		local used = {}
+		local E = 500			-- experience of a fight's main type
+		local maxFights = 400000
+		local summary = {}
+		local firsts = {tank = "Tamo", rifleman = "Rilo", medic = "Medo", ranger = "Rano", squadleader = "Sall", entertainer = "Entu", commando = "Como"}
+		for _, role in ipairs({"tank", "rifleman", "medic", "ranger", "squadleader", "entertainer", "commando"}) do
+			local station = BotCrewKit:station("mos_eisley", used)
+			table.insert(used, {station.x, station.y})
+			local entry = BotCrewKit:entry({role = role, species = "human", sex = "male", name = firsts[role] .. " Testfar", look = {}, boxes = 0, city = "mos_eisley", station = station})
+			local ok, f = botHire(cameren.oid, entry)
+			if not ok then fail("crewfull: hire " .. role .. ": " .. tostring(f)) return end
+			local b = byFirst[f:lower()]
+			login(b)
+			local order = BotCrewData.order[role]
+			local cfg = BotCrewData.cross[role]
+			local function done() for _, box in ipairs(order) do if not b.ownedSkills[box] then return false end end return true end
+			local function play()
+				local main = cfg.main
+				if role == "commando" then
+					-- (the carbine until the flame thrower is certified at 21 boxes)
+					main = BotCrewKit:boxesIn((function() local o = {} for k in pairs(b.ownedSkills) do table.insert(o, k) end return o end)()) < 21 and
+						"combat_rangedspecialize_carbine" or cfg.main
+				end
+				b:awardExperience(main, E)
+				b:awardExperience("combat_general", E / 10)
+				if role == "medic" then b:awardExperience("combat_rangedspecialize_rifle", E / 2) end
+				if role == "squadleader" then b:awardExperience("squadleader", E * 1.2) end
+				if role == "entertainer" then
+					b:awardExperience("music", E) b:awardExperience("entertainer_healing", E) b:awardExperience("combat_rangedspecialize_pistol", E / 2)
+				end
+			end
+			local fights, stalledAt = 0, nil
+			local now = os.time()
+			while not done() and fights < maxFights do
+				fights = fights + 1
+				now = now + 30
+				play()
+				BotCrew:trainPass(b, b.oid, now)
+			end
+			if not done() then
+				local nb = BotCrew:nextBox(b, order)
+				local i = BotCrewData.boxes[nb]
+				local have = 0
+				for _, box in ipairs(order) do if b.ownedSkills[box] then have = have + 1 end end
+				fail(string.format("crewfull: %s stalls at %s (%d of %d boxes): needs %s %d, has %d (cap %d), %d points left, wants %d points", role, nb,
+					have, #order, i.t, i.c, b.xp[i.t] or 0, b:experienceCap(i.t), b.skillPoints, i.p))
+			else
+				table.insert(summary, string.format("%s %d boxes in %d fights (%d points left)", role, #order, fights, b.skillPoints))
+			end
+		end
+		for _, line in ipairs(summary) do realPrint("crewfull " .. line) end
+		ownClear()
+		teardown()
+	end
+
 	-- Scenario: Phase 9 Part 1, the recruiter's windows (mock SUI)
 
 	function scenarios.crewrecruit()
@@ -8227,5 +8622,8 @@ return function(ctx)
 	table.insert(order, "crewordernobrain")
 	table.insert(order, "crewbuffs")
 	table.insert(order, "crewown")
+	table.insert(order, "crewtrain")
+	table.insert(order, "crewlow")
+	table.insert(order, "crewfull")
 	table.insert(order, "crewrecruit")
 end

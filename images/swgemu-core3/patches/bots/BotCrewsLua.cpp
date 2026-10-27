@@ -8,6 +8,7 @@
 #include "BotCrews.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/objects/creature/CreatureObject.h"
+#include "server/zone/objects/player/PlayerObject.h"
 #include "server/zone/managers/name/NameManager.h"
 #include "server/ServerCore.h"
 #include "templates/manager/TemplateManager.h"
@@ -71,6 +72,9 @@ void BotCrewsLua::registerFunctions(Lua* lua) {
 	lua->registerFunction("botNameCheck", botNameCheck);
 	lua->registerFunction("botBoxCount", botBoxCount);
 	lua->registerFunction("botEntry", botEntry);
+	lua->registerFunction("botSkillPoints", botSkillPoints);
+	lua->registerFunction("botSetGear", botSetGear);
+	lua->registerFunction("botSquadAura", botSquadAura);
 }
 
 // botCrewOf(ownerOid)
@@ -280,6 +284,54 @@ int BotCrewsLua::botEntry(lua_State* L) {
 	setNumber(L, "heading", entry->heading);
 
 	lua_setfield(L, -2, "station");
+
+	return 1;
+}
+
+// botSkillPoints(pBot)
+int BotCrewsLua::botSkillPoints(lua_State* L) {
+	CreatureObject* creature = nullptr;
+
+	if (lua_gettop(L) >= 1 && lua_islightuserdata(L, 1)) {
+		SceneObject* object = static_cast<SceneObject*>(lua_touserdata(L, 1));
+
+		creature = object != nullptr && object->isCreatureObject() ? object->asCreatureObject() : nullptr;
+	}
+
+	PlayerObject* ghost = creature != nullptr ? creature->getPlayerObject() : nullptr;
+
+	lua_pushinteger(L, ghost != nullptr ? ghost->getSkillPoints() : 0);
+
+	return 1;
+}
+
+// botSetGear(botOid, entry)
+int BotCrewsLua::botSetGear(lua_State* L) {
+	if (lua_gettop(L) < 2 || !lua_istable(L, 2)) {
+		lua_pushboolean(L, false);
+
+		return 1;
+	}
+
+	BotEntry fresh;
+
+	lua_pushvalue(L, 2);
+
+	{
+		LuaObject table(L);
+
+		BotFactory::parseEntry(table, fresh);
+		table.pop();
+	}
+
+	lua_pushboolean(L, BotManager::instance()->updateGear(toInteger(L, 1), fresh));
+
+	return 1;
+}
+
+// botSquadAura(botOid)
+int BotCrewsLua::botSquadAura(lua_State* L) {
+	lua_pushboolean(L, BotManager::instance()->refreshSquadAura(toInteger(L, 1)));
 
 	return 1;
 }

@@ -271,6 +271,38 @@ bool BotFactory::loadRoster(const String& path, BotRosterList& out, BotSettings&
 	return true;
 }
 
+bool BotFactory::validateGear(const BotEntry& fresh, String& reason) {
+	for (int i = 0; i < fresh.skills.size(); ++i) {
+		if (SkillManager::instance()->getSkill(fresh.skills.get(i)) == nullptr) {
+			reason = "unknown skill " + fresh.skills.get(i);
+			return false;
+		}
+	}
+
+	Vector<String> templates;
+
+	for (int i = 0; i < fresh.carry.size(); ++i)
+		templates.add(fresh.carry.get(i));
+
+	for (int i = 0; i < fresh.outfit.size(); ++i)
+		templates.add(fresh.outfit.get(i));
+
+	if (!fresh.weapon.isEmpty())
+		templates.add(fresh.weapon);
+
+	if (!fresh.campKit.isEmpty())
+		templates.add(fresh.campKit);
+
+	for (int i = 0; i < templates.size(); ++i) {
+		if (TemplateManager::instance()->getTemplate(templates.get(i).hashCode()) == nullptr) {
+			reason = "unknown template " + templates.get(i);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 bool BotFactory::validateEntry(const BotEntry& entry, const BotRosterList& accepted, String& reason) {
 	if (entry.name.isEmpty() || entry.firstName.isEmpty()) {
 		reason = "no name";
@@ -789,6 +821,11 @@ static int setPalette(TangibleObject* object, const String& appearance, const ch
 	return count;
 }
 
+
+void BotFactory::refreshGear(ZoneServer* zoneServer, CreatureObject* creature, const BotEntry& entry) {
+	ensureOutfit(zoneServer, creature, entry);
+	ensureCarry(zoneServer, creature, entry);
+}
 
 void BotFactory::ensureLook(ZoneServer* zoneServer, CreatureObject* creature, const BotEntry& entry) {
 	bool inWorld = creature->getZone() != nullptr;

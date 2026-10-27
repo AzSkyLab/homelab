@@ -130,6 +130,15 @@ public:
 
 	// True if object is a bot left out of `reward` (logged with Core3.BotManager.DevLogRewards = true)
 	static bool skipReward(server::zone::objects::scene::SceneObject* object, const char* reward);
+
+	// Phase 9 Part 2: an own-crew bot (hired at a recruiter) earns experience from kills as a player does, by its damage share;
+	// the Mos Eisley crew, which is master and never trains, earns none (patch 0011)
+	static bool isOwnCrewBot(server::zone::objects::scene::SceneObject* object);
+	static bool skipXp(server::zone::objects::scene::SceneObject* object);
+	// The own-crew squad leader bot in a group, which earns the squad leader experience the leader would (patch 0011), or null
+	// The own-crew squad leader bots in the group other than its leader (who is paid by the upstream path): each earns the squad leader
+	// experience a leader would
+	static void trainingSquadLeadersIn(server::zone::objects::group::GroupObject* group, Vector<server::zone::objects::creature::CreatureObject*>& out);
 };
 
 } // namespace bot

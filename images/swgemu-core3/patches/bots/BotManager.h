@@ -144,6 +144,14 @@ public:
 	// own bots can't be let go. Returns false with the reason when it can't
 	bool letGo(uint64 oid, String& reason);
 
+	// Part 2: an own-crew bot trained a box. Its entry takes the new skills, outfit, carry, weapon and camp kit (saved with the crews),
+	// and, if it is online, the gear is put on in a task. Returns false for a roster bot or one that is gone
+	bool updateGear(uint64 oid, const BotEntry& fresh);
+
+	// A squad leader bot trained a box: the group's squad leader modifiers are rebuilt from its skills (Core3 only does it for the leader).
+	// A task takes the group's lock; false for a bot that isn't online and in a group
+	bool refreshSquadAura(uint64 oid);
+
 	// A bot's entry by first name (any bot that hasn't been let go), or null
 	Reference<BotEntry*> getEntry(const String& firstName) const;
 

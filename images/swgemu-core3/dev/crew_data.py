@@ -82,6 +82,22 @@ STEM = {
     "ithorian_defender": "ith_armor_s01_",
     "ithorian_guardian": "ith_armor_s02_", "ithorian_sentinel": "ith_armor_s03_",
 }
+# Part 2 (training). The experience a role earns by playing (kills with its weapon, heals, flourishes...), the first of which sets its
+# pace, and the pools a fed box is paid out of. The other types its build asks for (crafting, trapping, the weapon lines it never fires,
+# ...) are "fed" (crew_train.lua): when the next box needs one, the bot pays for it out of those pools, point for point, so nothing
+# depends on how far a capped pool can grow. What the probes on the local server showed of each role's play is in interfaces.md
+# (Phase 9 Part 2).
+EARNED = {
+    "tank": ("combat_meleespecialize_unarmed", ["combat_meleespecialize_unarmed", "combat_general"]),
+    "rifleman": ("combat_rangedspecialize_rifle", ["combat_rangedspecialize_rifle", "combat_general"]),
+    "medic": ("medical", ["medical", "combat_general", "combat_rangedspecialize_rifle"]),
+    "ranger": ("combat_rangedspecialize_carbine", ["combat_rangedspecialize_carbine", "combat_general"]),
+    "squadleader": ("combat_rangedspecialize_carbine", ["combat_rangedspecialize_carbine", "combat_general", "squadleader"]),
+    "entertainer": ("dance", ["dance", "music", "entertainer_healing", "combat_rangedspecialize_pistol"]),
+    "commando": ("combat_rangedspecialize_heavy", ["combat_rangedspecialize_heavy", "combat_general"]),
+}
+# Where the pay comes from, in order, if not the main type alone: the commando fires its carbine until the flame thrower is certified
+PAY = {"commando": ["combat_rangedspecialize_heavy", "combat_rangedspecialize_carbine"]}
 SPECIES = ["human", "bothan", "moncal", "rodian", "sullustan", "trandoshan", "twilek", "wookiee", "zabrak", "ithorian"]
 
 BEGIN = "-- BEGIN generated: %s (dev/crew_data.py)"
@@ -308,6 +324,50 @@ def gen_armor():
     return "\n".join(out)
 
 
+def gen_boxes(sk):
+    """Every box of every order: the experience type, cost and cap (the cap a type has while the box is owned), and the skill points."""
+    names = []
+    for role in BUILDS:
+        for box in sk.order(BUILDS[role], START[role]):
+            if box not in names:
+                names.append(box)
+    out = []
+    for box in names:
+        r = sk.rows[box]
+        out.append("\t%s = {t = \"%s\", c = %d, x = %d, p = %d}," % (box, r["XP_TYPE"], r["XP_COST"], r["XP_CAP"], r["POINTS_REQUIRED"]))
+    return "\n".join(out)
+
+
+def gen_cross(sk):
+    """Per role: the main experience type, the pools a fed box is paid from, and the types that are fed (its boxes need them, its play
+    doesn't earn them)."""
+    out = []
+    for role in BUILDS:
+        main, earned = EARNED[role]
+        need = set()
+        for box in sk.order(BUILDS[role], START[role]):
+            r = sk.rows[box]
+            if r["XP_TYPE"] and r["XP_COST"] > 0:
+                need.add(r["XP_TYPE"])
+        fed = ", ".join("%s = true" % t for t in sorted(need) if t not in earned)
+        pay = ", ".join('"%s"' % t for t in PAY.get(role, [main]))
+        out.append("\t%s = {main = \"%s\", pay = {%s}, fed = {%s}}," % (role, main, pay, fed))
+    return "\n".join(out)
+
+
+def gen_limits(sk):
+    """The experience cap of each type before any box of it is owned (datatables/skill/xp_limits.iff), for the types the orders use."""
+    data = find_file(CLIENT, os.path.join(CLIENT, "swgemu_live.cfg"), "datatables/skill/xp_limits.iff")
+    _, _, rows = datatable(data)
+    limits = {r["NAME"]: r["LIMIT"] for r in rows}
+    used = set()
+    for role in BUILDS:
+        for box in sk.order(BUILDS[role], START[role]):
+            if sk.rows[box]["XP_TYPE"]:
+                used.add(sk.rows[box]["XP_TYPE"])
+    return "\n".join("\t%s = %d," % (t, limits.get(t, 2000)) for t in sorted(used))
+
+
 def gen_looks():
     """Three or four looks per playable species and sex: hairstyles the character creator offers (spread over its list), each
     with a hair colour, and for the species without hair a skin tone. Palette indexes are kept inside the palette by the
@@ -351,7 +411,7 @@ def splice(text, name, body):
 
 def main():
     sk = Skills()
-    regions = {"order": gen_order(sk), "weapons": gen_weapons(sk), "camps": gen_camps(sk), "armor": gen_armor(), "looks": gen_looks()}
+    regions = {"order": gen_order(sk), "weapons": gen_weapons(sk), "camps": gen_camps(sk), "armor": gen_armor(), "looks": gen_looks(), "boxes": gen_boxes(sk), "cross": gen_cross(sk), "limits": gen_limits(sk)}
     if "--write" not in sys.argv:
         for name, body in regions.items():
             print(BEGIN % name)
