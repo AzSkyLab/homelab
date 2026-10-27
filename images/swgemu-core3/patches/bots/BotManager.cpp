@@ -5,6 +5,7 @@
 #include "BotManager.h"
 #include "BotFactory.h"
 #include "BotCrews.h"
+#include "BotGear.h"
 #include "BotLua.h"
 #include "BotTrade.h"
 #include "server/zone/ZoneServer.h"
@@ -432,8 +433,6 @@ void BotManager::writeCrews() {
 bool BotManager::updateGear(uint64 oid, const BotEntry& fresh) {
 	Reference<BotRuntime*> runtime;
 	Reference<BotEntry*> entry;
-	bool online = false;
-
 	// A template that doesn't resolve would get the bot refused at its next login: nothing is swapped
 	String reason;
 
@@ -467,27 +466,8 @@ bool BotManager::updateGear(uint64 oid, const BotEntry& fresh) {
 		}
 
 		runtime->entry = entry;
-		online = runtime->state == BotRuntime::ONLINE;
 
 		requestSave();
-	}
-
-	if (online) {
-		Core::getTaskManager()->executeTask([this, runtime, entry, oid]() {
-			ManagedReference<SceneObject*> object = zoneServer->getObject(oid);
-			ManagedReference<CreatureObject*> creature = object != nullptr && object->isPlayerCreature() ? object->asCreatureObject() : nullptr;
-
-			if (creature == nullptr)
-				return;
-
-			Locker locker(creature);
-
-			try {
-				BotFactory::refreshGear(zoneServer, creature, *entry);
-			} catch (Exception& e) {
-				error() << "BotManager: exception dressing " << entry->name << ": " << e.getMessage();
-			}
-		}, "BotUpdateGear", "slowQueue");
 	}
 
 	return true;
@@ -772,6 +752,23 @@ bool BotManager::letGo(uint64 oid, String& reason) {
 		}
 
 		entry = runtime->entry;
+	}
+
+	// Part 3: what the owner gave the bot goes back to the owner's pack first, whatever the bot is doing (it may be offline: its
+	// character is loaded). The bot is not gone until it has: a pack too full, or an owner who is not on, leaves everything as it was
+	if (!BotGear::returnGiven(oid, entry->owner, reason)) {
+		reason = "it still holds gear you gave it (" + reason + "): make room in your pack and be online, then ask again";
+		return false;
+	}
+
+	{
+		Locker locker(&stateMutex);
+
+		if (runtime->gone) {
+			reason = "no such crew member";
+			return false;
+		}
+
 		runtime->gone = true;
 
 		for (int i = 0; i < crewEntries.size(); ++i) {

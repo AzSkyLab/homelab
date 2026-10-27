@@ -5,6 +5,7 @@
 #include "BotLoot.h"
 #include "BotManager.h"
 #include "BotTrade.h"
+#include "BotGear.h"
 #include "server/ServerCore.h"
 #include "server/zone/Zone.h"
 #include "server/zone/ZoneServer.h"
@@ -599,6 +600,15 @@ void BotLoot::goods(CreatureObject* bot, Vector<Reference<BotGoodsItem*>>& out) 
 	if (inventory == nullptr || zoneServer == nullptr)
 		return;
 
+	// Phase 9 Part 3: while the bot hands back the gear its owner gave it (BotGear::prepareGiveBack), those are the goods
+	String giveMode = BotGear::giveMode(bot);
+
+	if (!giveMode.isEmpty()) {
+		BotGear::givenGoods(bot, giveMode, out);
+
+		return;
+	}
+
 	SortedVector<uint64> recorded;
 	readGoods(bot, recorded);
 
@@ -660,6 +670,12 @@ bool BotLoot::offerGoods(CreatureObject* bot, CreatureObject* player, int& offer
 	}
 
 	Locker blocker(bot);
+
+	// Part 3: while the bot hands its owner's gifts back, they go to the owner and nobody else (the loot chain of another player waits)
+	if (!BotGear::giveMode(bot).isEmpty() && player->getObjectID() != BotManager::instance()->getOwner(bot->getObjectID())) {
+		error = "busy";
+		return false;
+	}
 
 	Vector<Reference<BotGoodsItem*>> all;
 	goods(bot, all);
@@ -751,6 +767,11 @@ bool BotLoot::markGood(CreatureObject* bot, uint64 itemOid) {
 	writeGoods(bot, goods);
 
 	return true;
+}
+
+void BotLoot::recorded(CreatureObject* bot, SortedVector<uint64>& out) {
+	if (bot != nullptr)
+		readGoods(bot, out);
 }
 
 bool BotLoot::isGood(CreatureObject* bot, uint64 itemOid) {

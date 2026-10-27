@@ -10,6 +10,7 @@
 #include "BotLua.h"
 #include "BotChat.h"
 #include "BotLoot.h"
+#include "BotGear.h"
 #include "server/ServerCore.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/Zone.h"
@@ -1203,12 +1204,17 @@ uint64 BotCombat::equip(CreatureObject* bot, const String& templateName) {
 
 	bool inWorld = bot->getZone() != nullptr;
 
+	// Phase 9 Part 3: an own-crew bot's gear is what its owner gave it and the starter kit: nothing is made for it and nothing
+	// is repaired (an instrument is not gear: a musician's flute is made as before)
+	bool ownCrew = BotManager::instance()->getOwner(bot->getObjectID()) != 0 && !templateName.contains("/instrument/");
+
 	ManagedReference<SceneObject*> item = findEquipped(bot, crc);
 
 	if (item != nullptr) {
 		Locker ilocker(item, bot);
 
-		repairItem(item);
+		if (!ownCrew)
+			repairItem(item);
 
 		return item->getObjectID();
 	}
@@ -1220,6 +1226,13 @@ uint64 BotCombat::equip(CreatureObject* bot, const String& templateName) {
 		if (object != nullptr && object->getServerObjectCRC() == crc && !BotLoot::isGood(bot, object->getObjectID()))
 			item = object;
 	}
+
+	if (item == nullptr && ownCrew)
+		return 0;
+
+	// (Part 3: a gift set aside for its owner stays in the pack until it has gone)
+	if (item != nullptr && ownCrew && !BotGear::giveMode(bot).isEmpty() && BotGear::isGiven(bot, item->getObjectID()))
+		return 0;
 
 	if (item == nullptr) {
 		item = zoneServer->createObject(crc, 1);
@@ -1297,7 +1310,8 @@ uint64 BotCombat::equip(CreatureObject* bot, const String& templateName) {
 			bot->setLevel(playerManager->calculatePlayerLevel(bot));
 	}
 
-	repairItem(item);
+	if (!ownCrew)
+		repairItem(item);
 
 	combatLog().info(true) << bot->getFirstName() << " equipped " << templateName;
 
@@ -1306,6 +1320,10 @@ uint64 BotCombat::equip(CreatureObject* bot, const String& templateName) {
 
 int BotCombat::repairGear(CreatureObject* bot) {
 	if (!BotManager::instance()->isOnlineBot(bot))
+		return 0;
+
+	// Wear is real for an own-crew bot: its owner repairs the gear (Part 3)
+	if (BotManager::instance()->getOwner(bot->getObjectID()) != 0)
 		return 0;
 
 	Locker locker(bot);

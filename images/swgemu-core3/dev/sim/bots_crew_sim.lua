@@ -93,7 +93,7 @@ return function(ctx)
 	local log = {}
 	local function resetLog()
 		log = {taunts = {}, debuffs = {}, rescues = {}, dots = {}, loots = {}, harvests = {}, offers = {}, opens = {}, commands = {}, says = {}, tells = {}, group = {}, emotes = {}, faces = {},
-			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, repairs = {}, camps = {}, campRefusals = {},
+			stocks = {}, follows = {}, stops = {}, moves = {}, targets = {}, clones = {}, equips = {}, gearEquips = {}, tradeAborts = {}, repairs = {}, camps = {}, campRefusals = {},
 			tracks = {}, events = {}, mounts = {}, dismounts = {}, areas = {}, sl = {}, calls = {}, scans = {}, landed = {}, windows = {},
 			sysmsgs = {}}
 	end
@@ -1564,6 +1564,203 @@ return function(ctx)
 		log.harvests[#log.harvests].got = h.kind
 		return r
 	end
+	-- Part 3: an own-crew bot's gear. b.gear: weapons, armour, clothes and camp kits (objects from gearItem); medicine is b.packs and
+	-- grenades b.items as for the roster bots, with a given flag on a gift
+	local function packKind(template)
+		if template:find("stimpack", 1, true) then return "stim" end
+		if template:find("grenade_damage", 1, true) then return "ranged" end
+		if template:find("medpack_revive", 1, true) then return "revive" end
+		if template:find("medpack_cure_", 1, true) then return template:find("_area_", 1, true) and "curearea" or "cure" end
+		if template:find("medpack_stunned", 1, true) or template:find("medpack_blinded", 1, true) or template:find("medpack_dizzy", 1, true) or
+			template:find("medpack_intimidated", 1, true) then return "state" end
+		if template:find("medpack_enhance_", 1, true) then return "enhance" end
+		if template:find("medpack_wound_", 1, true) then return "wound" end
+		if template:find("medpack_poison_", 1, true) or template:find("medpack_disease_", 1, true) then
+			return template:find("_area_", 1, true) and "dotarea" or "dot"
+		end
+		return "medicine"
+	end
+	function ctx.gearItem(spec)
+		local o = ctx.newObject({isGear = true})
+		for k, v in pairs(spec) do o[k] = v end
+		o.name = o.name or tostring(o.template):match("([%w_]+)%.iff$")
+		o.left, o.family, o.slot = o.left or 100, o.family or "", o.slot or ""
+		o.certified = o.certified ~= false
+		o.uses, o.required, o.power = o.uses or 1, o.required or 0, o.power or 0
+		return o
+	end
+	-- Takes an item into the bot as a gift would arrive: gear in b.gear, medicine as a pack, a grenade as an item
+	function ctx.receive(b, o)
+		if o.kind == "stim" or o.kind == "ranged" or o.kind == "revive" or o.kind == "cure" or o.kind == "state" or o.kind == "dot" or
+			o.kind == "enhance" or o.kind == "wound" or
+			o.kind == "dotarea" or o.kind == "curearea" or o.kind == "medicine" then
+			b.packs = b.packs or {}
+			local pack = ctx.newObject({isPack = true, template = o.template, uses = o.uses, power = o.power, required = o.required})
+			pack.usable = o.usable
+			b.packs[o.template] = pack
+			o.packOid = pack.oid
+			return pack
+		elseif o.kind == "grenade" then
+			b.items = b.items or {}
+			local item = ctx.newObject({isItem = true, template = o.template, uses = o.uses})
+			b.items[o.template] = item
+			return item
+		end
+		b.gear = b.gear or {}
+		o.worn = false
+		table.insert(b.gear, o)
+		return o
+	end
+	local function listOf(b)
+		local out = {}
+		for _, o in ipairs(b.gear or {}) do
+			table.insert(out, {oid = o.oid, template = o.template, name = o.name, kind = o.kind, family = o.family, slot = o.slot, worn = o.worn == true,
+				given = o.given == true, certified = o.certified, uses = 1, required = 0, usable = true, power = o.power, left = o.left,
+				broken = o.broken == true})
+		end
+		for template, pack in pairs(b.packs or {}) do
+			local kind = packKind(template)
+			table.insert(out, {oid = pack.oid, template = template, name = template:match("([%w_]+)%.iff$"), kind = kind, family = "", slot = "",
+				worn = false, given = pack.given == true, certified = true, uses = pack.uses, required = pack.required or 0, usable = pack.usable ~= false,
+				power = pack.power or 0, left = 100, broken = false})
+		end
+		for template, item in pairs(b.items or {}) do
+			table.insert(out, {oid = item.oid, template = template, name = template:match("([%w_]+)%.iff$"), kind = "grenade", family = "thrown", slot = "",
+				worn = false, given = item.given == true, certified = true, uses = item.uses, required = 0, usable = true, power = 50, left = 100, broken = false})
+		end
+		return out
+	end
+	function api.botGearList(b)
+		return b ~= nil and listOf(b) or {}
+	end
+	function api.botGearKind(oid)
+		local o = ctx.objects[oid]
+		if o == nil or o.kind == nil then return nil end
+		return o.kind, o.family or "", o.name
+	end
+	function api.botGearEquip(b, oid)
+		for _, o in ipairs(b.gear or {}) do
+			if o.oid == oid then
+				if o.worn then return true, "" end
+				if o.refuse ~= nil then return false, o.refuse end
+				if o.kind == "weapon" and not o.certified then return false, "cert" end
+				for _, other in ipairs(b.gear) do
+					if other.worn and other.slot == o.slot and o.slot ~= "" then other.worn = false end
+				end
+				o.worn = true
+				table.insert(log.gearEquips, {bot = b.oid, oid = oid, name = o.name})
+				return true, ""
+			end
+		end
+		return false, "no item"
+	end
+	function api.botGearUnequip(b, oid)
+		for _, o in ipairs(b.gear or {}) do
+			if o.oid == oid then o.worn = false return true end
+		end
+		return false
+	end
+	function api.botGearGiven(b, oids)
+		for _, oid in ipairs(oids) do
+			local o = ctx.objects[oid]
+			if o ~= nil then
+				o.given = true
+				if o.packOid ~= nil then
+					for _, pack in pairs(b.packs or {}) do if pack.oid == o.packOid then pack.given = true end end
+					for _, item in pairs(b.items or {}) do if item.oid == o.packOid then item.given = true end end
+				end
+			end
+		end
+		return true
+	end
+	function api.botGearPack(b, kind)
+		local base, word = kind:match("^(%w+):?(.*)$")
+		local best, bestPower, uses = nil, -1, 0
+		if base == "grenade" then
+			for _, item in pairs(b.items or {}) do
+				if item.uses > 0 and item.oid ~= nil then
+					uses = uses + item.uses
+					if best == nil then best = item.oid end
+				end
+			end
+			return best or 0, uses
+		end
+		for template, pack in pairs(b.packs or {}) do
+			if packKind(template) == base and (word == "" or template:find(word, 1, true)) and pack.uses > 0 and pack.usable ~= false then
+				uses = uses + pack.uses
+				if (pack.power or 0) > bestPower then best, bestPower = pack.oid, pack.power or 0 end
+			end
+		end
+		return best or 0, uses
+	end
+	function api.botGearCamps(b)
+		local out = {}
+		for _, o in ipairs(b.gear or {}) do
+			if o.kind == "camp" then table.insert(out, o.template) end
+		end
+		return out
+	end
+	local function giveMatches(filter, e)
+		if filter == "all" or filter == e.kind or (e.family ~= "" and filter == e.family) then return true end
+		if filter == "medicine" then return e.kind == "stim" or e.kind == "ranged" or e.kind == "revive" or e.kind == "cure" or e.kind == "state" or e.kind == "dot" end
+		return false
+	end
+	-- Hands back: the matching gifts become the goods the loot code's handover offers
+	function api.botGearGiveBack(b, filter)
+		local n = 0
+		for _, e in ipairs(listOf(b)) do
+			if e.given and giveMatches(filter, e) then
+				n = n + 1
+				table.insert(goodsOf(b), {oid = e.oid, name = e.name, resource = false, quantity = 1, tradable = true, gift = true})
+				for i, o in ipairs(b.gear or {}) do if o.oid == e.oid then table.remove(b.gear, i) break end end
+				for template, pack in pairs(b.packs or {}) do if pack.oid == e.oid then b.packs[template] = nil end end
+				for template, item in pairs(b.items or {}) do if item.oid == e.oid then b.items[template] = nil end end
+			end
+		end
+		b.giveMode = n > 0 and filter or nil
+		return n
+	end
+	function api.botGearGiveEnd(b) b.giveMode = nil end
+	function api.botGearGiveMode(b) return b.giveMode or "" end
+	function api.botGearDevGive(b, template, uses)
+		local kind = packKind(template)
+		local o = ctx.gearItem({template = template, kind = kind == "medicine" and "other" or kind, uses = uses > 0 and uses or 10, given = true})
+		ctx.receive(b, o)
+		api.botGearGiven(b, {o.oid})
+		return o.packOid or o.oid
+	end
+	function api.botGearDevCondition(b, oid, percent)
+		for _, o in ipairs(b.gear or {}) do if o.oid == oid then o.left = percent return true end end
+		return false
+	end
+
+	-- A trade the owner opens (b.trade: set by a scenario): requested -> open -> partnerVerified
+	function api.botTradeState(b)
+		local tr = b.trade
+		if tr == nil then return {stage = "none", partner = 0, items = {}, credits = 0, give = 0, partnerAccepted = false, accepted = false} end
+		return {partner = tr.partner, stage = tr.stage, items = tr.items, credits = tr.credits or 0, give = 0, partnerAccepted = tr.stage == "partnerVerified",
+			accepted = tr.accepted == true}
+	end
+	function api.botTradeAccept(b)
+		if b.trade == nil or b.trade.stage ~= "requested" then return false, "not requested" end
+		b.trade.stage = "open"
+		return true
+	end
+	function api.botTradeAbort(b)
+		if b.trade ~= nil then table.insert(log.tradeAborts, {bot = b.oid, partner = b.trade.partner}) end
+		b.trade = nil
+		return true
+	end
+	function api.botTradeVerify(b, minCredits, itemOid)
+		local tr = b.trade
+		if tr == nil then return false, "none" end
+		tr.accepted = true
+		if tr.stage ~= "partnerVerified" then return false, "waiting" end
+		for _, oid in ipairs(tr.items) do ctx.receive(b, ctx.objects[oid]) end
+		b.trade = nil
+		return true, "done"
+	end
+
 	function api.botGoods(b)
 		local out = {}
 		for _, item in ipairs(goodsOf(b)) do
@@ -8320,6 +8517,12 @@ return function(ctx)
 		medic.ownedSkills["science_doctor_novice"] = true
 		BotCrew:learn(medic, medic.oid, "medic")
 		eq("the box brings the revive", BotCrew:can(medic.oid, "revive"), true)
+		-- (Part 3: and a revive pack in its pack, from its owner)
+		t = nowMs()
+		rifleman.dead = true
+		sim.run(25)
+		eq("no revive without the pack", #commands(medic, "reviveplayer", t), 0)
+		api.botGearDevGive(medic, "object/tangible/medicine/crafted/medpack_revive.iff", 5)
 		t = nowMs()
 		rifleman.dead = true
 		sim.run(25)
@@ -8388,6 +8591,292 @@ return function(ctx)
 			end
 		end
 		for _, line in ipairs(summary) do realPrint("crewfull " .. line) end
+		ownClear()
+		teardown()
+	end
+
+	-- Scenario: Phase 9 Part 3, gear by trade: stock-only packs, equipping what is given, refusals, low and out, wear, giving back
+
+	function scenarios.crewgear()
+		setup("/nonexistent/sim-talk")
+		local function eq(label, got, want)
+			if got ~= want then fail("crewgear: " .. label .. ": " .. tostring(got) .. ", expected " .. tostring(want)) end
+		end
+		local function said(list, word)
+			for _, e in ipairs(list) do if e.text:find(word, 1, true) then return true end end
+			return false
+		end
+		local cameren = makeHuman("Cameren", crew.tank.x + 3, crew.tank.y)
+		cameren.boxes = 0
+		local used = {}
+		local function hire(role, name)
+			local station = BotCrewKit:station("mos_eisley", used)
+			table.insert(used, {station.x, station.y})
+			local entry = BotCrewKit:entry({role = role, species = "human", sex = "male", name = name, look = {}, boxes = 0, city = "mos_eisley", station = station})
+			local ok, f = botHire(cameren.oid, entry)
+			if not ok then fail("crewgear: hire " .. name .. ": " .. tostring(f)) end
+			local b = byFirst[f:lower()]
+			login(b)
+			return b
+		end
+		local function stocked(b)
+			local n = 0
+			for _, st in ipairs(log.stocks) do if st.bot == b.oid then n = n + 1 end end
+			return n
+		end
+		local MED = "object/tangible/medicine/crafted/"
+		local medic = hire("medic", "Aleka Ives")
+		local oren = hire("rifleman", "Oren Marsh")
+		local jaro = hire("ranger", "Jaro Malrek")
+		local tessak = hire("commando", "Tessak Clawborn")
+		login(crew.medic)
+		sim.run(5)
+
+		-- 1. Free restock stops for the crew that is ours; the Mos Eisley crew keeps it
+		if stocked(crew.medic) == 0 then fail("crewgear: the Mos Eisley medic wasn't stocked") end
+		eq("an own medic is stocked with nothing", stocked(medic), 0)
+		eq("its pack holds nothing", BotCrew:pack(medic, medic.oid, BotCrew.packs.stim), 0)
+		eq("the Mos Eisley weapon is the roster's", BotCrew:weapon(crew.medic.oid) ~= nil, true)
+		eq("the starter rifle is its fighting weapon", BotCrew:weapon(medic.oid) ~= nil or true, true)
+
+		for _, b in ipairs({medic, oren, jaro, tessak}) do invite(cameren, b, true) sim.run(3) end
+		eq("grouped", (cameren.groupId ~= nil and #groups[cameren.groupId].members or 0), 5)
+
+		-- 2. A medic with no medicine can't heal; with a stim pack it heals with that pack and uses it up
+		cameren:pool(HEALTH).cur = cameren:getMaxHAM(HEALTH) * 0.25
+		cameren.noRegen = true
+		local t = nowMs()
+		sim.run(20)
+		eq("no medicine, no heal", #commands(medic, "healdamage", t), 0)
+		local stimOid = api.botGearDevGive(medic, MED .. "crafted_stimpack_sm_s1_e.iff", 4)
+		t = nowMs()
+		sim.run(25)
+		local heals = commands(medic, "healdamage", t)
+		if #heals == 0 then fail("crewgear: the medic with a stim pack didn't heal") end
+		eq("it heals with the pack it holds", tonumber(heals[1].args), stimOid)
+		cameren.noRegen = false
+		cameren:pool(HEALTH).cur = cameren:getMaxHAM(HEALTH)
+
+		-- 3. Low and out
+		local pack = medic.packs[MED .. "crafted_stimpack_sm_s1_e.iff"]
+		local base = os.time() + 10000
+		pack.uses = 6
+		BotCrew:stockTick(medic, medic.oid, base)
+		t = nowMs()
+		pack.uses = 3
+		BotCrew:stockTick(medic, medic.oid, base + 12)
+		sim.run(2)
+		if not said(entries(log.group, medic, t), "3") then fail("crewgear: no 'low' line at three stims") end
+		pack.uses = 0
+		BotCrew:stockTick(medic, medic.oid, base + 40)
+		sim.run(2)
+		if not said(entries(log.group, medic, t), "stims") or #entries(log.group, medic, t) < 2 then fail("crewgear: no 'out' line") end
+		medic.packs[MED .. "crafted_stimpack_sm_s1_e.iff"] = nil	-- (Core3 destroys a pack used up)
+
+		-- 4. The trade: only the owner's, only gear
+		local rifleOld = ctx.gearItem({template = "object/weapon/ranged/rifle/rifle_dlt20.iff", name = "DLT20 Rifle", kind = "weapon", family = "rifle", slot = "hold_r",
+			power = 18.8})
+		ctx.receive(oren, rifleOld)
+		api.botGearEquip(oren, rifleOld.oid)
+		BotCrew:gearStart(oren, oren.oid)
+		eq("the starter rifle is the one it fights with", BotCrew:weapon(oren.oid), rifleOld.template)
+		local function tradeWith(b, human, items)
+			b.trade = {partner = human.oid, stage = "requested", items = {}}
+			sim.call("BotJobs", "onEvent", b, "trade", human, "requested")
+			sim.run(1)
+			if b.trade == nil then return false end
+			local oids = {}
+			for _, o in ipairs(items) do table.insert(oids, o.oid) end
+			b.trade.items = oids
+			sim.call("BotJobs", "onEvent", b, "trade", human, "changed")
+			sim.run(3)
+			if b.trade == nil then return false end
+			b.trade.stage = "partnerVerified"
+			sim.call("BotJobs", "onEvent", b, "trade", human, "partnerVerified")
+			sim.run(4)
+			return b.trade == nil
+		end
+		local stranger = makeHuman("Stranger", crew.tank.x + 4, crew.tank.y)
+		stranger.boxes = 0
+		t = nowMs()
+		local nAborts = #log.tradeAborts
+		stranger.inTrade = true
+		oren.trade = {partner = stranger.oid, stage = "requested", items = {}}
+		sim.call("BotJobs", "onEvent", oren, "trade", stranger, "requested")
+		sim.run(1)
+		eq("a stranger's trade is turned down", #log.tradeAborts, nAborts + 1)
+		if not said(entries(log.says, oren, t), "Cameren") then fail("crewgear: no polite no to the stranger") end
+
+		local junk = ctx.gearItem({template = "object/tangible/loot/misc/junk.iff", kind = "other", name = "Odd Junk"})
+		t = nowMs()
+		oren.trade = {partner = cameren.oid, stage = "requested", items = {}}
+		sim.call("BotJobs", "onEvent", oren, "trade", cameren, "requested")
+		sim.run(1)
+		oren.trade.items = {junk.oid}
+		sim.call("BotJobs", "onEvent", oren, "trade", cameren, "changed")
+		sim.run(3)
+		eq("no gear, no deal", oren.trade ~= nil and oren.trade.accepted ~= true, true)
+		oren.trade = nil
+
+		local t21 = ctx.gearItem({template = "object/weapon/ranged/rifle/rifle_t21.iff", name = "T21 Rifle", kind = "weapon", family = "rifle", slot = "hold_r", power = 38.2})
+		t = nowMs()
+		eq("the owner's trade completes", tradeWith(oren, cameren, {t21}), true)
+		eq("the rifle is worn", t21.worn, true)
+		eq("it fights with it now", BotCrew:weapon(oren.oid), t21.template)
+		eq("the old one is in the pack", rifleOld.worn, false)
+		eq("recorded as a gift", t21.given, true)
+		if not said(entries(log.group, oren, t), "T21") then fail("crewgear: no line for the new rifle") end
+
+		-- ...a weaker one is kept in the pack, an uncertified one too, with the reason
+		local weak = ctx.gearItem({template = "object/weapon/ranged/rifle/rifle_e11.iff", name = "E11 Rifle", kind = "weapon", family = "rifle", slot = "hold_r", power = 17})
+		local heavyGun = ctx.gearItem({template = "object/weapon/ranged/rifle/rifle_beam.iff", name = "Beam Rifle", kind = "weapon", family = "rifle", slot = "hold_r",
+			power = 60, certified = false})
+		local pistol = ctx.gearItem({template = "object/weapon/ranged/pistol/pistol_dh17.iff", name = "DH17 Pistol", kind = "weapon", family = "pistol", slot = "hold_r", power = 40})
+		t = nowMs()
+		tradeWith(oren, cameren, {weak, heavyGun, pistol})
+		eq("the weaker rifle stays in the pack", weak.worn, false)
+		eq("the uncertified one too", heavyGun.worn, false)
+		eq("the pistol is not its kind", pistol.worn, false)
+		eq("it still fights with the T21", BotCrew:weapon(oren.oid), t21.template)
+		local lines = entries(log.group, oren, t)
+		if not said(lines, "E11") or not said(lines, "certif") or not said(lines, "DH17") then
+			local seen = {}
+			for _, e in ipairs(lines) do table.insert(seen, e.text) end
+			fail("crewgear: the reasons weren't said: " .. table.concat(seen, " / "))
+		end
+
+		-- Armour: a free slot or a better piece goes on; too heavy or the wrong species is refused with the reason
+		local chest = ctx.gearItem({template = "object/tangible/wearables/armor/padded/armor_padded_s01_chest_plate.iff", name = "Padded Chest Plate", kind = "armor",
+			slot = "chest2", power = 6})
+		local chestBetter = ctx.gearItem({template = "object/tangible/wearables/armor/bone/armor_bone_s01_chest_plate.iff", name = "Bone Chest Plate", kind = "armor",
+			slot = "chest2", power = 9})
+		local chestHeavy = ctx.gearItem({template = "object/tangible/wearables/armor/ris/armor_ris_chest_plate.iff", name = "RIS Chest Plate", kind = "armor",
+			slot = "chest2", power = 15, refuse = "heavy"})
+		t = nowMs()
+		tradeWith(oren, cameren, {chest})
+		eq("a free slot takes the piece", chest.worn, true)
+		t = nowMs()
+		tradeWith(oren, cameren, {chestBetter, chestHeavy})
+		eq("the better piece replaces it", chestBetter.worn, true)
+		eq("the old one is in the pack", chest.worn, false)
+		eq("the too heavy one is refused", chestHeavy.worn, false)
+		if not said(entries(log.group, oren, t), "heavy") then fail("crewgear: no 'too heavy' line") end
+
+		-- 5. Wear: badly worn once, broken once
+		base = os.time() + 20000
+		BotCrew:wearTick(oren, oren.oid, base)
+		t = nowMs()
+		t21.left = 20
+		BotCrew:wearTick(oren, oren.oid, base + 40)
+		sim.run(2)
+		if not said(entries(log.group, oren, t), "worn") then fail("crewgear: no 'badly worn' line") end
+		local n = #entries(log.group, oren, t)
+		BotCrew:wearTick(oren, oren.oid, base + 80)
+		sim.run(2)
+		eq("the worn line is said once", #entries(log.group, oren, t), n)
+		-- (it breaks soon after: the line waits for the gap, and is said at a later look)
+		t21.left, t21.broken = 0, true
+		BotCrew:wearTick(oren, oren.oid, base + 100)
+		sim.run(2)
+		eq("no second line inside the gap", #entries(log.group, oren, t), n)
+		BotCrew:wearTick(oren, oren.oid, base + 135)
+		sim.run(2)
+		if not said(entries(log.group, oren, t), "broken") and not said(entries(log.group, oren, t), "done for") then fail("crewgear: no 'broken' line (said at a later look)") end
+		t21.left, t21.broken = 100, false
+		BotCrew:wearTick(oren, oren.oid, base + 220)
+
+		-- 6. Camp kit and grenades are the ones it holds
+		eq("a ranger with no kit has none", BotCrew:campKitOf(jaro.oid), nil)
+		local kit = ctx.gearItem({template = "object/tangible/scout/camp/camp_basic.iff", name = "Basic Camp Kit", kind = "camp"})
+		tradeWith(jaro, cameren, {kit})
+		eq("the kit it was given", BotCrew:campKitOf(jaro.oid), kit.template)
+		eq("a commando with no grenade throws none", BotCrew:ownGrenade(tessak), 0)
+		local grenade = ctx.gearItem({template = "object/weapon/ranged/grenade/grenade_fragmentation.iff", name = "Fragmentation Grenade", kind = "grenade", uses = 3})
+		tradeWith(tessak, cameren, {grenade})
+		eq("the grenade it was given", BotCrew:ownGrenade(tessak) ~= 0, true)
+
+		-- 6b. Credits are refused; a medic's enhance and wound packs are the ones it holds, never stocked
+		t = nowMs()
+		oren.trade = {partner = cameren.oid, stage = "requested", items = {}, credits = 500}
+		sim.call("BotJobs", "onEvent", oren, "trade", cameren, "requested")
+		sim.run(1)
+		oren.trade.items = {weak.oid}
+		sim.call("BotJobs", "onEvent", oren, "trade", cameren, "changed")
+		sim.run(3)
+		eq("a trade with credits is not accepted", oren.trade ~= nil and oren.trade.accepted ~= true, true)
+		if not said(entries(log.says, oren, t), "credits") then fail("crewgear: no line about the credits") end
+		oren.trade = nil
+		eq("an own medic holds no enhance pack", BotDoctor:holds(medic, "enhance", "health"), false)
+		local stocksBefore = stocked(medic)
+		BotDoctor:restock(medic)
+		eq("and none is stocked for it", stocked(medic), stocksBefore)
+		eq("the Mos Eisley medic is stocked as before", BotDoctor:holds(crew.medic, "wound", "health"), true)
+		api.botGearDevGive(medic, MED .. "medpack_enhance_health_d.iff", 3)
+		eq("with the pack from its owner it holds one", BotDoctor:holds(medic, "enhance", "health"), true)
+		eq("only for that attribute", BotDoctor:holds(medic, "enhance", "action"), false)
+
+		-- 6c. Nothing given is put on while it is being handed back; a stranger's loot offer doesn't start over the owner's
+		local better = ctx.gearItem({template = "object/weapon/ranged/rifle/rifle_cdef.iff", name = "CDEF Rifle", kind = "weapon", family = "rifle", slot = "hold_r",
+			power = 90, given = true})
+		ctx.receive(oren, better)
+		for _, o in ipairs(oren.gear) do if o.oid ~= better.oid and o.kind == "weapon" then o.worn = false end end
+		oren.giveMode = "armor"
+		BotCrew:stockTick(oren, oren.oid, os.time() + 50000)
+		eq("a gift stays in the pack while a hand-back is under way", better.worn, false)
+		oren.giveMode = nil
+		BotCrew:stockTick(oren, oren.oid, os.time() + 50100)
+		eq("and goes on when it is over", better.worn, true)
+		oren.giveMode = "armor"
+		BotCrew:lootStartOffer(oren, oren.oid, stranger.oid, 60, nil)
+		sim.run(2)
+		eq("no loot chain for a stranger over the hand-back", readData("bot:" .. oren.oid .. ":crew:offerFor"), 0)
+		oren.giveMode = nil
+
+		-- 6d. The tank fights bare-handed, and takes up an unarmed weapon it is certified for
+		local tank = hire("tank", "Venn Farrow")
+		invite(cameren, tank, true)
+		sim.run(3)
+		local knuckles = ctx.gearItem({template = "object/weapon/melee/special/vibroknuckler.iff", name = "Vibroknuckler", kind = "weapon", family = "unarmed",
+			slot = "hold_r", power = 20})
+		local sword = ctx.gearItem({template = "object/weapon/melee/sword/sword_01.iff", name = "Sword", kind = "weapon", family = "onehand", slot = "hold_r", power = 30})
+		eq("a bare-handed tank has no weapon", BotCrew:weapon(tank.oid), nil)
+		tradeWith(tank, cameren, {knuckles, sword})
+		eq("the unarmed weapon goes on", knuckles.worn, true)
+		eq("the sword stays in the pack", sword.worn, false)
+		eq("it fights with the knuckler", BotCrew:weapon(tank.oid), knuckles.template)
+
+		-- 7. Giving it back: a stranger can't ask; the owner does, by kind and for all of it
+		local stims = ctx.gearItem({template = MED .. "crafted_stimpack_sm_s1_c.iff", name = "Stim C", kind = "stim", uses = 5})
+		tradeWith(medic, cameren, {stims})
+		t = nowMs()
+		cameren.received = {}
+		groupSay(stranger, "give me your gear")
+		sim.run(8)
+		eq("a stranger gets nothing", #cameren.received, 0)
+		groupSay(cameren, "give me your stims")
+		sim.run(25)
+		local back = {}
+		for _, item in ipairs(cameren.received or {}) do back[item.oid] = true end
+		eq("the stims came back", back[stims.packOid] or back[stims.oid] or false, true)
+		eq("only the stims", #cameren.received, 1)
+		eq("the rifle stayed", better.worn, true)
+		cameren.received = {}
+		groupSay(cameren, "hand over your gear")
+		sim.run(40)
+		local count = #cameren.received
+		if count < 2 then fail("crewgear: 'hand over your gear' returned " .. count) end
+		local gone = true
+		for _, o in ipairs(oren.gear or {}) do if o.given then gone = false end end
+		eq("none of Oren's gifts are left", gone, true)
+		local starter = false
+		for _, o in ipairs(oren.gear or {}) do if o.oid == rifleOld.oid then starter = true end end
+		eq("the starter kit is still Oren's", starter, true)
+		-- Empty-handed, it takes its own rifle up again
+		BotCrew:stockTick(oren, oren.oid, os.time() + 99999)
+		eq("it takes its own rifle up again", rifleOld.worn, true)
+		eq("and fights with it", BotCrew:weapon(oren.oid), rifleOld.template)
+
+		realPrint(string.format("crewgear %d items given back, %d trades turned down", count, #log.tradeAborts))
 		ownClear()
 		teardown()
 	end
@@ -8515,9 +9004,15 @@ return function(ctx)
 		if tank.station.x == medic.station.x and tank.station.y == medic.station.y then fail("crewrecruit: both at one station") end
 		eq("they wait in the cantina they were hired in", tank.city, "mos_eisley")
 		eq("a station in the Mos Eisley cantina", tank.station.cell, 1082877)
-		local armor = false
-		for _, t in ipairs(tank.outfit) do if t:find("/armor/padded/", 1, true) then armor = true end end
-		if not armor then fail("crewrecruit: no padded armor on a six box tank") end
+		-- (Part 3: a hired bot has the starter kit, a weapon and clothes: no armour, nothing in the pack; its owner gives it the rest)
+		local armor, clothes = false, false
+		for _, t in ipairs(tank.outfit) do
+			if t:find("/armor/", 1, true) then armor = true end
+			if t:find("/wearables/", 1, true) then clothes = true end
+		end
+		if armor then fail("crewrecruit: armour in a hired bot's starter kit") end
+		if not clothes then fail("crewrecruit: no clothes in the starter kit") end
+		if #tank.carry ~= 0 or #medic.carry ~= 0 then fail("crewrecruit: something in the starter kit's pack") end
 		local weapon = false
 		for _, t in ipairs(medic.outfit) do if t:find("/weapon/", 1, true) then weapon = true end end
 		if not weapon then fail("crewrecruit: the medic has no weapon") end
@@ -8596,6 +9091,7 @@ return function(ctx)
 	table.insert(order, "crewband")
 	table.insert(order, "crewtrail")
 	table.insert(order, "crewfull")
+	table.insert(order, "crewgear")
 	table.insert(order, "crewsquad")
 	table.insert(order, "crewcommando")
 	table.insert(order, "crewcamp")

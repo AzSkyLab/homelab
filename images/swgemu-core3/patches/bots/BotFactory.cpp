@@ -9,6 +9,7 @@
  */
 
 #include "BotFactory.h"
+#include "BotGear.h"
 #include "server/zone/ZoneServer.h"
 #include "server/zone/Zone.h"
 #include "server/db/ServerDatabase.h"
@@ -480,8 +481,12 @@ uint64 BotFactory::ensureCharacter(ZoneServer* zoneServer, const BotEntry& entry
 	awardSkills(creature, entry);
 	ensureHair(zoneServer, creature, entry);
 	ensureLook(zoneServer, creature, entry);
-	ensureOutfit(zoneServer, creature, entry);
-	ensureCarry(zoneServer, creature, entry);
+
+	// An own-crew bot (Part 3) keeps what it wears and holds: the starter kit was made once, with the character
+	if (entry.owner == 0) {
+		ensureOutfit(zoneServer, creature, entry);
+		ensureCarry(zoneServer, creature, entry);
+	}
 
 	if (creature->getZone() == nullptr && creature->getParent() == nullptr && !ghost->isOnline())
 		placeAtStation(zoneServer, creature, entry);
@@ -676,6 +681,10 @@ uint64 BotFactory::createCharacter(ZoneServer* zoneServer, const BotEntry& entry
 	awardSkills(playerCreature, entry);
 	ensureOutfit(zoneServer, playerCreature, entry);
 	ensureCarry(zoneServer, playerCreature, entry);
+
+	// Part 3: an own-crew bot whose role has the medic box starts with a few basic stims (the rest of its gear is what its owner gives it)
+	if (entry.owner != 0 && playerCreature->hasSkill("science_medic_novice"))
+		BotGear::starterStims(playerCreature, 5);
 
 	if (!placeAtStation(zoneServer, playerCreature, entry)) {
 		playerCreature->destroyPlayerCreatureFromDatabase(true);

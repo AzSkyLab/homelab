@@ -1182,11 +1182,13 @@ int BotTrade::verify(CreatureObject* bot, int minCredits, uint64 itemOid, String
 
 	entry->reset();
 
-	// Held until the jobs hand it back (botSlice), or HELD_MS
-	entry->heldItems = items;
-	entry->heldFrom = partnerOid;
-	entry->heldSince.updateToCurrentTime();
-	entry->heldCredits = credits;
+	// Held until the jobs hand it back (botSlice), or HELD_MS. An own-crew bot's owner gave it these (Part 3): they are its gear now
+	if (partnerOid != BotManager::instance()->getOwner(bot->getObjectID()) || partnerOid == 0) {
+		entry->heldItems = items;
+		entry->heldFrom = partnerOid;
+		entry->heldSince.updateToCurrentTime();
+		entry->heldCredits = credits;
+	}
 
 	fireEventLater(bot, partnerOid, "done");
 
@@ -1370,6 +1372,10 @@ bool BotTrade::returnItem(CreatureObject* bot, SceneObject* item, CreatureObject
 	}
 
 	return false;
+}
+
+bool BotTrade::handStraight(CreatureObject* bot, SceneObject* item, CreatureObject* owner, String& error) {
+	return transferToOwner(bot, item, owner, error);
 }
 
 bool BotTrade::give(CreatureObject* bot, CreatureObject* owner, uint64 itemOid) {

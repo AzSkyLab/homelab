@@ -139,6 +139,9 @@ public:
 	// goods alone, so a looted pack or weapon is never destroyed, used up or equipped. Pre: bot locked (or read-only)
 	static bool isGood(server::zone::objects::creature::CreatureObject* bot, uint64 itemOid);
 
+	// The oids of everything recorded as looted (one read; for a caller that tests many items). Pre: bot locked
+	static void recorded(server::zone::objects::creature::CreatureObject* bot, SortedVector<uint64>& out);
+
 	// Development: records an item already in the bot's inventory as goods. Locks the bot
 	static bool markGood(server::zone::objects::creature::CreatureObject* bot, uint64 itemOid);
 };

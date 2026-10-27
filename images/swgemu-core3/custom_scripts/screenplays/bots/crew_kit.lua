@@ -136,8 +136,9 @@ function BotCrewKit:armor(role, species, boxes)
 end
 
 -- The gear of a role at a level: {outfit = worn and held templates, carry = in the pack, weapon = the one in hand (or ""),
--- campKit = the ranger's camp kit (or "")}. name picks the outfit among a family's few.
-function BotCrewKit:gear(role, species, sex, boxes, name)
+-- campKit = the ranger's camp kit (or "")}. name picks the outfit among a family's few. starter: the kit an own-crew bot is hired with
+-- (Part 3): a weapon it is certified for and clothes; no armour, nothing in the pack (its owner gives it the rest)
+function BotCrewKit:gear(role, species, sex, boxes, name, starter)
 	local outfit, carry = {}, {}
 	local weapon, campKit = "", ""
 	local pick = self:hash(name or "")
@@ -146,7 +147,7 @@ function BotCrewKit:gear(role, species, sex, boxes, name)
 	local clothes = BotCrewData.clothes[family]
 	local wear = clothes[pick % #clothes + 1]
 
-	local armor = self:armor(role, species, boxes)
+	local armor = starter and {} or self:armor(role, species, boxes)
 
 	-- (armor legs and clothes pants take the same slot: with armor trousers on, no pants)
 	local trousers, boots = false, false
@@ -199,7 +200,11 @@ function BotCrewKit:gear(role, species, sex, boxes, name)
 		table.insert(carry, template)
 	end
 
-	if role == "ranger" then
+	if starter then
+		carry = {}
+	end
+
+	if role == "ranger" and not starter then
 		for _, camp in ipairs(BotCrewData.camps) do
 			if camp.from <= boxes then
 				campKit = camp.kit
@@ -260,7 +265,7 @@ end
 -- The account is bot_ and the first name in lower case, letters and digits only.
 function BotCrewKit:entry(spec)
 	local skills = self:skillsFor(spec.role, spec.boxes or 0)
-	local gear = self:gear(spec.role, spec.species, spec.sex, spec.boxes or 0, spec.name)
+	local gear = self:gear(spec.role, spec.species, spec.sex, spec.boxes or 0, spec.name, true)
 	local look = spec.look or {}
 	local first = self:first(spec.name)
 

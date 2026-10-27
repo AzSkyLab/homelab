@@ -248,6 +248,7 @@ function BotCrew:trainPass(pBot, oid, now)
 	return got
 end
 
+-- (Part 2 compared the kit's gear with the entry's here; Part 3 gives no gear for a level)
 local function same(a, b)
 	if #a ~= #b then
 		return false
@@ -281,22 +282,17 @@ function BotCrew:trained(pBot, oid, role, got, now)
 
 	print("BotJobs: " .. self:name(oid) .. " trained " .. table.concat(got, ", ") .. " (" .. boxes .. " boxes)")
 
+	-- Part 3: the boxes are saved with the crew's entry, the gear is not touched (what it holds is what its owner gave it)
 	if entry ~= nil then
-		local gear = BotCrewKit:gear(role, entry.species, entry.sex, boxes, entry.name)
-		local changed = not (same(gear.outfit, entry.outfit or {}) and same(gear.carry, entry.carry or {}) and gear.weapon == (entry.weapon or ""))
-
-		botSetGear(oid, {skills = owned, outfit = gear.outfit, carry = gear.carry, weapon = gear.weapon, campKit = gear.campKit})
-
-		if changed then
-			print("BotJobs: " .. self:name(oid) .. " has new gear for " .. boxes .. " boxes")
-		end
+		botSetGear(oid, {skills = owned, outfit = entry.outfit or {}, carry = entry.carry or {}, weapon = entry.weapon or "",
+			campKit = entry.campKit or ""})
 	end
 
 	self:learn(pBot, oid, role)
 	self:restock(pBot, oid)
 
-	-- (the new weapon is in its hand when the gear task has run)
-	createEvent(4000, "BotCrew", "trainedEquip", pBot, tostring(readData("bot:" .. oid .. ":gen")))
+	-- A box that certifies a weapon or lets it wear a piece: it looks again at what it was given, and puts on what it can now
+	self:reviewLater(pBot, oid, nil, 2000, true)
 
 	-- A squad leader box changes the aura the group gets (Core3 only rebuilds it for the leader)
 	for _, box in ipairs(got) do

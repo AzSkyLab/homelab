@@ -83,6 +83,11 @@ public:
 	static bool returnItem(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::scene::SceneObject* item,
 			server::zone::objects::creature::CreatureObject* owner, String& error);
 
+	// Phase 9 Part 3: an item straight into the owner's pack if it fits (no trade): the let-go's return of what the owner gave. Pre: bot and
+	// owner locked. false and why: "owner offline", "inventory full", "no inventory", "transfer failed"
+	static bool handStraight(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::scene::SceneObject* item,
+			server::zone::objects::creature::CreatureObject* owner, String& error);
+
 	// Starts a give-back trade of itemOid to owner. Pre: bot locked
 	static bool give(server::zone::objects::creature::CreatureObject* bot, server::zone::objects::creature::CreatureObject* owner, uint64 itemOid);
 

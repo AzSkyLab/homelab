@@ -143,7 +143,34 @@ function BotDoctor:treatmentMs(pBot)
 	return delay * 1000 + self.treatmentMarginMs
 end
 
+-- Part 3: an own-crew medic (the crew job, a bot with an owner) works with the packs its owner gave it; nothing is stocked for it
+function BotDoctor:ownCrew(pBot)
+	return botOwner ~= nil and (botOwner(SceneObject(pBot):getObjectID()) or 0) ~= 0
+end
+
+-- Does it hold a usable pack of the kind ("enhance" or "wound") for the attribute or pool? Always yes for the Mos Eisley doctors
+function BotDoctor:holds(pBot, kind, word)
+	if not self:ownCrew(pBot) then
+		return true
+	end
+
+	return botGearPack ~= nil and (botGearPack(pBot, kind .. ":" .. word)) ~= 0
+end
+
+-- A treatment it had no pack for: said once, at the end of the work, and not more than once a minute
+function BotDoctor:missed(oid, what)
+	local seen = readStringData(key(oid, "missingPacks"))
+
+	if seen:find(what, 1, true) == nil then
+		writeStringData(key(oid, "missingPacks"), seen .. what .. ",")
+	end
+end
+
 function BotDoctor:restock(pBot)
+	if self:ownCrew(pBot) then
+		return
+	end
+
 	local uses = BotJobs:setting("packStock")
 	local power, duration = BotJobs:setting("enhancePower"), BotJobs:setting("enhanceDuration")
 
@@ -515,6 +542,13 @@ function BotDoctor:step(pBot, args)
 
 	local gap = self:treatmentMs(pBot)
 
+	if enhancing and not self:holds(pBot, "enhance", self.enhancements[n]) then
+		-- (no pack for this one: on to the next at once)
+		self:missed(oid, self.enhancements[n])
+		createEvent(300, "BotDoctor", "step", pBot, base .. ":" .. (n + 1))
+		return
+	end
+
 	if enhancing then
 		self:command(pBot, oid, "healenhance", item.oid, self.enhancements[n], gap)
 		createEvent(gap, "BotDoctor", "step", pBot, base .. ":" .. (n + 1))
@@ -526,6 +560,12 @@ function BotDoctor:step(pBot, args)
 	local cap = (item.kind == "buff" and #self.enhancements or 0) + self.maxWoundSteps
 
 	if wound == nil or n > cap or (wound.pool == lastPool and amount >= lastAmount) then
+		self:done(pBot, base)
+		return
+	end
+
+	if not self:holds(pBot, "wound", wound.name) then
+		self:missed(oid, wound.name .. " wound")
 		self:done(pBot, base)
 		return
 	end
@@ -598,6 +638,20 @@ function BotDoctor:done(pBot, args)
 
 	writeData(key(oid, "lastPatient"), item.oid)
 	writeData(key(oid, "lastPatientAt"), os.time())
+
+	-- Part 3: the packs it hadn't, said once
+	local missing = readStringData(key(oid, "missingPacks"))
+
+	if missing ~= "" then
+		deleteStringData(key(oid, "missingPacks"))
+
+		local module = BotJobs:module(BotJobs:job(oid))
+
+		if module ~= nil and module.say ~= nil and os.time() - readData(key(oid, "packOutAt")) >= 60 then
+			writeData(key(oid, "packOutAt"), os.time())
+			module:say(pBot, oid, item.oid, item.channel, "gearOut", patientName, {what = (missing:gsub(",$", ""):gsub(",", ", ")) .. " packs"})
+		end
+	end
 
 	self:finish(pBot)
 end

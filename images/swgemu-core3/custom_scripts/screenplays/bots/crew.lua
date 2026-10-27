@@ -791,6 +791,7 @@ function BotCrew:start(pBot, oid)
 
 	self:learn(pBot, oid, role)
 	self:restock(pBot, oid)
+	self:gearStart(pBot, oid)
 	self:equip(pBot, oid)
 	self:trainStart(pBot, oid, now)
 	self:lootStart(pBot, oid)
@@ -906,6 +907,13 @@ end
 -- Packs for what it can do (stims, ranged stims, state, cure and revive packs, the poison and disease packs it throws; a
 -- doctor's enhance and wound packs)
 function BotCrew:restock(pBot, oid)
+	-- Part 3: nothing is stocked for an own-crew bot: it uses what its owner gave it
+	if self:ownerOf(oid) ~= 0 then
+		put(ckey(oid, "restockAt"), os.time())
+
+		return
+	end
+
 	local uses = self:setting("packStock")
 
 	if self:can(oid, "stims") then
@@ -969,6 +977,13 @@ end
 
 -- Its weapon in hand (roster: a weapon field, or the first weapon in the outfit), repaired
 function BotCrew:weapon(oid)
+	-- Part 3: the weapon an own-crew bot fights with is the one it holds (crew_gear.lua), none for the tank
+	if self:ownerOf(oid) ~= 0 then
+		local main = readStringData(ckey(oid, "mainWeapon"))
+
+		return main ~= "" and main or nil
+	end
+
 	local entry = BotJobs:entry(readStringData(key(oid, "first")))
 
 	if entry == nil then
@@ -1001,6 +1016,13 @@ end
 
 -- The ranger's camp kit: the roster's (campKit, or a camp kit it carries), else a master camp
 function BotCrew:campKitOf(oid)
+	-- Part 3: the camp kit an own-crew ranger holds (none: it can't camp)
+	if self:ownerOf(oid) ~= 0 then
+		local pBot = getSceneObject(oid)
+
+		return pBot ~= nil and self:ownCampKit(pBot) or nil
+	end
+
 	local entry = BotJobs:entry(readStringData(key(oid, "first"))) or {}
 
 	if entry.campKit ~= nil and entry.campKit ~= "" then
@@ -1053,6 +1075,10 @@ function BotCrew:tick(pBot, oid, now)
 
 	-- Part 2: an own-crew bot trains every few minutes
 	self:trainTick(pBot, oid, now)
+
+	-- Part 3: and says when its packs run low and its gear is worn
+	self:stockTick(pBot, oid, now)
+	self:wearTick(pBot, oid, now)
 
 	if self:role(oid) == "entertainer" and readData(ckey(oid, "inCamp")) ~= 1 then
 		self:perfPistol(pBot, oid)
@@ -3799,7 +3825,8 @@ function BotCrew:commandoTurn(pBot, oid, pTarget, g, dist, now)
 	local singleCmd = readStringData(ckey(oid, acid and "acidSingle" or "flameSingle"))
 	-- (the tactics' area: both, cones only or neither; the checks for what stands in the area come after, whatever it says)
 	local area = self:tactic(oid, "area")
-	local wantGrenade = area == "both" and self:can(oid, "grenade") and now - readData(ckey(oid, "grenadeAt")) >= self.grenadeGap
+	local wantGrenade = area == "both" and self:can(oid, "grenade") and now - readData(ckey(oid, "grenadeAt")) >= self.grenadeGap and
+		(self:ownerOf(oid) == 0 or self:ownGrenade(pBot) ~= 0)
 	local wantCone = area ~= "none" and coneCmd ~= "" and dist <= self.coneRange + 12
 
 	if not (wantGrenade or wantCone) and singleCmd == "" then
@@ -3842,7 +3869,7 @@ function BotCrew:commandoTurn(pBot, oid, pTarget, g, dist, now)
 		if best ~= nil and bestN >= self.grenadeMin and self:blastUnsafe(best.x, best.y, self.grenadeSafe, field, lairs) then
 			self:areaHeld(oid, "grenade", now)
 		elseif best ~= nil and bestN >= self.grenadeMin then
-			local item = bot("botStockItem", pBot, self.grenade, self.grenadeStock) or 0
+			local item = self:grenadeOid(pBot, oid)
 
 			if item ~= 0 then
 				botEnqueue(pBot, "throwgrenade", best.oid, tostring(item))
@@ -4516,6 +4543,11 @@ end
 
 -- A pack's oid, restocking once if it's gone
 function BotCrew:pack(pBot, oid, template)
+	-- Part 3: an own-crew bot's pack is the best it holds of the kind (crew_gear.lua), never a stock made for it
+	if self:ownerOf(oid) ~= 0 then
+		return self:ownPack(pBot, template)
+	end
+
 	local packOid = bot("botFindPack", pBot, template) or 0
 
 	if packOid == 0 then
@@ -4795,6 +4827,11 @@ function BotCrew:dotTurn(pBot, oid, g, now)
 					local template = area or kind.single
 					local packOid = self:pack(pBot, oid, template)
 
+					-- (an own-crew bot with no such pack holds still: Core3 would take any it could find)
+					if packOid == 0 and self:ownerOf(oid) ~= 0 then
+						return false
+					end
+
 					botEnqueue(pBot, kind.command, coid, packOid ~= 0 and ("health|" .. packOid) or "")
 					put(ckey(oid, kind.at), now)
 					put(ckey(oid, kind.pending), 1)
@@ -4815,7 +4852,7 @@ end
 -- one in the group) within areaRadius of the target, a pack in the bag, and no creature that isn't fighting the group (nor a
 -- lair that isn't the fight) within areaSafe of the target
 function BotCrew:areaPack(pBot, oid, g, pTarget, kind, now)
-	if kind.area == nil or self:tactic(oid, "packs") == "single" or (bot("botFindPack", pBot, kind.area) or 0) == 0 then
+	if kind.area == nil or self:tactic(oid, "packs") == "single" or self:packHeld(pBot, oid, kind.area) == 0 then
 		return nil
 	end
 
@@ -4859,6 +4896,11 @@ end
 
 -- A state or cure treatment within reach (Core3 finds the pack), else a walk to the patient
 function BotCrew:treat(pBot, oid, patient, command, timer, reach, mind, now)
+	-- (Core3 takes the pack from the bot's own pack: with none held there is nothing to walk over for)
+	if self:ownerOf(oid) ~= 0 and not self:ownHasFor(pBot, command) then
+		return false
+	end
+
 	if patient.dist > reach then
 		self:walkNear(pBot, oid, patient.m.p, patient.dist, now, reach - 1.5)
 		return true
@@ -4909,6 +4951,11 @@ function BotCrew:revive(pBot, oid, m, dist, now)
 	self:stopMoving(pBot)
 
 	local packOid = self:pack(pBot, oid, self.packs.revive)
+
+	-- (an own-crew bot with no revive pack can't)
+	if packOid == 0 and self:ownerOf(oid) ~= 0 then
+		return false
+	end
 
 	botEnqueue(pBot, "reviveplayer", m.oid, packOid ~= 0 and tostring(packOid) or "")
 	print("BotJobs: " .. self:name(oid) .. " revives " .. self:firstName(m.p))
@@ -5369,6 +5416,10 @@ end
 
 -- The ranger offers a camp when someone in the group is wounded or fatigued, out of a fight, outdoors, standing still
 function BotCrew:maybeOfferCamp(pBot, oid, g, pLeader, now)
+	if self:ownerOf(oid) ~= 0 and self:campKitOf(oid) == nil then
+		return
+	end
+
 	if SceneObject(pBot):getParentID() ~= 0 or now - readData(ckey(oid, "offerAt")) < self.campOfferEvery or
 		now - readData(ckey(oid, "peaceAt")) < self.campOfferAfterFight or self:groupFighting(g) then
 		return
@@ -5420,6 +5471,8 @@ function BotCrew:tryCamp(pBot, oid, pPlayer, channel, brainLine)
 		kind = "campCombat"
 	elseif SceneObject(pBot):getParentID() ~= 0 then
 		kind = "campIndoors"
+	elseif self:ownerOf(oid) ~= 0 and self:campKitOf(oid) == nil then
+		kind = "campNoKit"
 	end
 
 	if kind ~= nil then
@@ -6621,6 +6674,15 @@ function BotCrew:onSpoken(pBot, oid, pSpeaker, channel, text)
 		end
 	end
 
+	-- Part 3: "give me your rifle", "hand over your gear": an own-crew bot hands its owner's gifts back (crew_gear.lua)
+	if channel ~= "group" and text ~= nil and self:ownerOf(oid) ~= 0 and self:human(pSpeaker) then
+		local filter = self:gearGiveWanted(text)
+
+		if filter ~= nil and self:gearGiveSpoken(pBot, oid, pSpeaker, channel, filter, self:group(pBot)) then
+			return true
+		end
+	end
+
 	-- "Hand it over" by tell or out loud to a bot that isn't grouped any more (holding what it gathered; crew_loot.lua)
 	if channel ~= "group" and text ~= nil and not CreatureObject(pBot):isGrouped() and self:handoverWanted(text) then
 		if self:handoverUngrouped(pBot, oid, pSpeaker, channel, text) then
@@ -6776,6 +6838,16 @@ function BotCrew:groupAddressed(pBot, pSpeaker, text)
 
 	for _, m in ipairs(g.crew) do
 		if m.oid ~= oid and self:named(m.oid, text) then
+			return false
+		end
+	end
+
+	-- Part 3: asked for the gear the owner gave (crew_gear.lua): the bots that hold some hand it back
+	if self:ownerOf(oid) ~= 0 and self:human(pSpeaker) then
+		local filter = self:gearGiveWanted(text)
+
+		if filter ~= nil then
+			self:gearGiveSpoken(pBot, oid, pSpeaker, "group", filter, g)
 			return false
 		end
 	end
@@ -7141,8 +7213,10 @@ function BotCrew:onEvent(pBot, oid, name, pOther, detail)
 			self:teleportHome(pBot, oid)
 		end
 	elseif name == "trade" then
-		-- A handover's result (BotTrade's bundleDone / bundleCancelled), see crew_loot.lua
-		self:lootTradeEvent(pBot, oid, pOther, detail)
+		-- An own-crew bot's trade with its owner (crew_gear.lua), else a handover's result (BotTrade's bundleDone / bundleCancelled)
+		if not self:gearTradeEvent(pBot, oid, pOther, detail) then
+			self:lootTradeEvent(pBot, oid, pOther, detail)
+		end
 	elseif name == "leaderGone" then
 		-- The leader logged out a while ago: leave the group and go home
 		if CreatureObject(pBot):isGrouped() then
@@ -7802,3 +7876,6 @@ includeFile("../custom_scripts/screenplays/bots/crew_doctrine.lua")
 
 -- Part 2 (Phase 9): own-crew bots train, and say how far they are (adds to BotCrew)
 includeFile("../custom_scripts/screenplays/bots/crew_train.lua")
+
+-- Part 3 (Phase 9): own-crew bots use what their owner trades them
+includeFile("../custom_scripts/screenplays/bots/crew_gear.lua")
