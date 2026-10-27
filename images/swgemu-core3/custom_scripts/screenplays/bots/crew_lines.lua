@@ -18,6 +18,18 @@ BotLines.crew = {
 	sitOut = {
 		"Sitting this one out.",
 	},
+	-- An own-crew bot (Part 2) learned a box; {box} is its name. Said in group chat, not for every box
+	trained = {
+		"Just got my {box}. About time.",
+		"{box}, done. Feels good.",
+		"That's {box} learned. Keep the fights coming.",
+		"Picked up {box} back there.",
+		"I've got {box} now.",
+	},
+	trainedMaster = {
+		"Master level: {box}. I never thought I'd see the day.",
+		"{box}, at last. Look out, creatures.",
+	},
 	-- An own-crew bot (Phase 9) asked to join, follow or be called by someone it doesn't work for. {owner} is the first name of the
 	-- one it works for
 	notYours = {

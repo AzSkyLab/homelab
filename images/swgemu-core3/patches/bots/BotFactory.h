@@ -40,6 +40,13 @@ public:
 	// Checks one entry against the templates, the skills and the entries already accepted
 	static bool validateEntry(const BotEntry& entry, const BotRosterList& accepted, String& reason);
 
+	// Puts the entry's outfit on and its carry in the pack where they are missing (a bot that trained a box: BotManager::updateGear).
+	// The creature must be locked
+// Do the skills, outfit, carry, weapon and camp kit of a gear update resolve (a template that doesn't would get the bot refused at boot)
+	static bool validateGear(const BotEntry& fresh, String& reason);
+
+		static void refreshGear(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
+
 	// The look: hair colour and skin tone palette indexes (creature must be locked)
 	static void ensureLook(ZoneServer* zoneServer, server::zone::objects::creature::CreatureObject* creature, const BotEntry& entry);
 

@@ -15,6 +15,11 @@
  *   botNameFree(first)           ok, reason: no bot or character has the first name (the crowd's names are the caller's)
  *   botNameCheck(name, species)  ok, reason: Core3's NameManager rules for a species ("human", "wookiee"...)
  *   botBoxCount(oid)             a character's skill boxes counted as its level: all but the novice, species and language
+ *   botSkillPoints(pBot)         the skill points a character has left (Part 2: a bot trains while it has them)
+ *   botSetGear(botOid, entry)    ok: an own-crew bot trained a box. Its stored entry takes the table's skills, outfit, carry, weapon
+ *                                and campKit, and the gear is put on if it is online (Part 2). False, and nothing changed, if a
+ *                                template or skill in it doesn't resolve
+ *   botSquadAura(botOid)         a squad leader bot trained a box: the group's squad leader modifiers are rebuilt (a task)
  *   botEntry(first)              the bot's entry as a roster-shaped table (the jobs' BotJobs:entry for a bot that is not in
  *                                roster.lua), or nil
  */
@@ -42,6 +47,9 @@ private:
 	static int botNameCheck(lua_State* L);
 	static int botBoxCount(lua_State* L);
 	static int botEntry(lua_State* L);
+	static int botSkillPoints(lua_State* L);
+	static int botSetGear(lua_State* L);
+	static int botSquadAura(lua_State* L);
 };
 
 } // namespace bot

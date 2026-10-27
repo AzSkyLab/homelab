@@ -14,10 +14,12 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
   (hair and skin palette indexes) and doctrine seed. The one hook it needed is `0010`. `BOT_CREWS_FILE` (the file) or
   `BOT_DATA_DIR` (its folder, default `/data/bots`) move the file; `TALK_DOCTRINE_DIR` and `TALK_DOCTRINE_SEED` the doctrine
   folders (the talk bridge's own settings).
+  Part 2 (training) adds the hook `0011`, `BotGroup::skipXp` / `isOwnCrewBot` / `trainingSquadLeadersIn`, `BotManager::updateGear` / `refreshSquadAura` and the bindings
+  `botSkillPoints`, `botSetGear` and `botSquadAura`; the training itself is Lua (`screenplays/bots/crew_train.lua`).
 - **`NNNN-name.patch`**: hooks into upstream files, applied in order with `git apply` at the root of the Core3 tree.
   Keep each hook to a few lines that call into `bots/`.
   - `0001`–`0009`: the lifecycle and chat hooks.
-  - `0010`–`0019`: the factory and items hooks.
+  - `0010`–`0019`: the factory, items and experience hooks.
 
 | Patch | File | Hook |
 |---|---|---|
@@ -31,6 +33,7 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
 | `0008-bots-mission-done` | `MissionObjectiveImplementation.cpp` | `awardReward` notes the mission as completed (`BotGroup::missionDone`), so the crew tells a lair destroyed from a mission dropped |
 | `0009-bots-squad-leader` | `SquadLeaderCommand.h`, `RetreatCommand.h`, `GroupObjectImplementation.cpp`, `GroupManager.cpp` | A bot squad leader in a group it doesn't lead may call the six squad leader commands (`BotGroup::mayCallSquadLeader`); retreat runs the whole group; the group's aura (`hasSquadLeader`, `addGroupModifiers`) reads a bot squad leader's skills when the leader has none, and a late joiner gets it after its group is set. **Builds on 0007** for the `BotGroup.h` include in `GroupObjectImplementation.cpp` and the context of `GroupManager.cpp` (it was made against the files with 0007 applied, and the two apply in order) |
 | `0010-helper-droid-null-zone` | `SpawnHelperDroidTask.h` | Returns if the player has no zone. A character under a day old gets a helper droid 5 s after scene-ready, and a bot logged out within those 5 s (one hired and let go at once) crashed the server on a null zone |
+| `0011-bots-squad-leader-xp` | `PlayerManagerImplementation.cpp` (`disseminateExperience`) | Part 2: an own-crew bot (`BotGroup::isOwnCrewBot`) earns experience from fights as a player does, by its share of *all* the damage (humans keep 0007's divisor, so theirs is unchanged); roster bots still earn none (`BotGroup::skipXp`). The squad leader experience of a fight goes to each own-crew squad leader bot in the group that is not its leader (`BotGroup::trainingSquadLeadersIn`; a bot leader is paid by the upstream path, so no double), and a human leader gets none from a bot's fights. **Builds on 0007**: made against the file with 0007 applied, the two apply in order |
 
 The Dockerfile applies both after the checkout. A patch that doesn't apply fails the build, so after a `CORE3_REF`
 bump, fix the patches first (`dev/build-core3.sh` shows which one fails).
