@@ -1014,6 +1014,11 @@ end
 -- is the wait before the first step (a bot that has just left the group gives the client a moment). Already handing
 -- over to this player: nothing new starts, but one that is waiting for "trade me" (two windows lost) offers at once
 function BotCrew:lootStartOffer(pBot, oid, playerOid, seconds, opener, delayMs)
+	-- Part 3: while its owner's gifts are being handed back, no one else's loot offer starts (it would end the owner's)
+	if botGearGiveMode ~= nil and ((botOwner and botOwner(oid)) or 0) ~= 0 and botOwner(oid) ~= playerOid and botGearGiveMode(pBot) ~= "" then
+		return
+	end
+
 	if self:lootHolding(oid) and readData(lkey(oid, "offerFor")) == playerOid then
 		if readData(lkey(oid, "offerWait")) == 1 then
 			putInt(lkey(oid, "offerWait"), 0)
@@ -1059,8 +1064,15 @@ end
 
 -- The chain ends: a bot on its way home goes now
 function BotCrew:lootEndOffer(pBot, oid, why)
+	local who = readData(lkey(oid, "offerFor"))
+
 	putInt(lkey(oid, "offerFor"), 0)
 	putInt(lkey(oid, "offerOpen"), 0)
+
+	-- (Part 3: a hand-back of the owner's gear is over: the goods are the loot again. Only the owner's chain ends it)
+	if botGearGiveEnd ~= nil and (((botOwner and botOwner(oid)) or 0) == 0 or who == botOwner(oid) or who == 0) then
+		botGearGiveEnd(pBot)
+	end
 
 	-- (the mode is in the crew's own key: crew.lua's ckey is lkey)
 	local mode = readStringData(lkey(oid, "mode"))

@@ -12,6 +12,7 @@
 #include "BotVehicleLua.h"
 #include "BotLootLua.h"
 #include "BotCrewsLua.h"
+#include "BotGearLua.h"
 #include "BotManager.h"
 #include "BotChat.h"
 #include "BotItems.h"
@@ -115,6 +116,7 @@ void BotLua::registerFunctions(Lua* lua) {
 	BotVehicleLua::registerFunctions(lua);
 	BotLootLua::registerFunctions(lua);
 	BotCrewsLua::registerFunctions(lua);
+	BotGearLua::registerFunctions(lua);
 }
 
 // --- Events ---

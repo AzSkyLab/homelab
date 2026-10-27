@@ -30,6 +30,120 @@ BotLines.crew = {
 		"Master level: {box}. I never thought I'd see the day.",
 		"{box}, at last. Look out, creatures.",
 	},
+	-- An own-crew bot's gear (Part 3). {item} is the thing's name, {what} a kind of gear or medicine, {n} a number
+	gearOpen = {
+		"Let's see what you've got.",
+		"Go ahead, {name}.",
+		"Show me.",
+	},
+	gearNotOwner = {
+		"I only trade with {owner}, {name}.",
+		"Sorry, {name}. My gear comes from {owner}.",
+		"Take it up with {owner}, {name}.",
+	},
+	gearBusy = {
+		"Not now, {name}. I'm busy.",
+		"Hold on, {name}. Once this is over.",
+	},
+	gearNoUse = {
+		"I've no use for {item}, {name}.",
+		"{item}? That's not gear I can use.",
+	},
+	gearNoCredits = {
+		"I don't take credits, {name}. Gear only.",
+		"Keep your credits, {name}. Show me gear.",
+	},
+	gearOut = {
+		"I'm out of {what}.",
+		"No {what} left in my pack.",
+	},
+	gearTooFar = {
+		"Come a little closer, {name}.",
+		"You're too far off to trade, {name}.",
+	},
+	gearFailed = {
+		"The trade fell through, {name}. Try again.",
+		"Something's off with that trade. Once more?",
+	},
+	gearThanks = {
+		"Thanks, {name}. I'll see what I can use.",
+		"Got it, {name}. Let me have a look.",
+		"Much obliged.",
+	},
+	gearWield = {
+		"Wielding the {item} now.",
+		"The {item} suits me. Taking it up.",
+		"Now that's a weapon: the {item}.",
+	},
+	gearWear = {
+		"Wearing the {item} now.",
+		"The {item} fits. Thanks.",
+		"Put the {item} on.",
+	},
+	gearCert = {
+		"Not certified for that one.",
+		"I'm not certified for the {item}. It stays in my pack.",
+		"Can't use the {item}, I've no certification for it yet.",
+	},
+	gearHeavy = {
+		"Too heavy for me.",
+		"The {item} is too heavy for me.",
+		"The {item} is too heavy for my build.",
+	},
+	gearSpecies = {
+		"The {item} won't fit me.",
+		"That's not made for my kind.",
+	},
+	gearFaction = {
+		"I can't wear the {item}: wrong side.",
+		"That's faction gear. Not mine to wear.",
+	},
+	gearSlot = {
+		"Something's in the way of the {item}.",
+		"I can't get the {item} on right now.",
+	},
+	gearWrongKind = {
+		"The {item} isn't a weapon I fight with. It stays in my pack.",
+		"Not my kind of weapon, the {item}.",
+	},
+	gearNotBetter = {
+		"The {item} isn't better than what I have. I'll hold on to it.",
+		"I'm keeping what I have. The {item} stays in my pack.",
+	},
+	gearKeep = {
+		"I'll keep the {item} in my pack.",
+		"The {item} goes in my pack for now.",
+	},
+	stockLow = {
+		"Running low on {what}: {n} left.",
+		"{n} {what} left.",
+		"Careful, {n} {what} left.",
+	},
+	stockOut = {
+		"Out of {what}.",
+		"That's the last of my {what}.",
+		"No {what} left.",
+	},
+	gearWorn = {
+		"My {item} is badly worn.",
+		"The {item} won't last much longer.",
+	},
+	gearBroken = {
+		"My {item} is broken.",
+		"The {item} is done for. It needs repair.",
+	},
+	giveGear = {
+		"Here's my {what}, {name}.",
+		"Handing back the {what}, {name}.",
+	},
+	giveNone = {
+		"I've no {what} of yours, {name}.",
+		"Nothing of yours to give back, {name}.",
+	},
+	campNoKit = {
+		"I've no camp kit. Give me one and I'll set it up.",
+		"No camp kit in my pack, {name}.",
+	},
 	-- An own-crew bot (Phase 9) asked to join, follow or be called by someone it doesn't work for. {owner} is the first name of the
 	-- one it works for
 	notYours = {

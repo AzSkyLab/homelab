@@ -1045,8 +1045,14 @@ end
 function BotRecruiter:devLetGo(first)
 	for _, m in ipairs(botList() or {}) do
 		if m.firstName:lower() == tostring(first):lower() then
-			print("BotRecruiter: let go " .. m.name .. ": " .. tostring(botLetGo(m.oid)))
-			deleteData("crew:name:" .. m.firstName:lower())
+			local ok, reason = botLetGo(m.oid)
+
+			print("BotRecruiter: let go " .. m.name .. ": " .. tostring(ok) .. (ok and "" or (" (" .. tostring(reason) .. ")")))
+
+			if ok then
+				deleteData("crew:name:" .. m.firstName:lower())
+			end
+
 			return
 		end
 	end

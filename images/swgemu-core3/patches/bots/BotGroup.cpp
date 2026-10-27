@@ -335,6 +335,12 @@ uint64 BotGroup::placeCamp(CreatureObject* bot, const String& kitTemplate, Strin
 		}
 	}
 
+	// An own-crew bot (Part 3) camps with a kit its owner gave it: none is made
+	if (kit == nullptr && BotManager::instance()->getOwner(bot->getObjectID()) != 0) {
+		error = "no camp kit";
+		return 0;
+	}
+
 	if (kit == nullptr) {
 		kit = zoneServer->createObject(kitCrc, 1);
 

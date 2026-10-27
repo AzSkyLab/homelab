@@ -16,6 +16,12 @@ Core3 is built from upstream at `CORE3_REF` (see `../Dockerfile`). Our C++ goes 
   folders (the talk bridge's own settings).
   Part 2 (training) adds the hook `0011`, `BotGroup::skipXp` / `isOwnCrewBot` / `trainingSquadLeadersIn`, `BotManager::updateGear` / `refreshSquadAura` and the bindings
   `botSkillPoints`, `botSetGear` and `botSquadAura`; the training itself is Lua (`screenplays/bots/crew_train.lua`).
+  Part 3 (gear by trade) adds no upstream hook: `BotGear.*` and `BotGearLua.*` (what a bot wears and holds, the owner's gifts recorded in its
+  character, equipping through a container transfer so Core3's checks run, the best usable pack of a kind, the give-back filter that turns
+  `BotLoot::goods` into the gifts, the let-go's straight return `BotGear::returnGiven`; bindings `botGear*`), the
+  starter stims, and changes to our own files: `BotCombat::equip` and `repairGear` make and repair nothing for an own-crew bot, the factory
+  makes no gear for one at login, `BotGroup::placeCamp` makes no kit for one, `BotTrade` keeps no customer's items from the owner, and the
+  let-go (`BotManager::letGo`) hands the gifts back first. The gear itself is Lua (`screenplays/bots/crew_gear.lua`).
 - **`NNNN-name.patch`**: hooks into upstream files, applied in order with `git apply` at the root of the Core3 tree.
   Keep each hook to a few lines that call into `bots/`.
   - `0001`–`0009`: the lifecycle and chat hooks.
