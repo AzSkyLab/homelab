@@ -459,8 +459,8 @@ Open WebUI searches through SearXNG (`searxng` namespace, internal only:
 - Settings: `kubernetes/manifests/searxng/configmap.yml`. Limiter off, so no Valkey. `preferences.lock: [safesearch]`
   because Open WebUI sends `safesearch=1` on every query, which would otherwise beat `safe_search: 0`.
 - Google, Bing and Startpage are off by default in SearXNG (Startpage `inactive`, it has a proof-of-work captcha), so the
-  ConfigMap turns them on. Google, DuckDuckGo and Startpage refused the home IP on 2026-10-30; Brave and Bing
-  carry the results. An engine that refuses is suspended for a while and shows in `unresponsive_engines`.
+  ConfigMap turns them on. Google and Startpage refused the home IP on 2026-10-30 (DuckDuckGo only sometimes); Brave
+  and Bing carry the results. An engine that refuses is suspended for a while and shows in `unresponsive_engines`.
 - Open WebUI embeds fetched pages inside its own pod, so its memory limit went from 1 to 2 GiB (it already peaked at
   1 GB without web search).
 
