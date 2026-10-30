@@ -36,6 +36,17 @@ spec:
                 secretKeyRef:
                   name: litellm-api-key
                   key: api-key
+            # Only seed a fresh install: webui.db already has these keys and wins (see CLAUDE.md, Open WebUI Integration)
+            - name: ENABLE_WEB_SEARCH
+              value: "true"
+            - name: WEB_SEARCH_ENGINE
+              value: searxng
+            - name: SEARXNG_QUERY_URL
+              value: http://searxng.searxng.svc.cluster.local:8080/search?q=<query>
+            - name: WEB_SEARCH_RESULT_COUNT
+              value: "5"
+            - name: WEB_SEARCH_CONCURRENT_REQUESTS
+              value: "5"
           volumeMounts:
             - name: data
               mountPath: /app/backend/data
@@ -45,7 +56,7 @@ spec:
               memory: 256Mi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 2Gi
       volumes:
         - name: data
           persistentVolumeClaim:

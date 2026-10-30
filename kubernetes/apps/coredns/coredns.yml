@@ -67,7 +67,7 @@ spec:
           - filename: home.lab.db
             domain: home.lab
             contents: |
-              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026102401 3600 600 604800 600
+              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026103001 3600 600 604800 600
               home.lab.    IN  NS   ns.home.lab.
               ns                IN  A    10.0.20.53
               k3s-server        IN  A    10.0.20.10
@@ -101,6 +101,7 @@ spec:
               ap-u7-pro         IN  A    10.0.10.6
               llm               IN  A    10.0.20.80
               vpn               IN  A    10.0.20.80
+              searxng           IN  A    10.0.20.80
   destination:
     server: https://kubernetes.default.svc
     namespace: coredns

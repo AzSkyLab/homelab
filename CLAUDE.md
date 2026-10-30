@@ -37,6 +37,7 @@ homelab/
 │   │   ├── workout-tracker/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
 │   │   ├── litellm/             # LiteLLM API gateway
+│   │   ├── searxng/             # SearXNG metasearch (web search for Open WebUI)
 │   │   ├── swgemu/              # SWGEmu Core3 (Star Wars Galaxies emulator) + MariaDB
 │   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
 │   │   ├── traefik-public/      # Second Traefik, internet-facing: the file share only (10.0.20.83)
@@ -46,6 +47,7 @@ homelab/
 │       ├── arc/                  # ARC runner CA certificate
 │       ├── cert-manager-ca/     # Internal CA issuers + Let's Encrypt issuers (letsencrypt-issuers.yml)
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
+│       ├── searxng/             # SearXNG (settings.yml ConfigMap, Deployment, Service, Ingress)
 │       ├── swgemu/              # Core3 Deployment + UDP LoadBalancer (10.0.20.84), MariaDB
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
 ├── images/swgemu-core3/          # Core3 server image (Dockerfile, entrypoint, console + add-account helpers, custom_scripts, dev/ test server)
@@ -76,6 +78,7 @@ homelab/
 | Ollama (VM) | 10.0.20.30 | `ollama.home.lab` |
 | Ollama (Workstation) | 10.0.10.40 | `desktop.home.lab` |
 | LiteLLM | 10.0.20.80 | `llm.home.lab` (via Traefik) |
+| SearXNG | 10.0.20.80 | `searxng.home.lab` (via Traefik, internal only) |
 | WireGuard | 10.0.20.21 (hostNetwork) | `vpn.home.lab` (web UI) |
 | SWGEmu Core3 LB | 10.0.20.84 | — (UDP 44453 login, 44462 ping, 44463 zone; TCP 44455 status) |
 
@@ -236,6 +239,7 @@ spec:
 | Speedtest Tracker | speedtest-tracker | homelab (kubernetes/manifests/speedtest-tracker/) | https://speedtest.home.lab |
 | LiteLLM | litellm | homelab (kubernetes/manifests/litellm/) | https://llm.home.lab |
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
+| SearXNG | searxng | homelab (kubernetes/manifests/searxng/) | https://searxng.home.lab |
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
 | SWGEmu Core3 | swgemu | homelab (kubernetes/manifests/swgemu/), image from images/swgemu-core3 | UDP `10.0.20.84:44453` |
 | File share | fileshare | homelab (kubernetes/manifests/fileshare/) | `https://charknox.duckdns.org` (public, password) |
@@ -338,6 +342,7 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/litellm/master-key` | litellm-secrets | litellm | LiteLLM master key (API auth + UI login) |
 | `homelab/litellm/db-password` | litellm-secrets | litellm | LiteLLM PostgreSQL password |
 | `homelab/litellm/master-key` | litellm-api-key | open-webui | Same key, used by Open WebUI to call LiteLLM |
+| `homelab/searxng/secret-key` | searxng-secrets (`secret-key`) | searxng | SearXNG `server.secret_key` (env `SEARXNG_SECRET`) |
 | `homelab/wireguard/password-hash` | wireguard-secrets | wireguard | Bcrypt hash for wg-easy web UI login |
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
@@ -443,6 +448,27 @@ These env vars only seed a fresh install. After that the saved settings in `webu
 `openai.*`/`ollama.*`) win, so change connections in Admin ▸ Settings ▸ Connections. The `ollama/` load-balanced
 routes are switched off in Admin ▸ Models (`is_active` 0), so the picker shows only `vm/` and `ws/`. A new
 `ollama/` route shows up until it is switched off the same way.
+
+### Web Search (SearXNG)
+
+Open WebUI searches through SearXNG (`searxng` namespace, internal only:
+`http://searxng.searxng.svc.cluster.local:8080`, browser at `https://searxng.home.lab`).
+
+- The `WEB_SEARCH_*` env vars in the deployment have the same seed-only catch: the `web.search.*` rows in `webui.db` win,
+  so change them in Admin ▸ Settings ▸ Web Search.
+- Settings: `kubernetes/manifests/searxng/configmap.yml`. Limiter off, so no Valkey. `preferences.lock: [safesearch]`
+  because Open WebUI sends `safesearch=1` on every query, which would otherwise beat `safe_search: 0`.
+- Google, Bing and Startpage are off by default in SearXNG (Startpage `inactive`, it has a proof-of-work captcha), so the
+  ConfigMap turns them on. Google, DuckDuckGo and Startpage refused the home IP on 2026-10-30; Brave and Bing
+  carry the results. An engine that refuses is suspended for a while and shows in `unresponsive_engines`.
+- Open WebUI embeds fetched pages inside its own pod, so its memory limit went from 1 to 2 GiB (it already peaked at
+  1 GB without web search).
+
+```bash
+# Recreate the secret
+kubectl create namespace searxng
+kubectl -n searxng create secret generic searxng-secrets --from-literal=secret-key="$(pass homelab/searxng/secret-key)"
+```
 
 ### Network Requirements
 
