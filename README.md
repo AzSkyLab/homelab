@@ -1,6 +1,6 @@
 # Homelab Infrastructure
 
-IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k3s), PostgreSQL, and on-demand sandbox VMs with Terraform, Packer, and Ansible. Kubernetes workloads are deployed via ArgoCD GitOps with Forgejo CI/CD.
+IaC-driven homelab running Proxmox VE across 3 nodes, provisioning Kubernetes (k3s), PostgreSQL, and on-demand sandbox VMs with Terraform, Packer, and Ansible. Kubernetes workloads are deployed via ArgoCD GitOps; CI runs on GitHub Actions with self-hosted runners in the cluster.
 
 ## Architecture
 
@@ -75,13 +75,10 @@ ArgoCD manages all workloads via an app-of-apps pattern. Infrastructure services
 | App | Access | Description |
 |-----|--------|-------------|
 | Glance | [glance.home.lab](https://glance.home.lab) | Startpage with infra widgets |
-| Linkwarden | [linkwarden.home.lab](https://linkwarden.home.lab) | Bookmark manager + Meilisearch |
 | Jellyfin | [jellyfin.home.lab](https://jellyfin.home.lab) | Media server (NFS-backed) |
 | Open WebUI | [chat.home.lab](https://chat.home.lab) | Chat UI for local LLMs |
 | LiteLLM | [llm.home.lab](https://llm.home.lab) | Multi-GPU OpenAI-compatible API proxy |
 | n8n | [n8n.home.lab](https://n8n.home.lab) | Workflow automation |
-| Forgejo | [git.home.lab](https://git.home.lab) | Git forge + CI/CD (Actions) |
-| Harbor | [registry.home.lab](https://registry.home.lab) | Container registry + Trivy scanning |
 | pgAdmin | [pgadmin.home.lab](https://pgadmin.home.lab) | PostgreSQL admin UI |
 | Speedtest Tracker | [speedtest.home.lab](https://speedtest.home.lab) | Automated speed tests |
 | Workout Tracker | [workout.home.lab](https://workout.home.lab) | Exercise tracking app |
@@ -123,6 +120,7 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 |-------|---------|------|-------|
 | `ws/` + `vm/qwen3.8:27b` | both | 18GB | Dense, vision, thinking; strongest at agentic and coding work; load-balanced as `ollama/qwen3.8:27b` |
 | `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes; about 3x faster than qwen3.8 |
+| `ws/flint:40b` | RTX 5090 | 22GB | Recursive's Flint, NVFP4, text only (since 2026-11-06) |
 | `ws/` + `vm/qwen3.6-abliterated:27b` | both | 18GB | huihui-ai's abliterated (refusals removed) Qwen3.6 27B, vision, MTP drafting; load-balanced as `ollama/qwen3.6-abliterated:27b` |
 
 Both backends run with `OLLAMA_CONTEXT_LENGTH` raised from the 4096 default
@@ -178,19 +176,18 @@ Let's Encrypt HTTP-01 → TCP 80 → traefik-public (redirects everything else t
 ## CI/CD Pipeline
 
 ```
-Developer pushes to Forgejo (git@git.home.lab)
-  → Forgejo Actions triggers CI workflow
-    → Runner builds Docker image (DinD sidecar)
-    → Pushes to Harbor (registry.home.lab)
-  → Forgejo push-mirrors to GitHub (backup)
-  → ArgoCD watches repo for manifest changes → deploys
+Developer pushes to GitHub (github.com/azskylab/<repo>)
+  → GitHub Actions runs on self-hosted runners in k3s (ARC, runner set homelab-runners, DinD)
+    → Builds the Docker image
+    → Pushes to GHCR (ghcr.io/azskylab/<image>)
+  → ArgoCD watches the repo for manifest changes → deploys
 ```
 
 ## Toolchain
 
 | Tool | Purpose |
 |------|---------|
-| Proxmox VE 8.x | Hypervisor (3-node cluster) |
+| Proxmox VE 9.x | Hypervisor (3-node cluster) |
 | Terraform + bpg/proxmox | VM provisioning |
 | Packer | VM template builds (Ubuntu 24.04) |
 | Cloud-init | First-boot configuration |
@@ -198,8 +195,8 @@ Developer pushes to Forgejo (git@git.home.lab)
 | k3s | Lightweight Kubernetes |
 | ArgoCD | GitOps continuous deployment |
 | Traefik | Ingress + TLS via internal CA |
-| Forgejo | Git forge + Actions CI |
-| Harbor | Container registry |
+| GitHub Actions (ARC) | CI on self-hosted runners in k3s |
+| GHCR | Container registry |
 
 ## Quick Start
 

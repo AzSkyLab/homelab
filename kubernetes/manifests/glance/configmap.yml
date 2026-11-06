@@ -429,9 +429,6 @@ data:
                     url: https://jellyfin.home.lab
                     icon: si:jellyfin
                     allow-insecure: true
-                  - title: Linkwarden
-                    url: https://linkwarden.home.lab
-                    allow-insecure: true
                   - title: pgAdmin
                     url: https://pgadmin.home.lab
                     icon: si:postgresql
@@ -1110,40 +1107,6 @@ data:
                         url: https://twitter.com/
                       - title: Instagram
                         url: https://www.instagram.com/
-
-              - type: custom-api
-                title: Linkwarden Bookmarks
-                title-url: https://linkwarden.home.lab
-                cache: 5m
-                url: http://linkwarden.home.lab/api/v1/links
-                headers:
-                  Authorization: Bearer ${LINKWARDEN_API_KEY}
-                  Accept: application/json
-                parameters:
-                  sort: 0
-                template: |
-                  {{ if eq .Response.StatusCode 200 }}
-                    <ul class="list list-gap-10 collapsible-container" data-collapse-after="5">
-                      {{ range .JSON.Array "response" }}
-                        <li>
-                          <a class="size-h4 color-highlight block text-truncate" href="{{ .String "url" }}" target="_blank" rel="noreferrer">
-                            {{ if .String "name" }}{{ .String "name" }}{{ else }}{{ .String "url" }}{{ end }}
-                          </a>
-                          <ul class="list-horizontal-text">
-                            {{ if .Exists "collection.name" }}
-                              <li class="color-primary">{{ .String "collection.name" }}</li>
-                            {{ end }}
-                            {{ range .Array "tags" }}
-                              <li>#{{ .String "name" }}</li>
-                            {{ end }}
-                            <li>{{ formatTime "DateOnly" (parseTime "RFC3339" (.String "createdAt")) }}</li>
-                          </ul>
-                        </li>
-                      {{ end }}
-                    </ul>
-                  {{ else }}
-                    <p class="color-negative">Failed to load bookmarks.</p>
-                  {{ end }}
 
       - name: Markets
         columns:

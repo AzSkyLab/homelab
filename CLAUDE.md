@@ -29,7 +29,6 @@ homelab/
 │   ├── apps/                     # ArgoCD Applications (auto-synced by root-app)
 │   │   ├── cert-manager/
 │   │   ├── coredns/
-│   │   ├── linkwarden/
 │   │   ├── metallb/
 │   │   ├── monitoring/
 │   │   ├── speedtest-tracker/
@@ -216,7 +215,7 @@ spec:
 |---------|-----------|------|--------|
 | ArgoCD | argocd | Helm (argo-helm) | https://argocd.home.lab |
 | Traefik | traefik | Helm | LB at 10.0.20.80 |
-| Traefik (public) | traefik-public | Helm (same chart 42.1.2) | LB at 10.0.20.83; serves only Ingresses of class `traefik-public` |
+| Traefik (public) | traefik-public | Helm (same chart as `traefik`) | LB at 10.0.20.83; serves only Ingresses of class `traefik-public` |
 | CoreDNS | coredns | Helm | LB at 10.0.20.53 |
 | cert-manager | cert-manager | Helm | Internal CA (`home-lab-ca`); Let's Encrypt (`letsencrypt-staging`, `letsencrypt-prod`) for public hosts |
 | MetalLB | metallb-system | Helm | IP pool: `k8s-vlan-pool` |
@@ -228,7 +227,6 @@ spec:
 
 | App | Namespace | Source Repo | Access |
 |-----|-----------|-------------|--------|
-| Linkwarden | linkwarden | homelab (kubernetes/manifests/linkwarden/) | https://linkwarden.home.lab |
 | Workout Tracker | workout-tracker | GitHub azskylab/workouttracker (k8s/) | https://workout.home.lab |
 | CorpoCache | corpocache | GitHub azskylab/CorpoCache (helm/) | https://cache.home.lab |
 | Speedtest Tracker | speedtest-tracker | homelab (kubernetes/manifests/speedtest-tracker/) | https://speedtest.home.lab |
@@ -323,7 +321,6 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/glance/jellyfin-api-key` | glance-secrets | glance | Jellyfin API key for media widgets |
 | `homelab/glance/unifi-api-key` | glance-secrets | glance | Unifi controller API key |
 | `homelab/glance/speedtest-tracker-api-token` | glance-secrets | glance | Speedtest Tracker API token |
-| `homelab/linkwarden/*` | linkwarden-secrets | linkwarden | DB password, NextAuth, Meili key, API key |
 | `homelab/proxmox/monitoring-*` | pve-exporter-credentials | monitoring | PVE API token (`prometheus@pve!monitoring`) |
 | `homelab/unifi/unpoller-*` | unpoller-credentials | monitoring | UnPoller read-only user credentials |
 | `homelab/speedtest-tracker/app-key` | speedtest-tracker-secrets | speedtest-tracker | Laravel APP_KEY |
@@ -346,12 +343,10 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 ### Recreating a K8s Secret from pass
 
 ```bash
-# Example: recreate linkwarden-secrets
-kubectl create secret generic linkwarden-secrets -n linkwarden \
-  --from-literal=NEXTAUTH_SECRET="$(pass homelab/linkwarden/nextauth-secret)" \
-  --from-literal=NEXTAUTH_URL="https://linkwarden.home.lab/api/v1/auth" \
-  --from-literal=DATABASE_URL="$(pass homelab/linkwarden/database-url)" \
-  --from-literal=MEILI_MASTER_KEY="$(pass homelab/linkwarden/meili-master-key)"
+# Example: recreate pgadmin-credentials
+kubectl create secret generic pgadmin-credentials -n pgadmin \
+  --from-literal=default-email="$(pass homelab/pgadmin/default-email)" \
+  --from-literal=default-password="$(pass homelab/pgadmin/default-password)"
 ```
 
 ## LiteLLM (Multi-GPU API Gateway)
@@ -535,9 +530,9 @@ nginx → NFS 10.0.10.11:/mnt/media/fileshare (read-only: the k8s VLAN's export 
   The NFS share had 502 GB free (2026-10-24), shared with Jellyfin's media.
 - **Downloads resume** (nginx answers Range requests); every file downloads as `application/octet-stream`.
 - **Limits:** 4 connections and 5 requests/s (burst 20) per client address, so password guessing gets 429. No bandwidth
-  cap; add `limit_rate` in the ConfigMap if downloads crowd out the game.
+  cap; add `limit_rate` in the ConfigMap if downloads crowd out other traffic.
 - **DNS:** DuckDNS updater in `wireguard` keeps `charknox` on the home IP (subdomain list in `duckdns-secrets`).
-  Split DNS like the game's: `charknox.duckdns.org` zone in `kubernetes/apps/coredns/coredns.yml`, and key
+  Split DNS (see the Public Door section): `charknox.duckdns.org` zone in `kubernetes/apps/coredns/coredns.yml`, and key
   `charknox.server` in `coredns-custom` in `kube-system` (manual, not in git; needed for cert-manager's self-check).
 - **Certificate:** `fileshare-tls`, ClusterIssuer `letsencrypt-prod` (HTTP-01).
 - **Switch it off** when not in use: `kubectl -n fileshare scale deploy/fileshare --replicas=0` is reverted by
