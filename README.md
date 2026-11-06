@@ -171,8 +171,8 @@ Let's Encrypt HTTP-01 → TCP 80 → traefik-public (redirects everything else t
 
 - **Port forwards:** TCP 80 and 443 → `10.0.20.83`; UDP 443 → `10.0.20.21` stays for WireGuard
 - **Certificate:** Let's Encrypt via cert-manager, renews automatically
-- **The MMO game server** (azskylab/videogame) used this door until 2026-10-24, when it was taken down. Its restore kit
-  is that repo's `docs/LAB_TEARDOWN.md`.
+- **The MMO game server** (azskylab/videogame) used this door until 2026-10-24, when it was taken down; the game was
+  retired on 2026-11-06.
 - **Details and gotchas:** see the "Public Door (traefik-public)" section of [CLAUDE.md](CLAUDE.md)
 
 ## CI/CD Pipeline

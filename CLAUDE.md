@@ -48,7 +48,6 @@ homelab/
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
 │       ├── searxng/             # SearXNG (settings.yml ConfigMap, Deployment, Service, Ingress)
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
-├── workstation/ai-3d/            # Local AI 3D service on the workstation (ComfyUI, TRELLIS.2, SDXL)
 └── docs/                         # Network design, Unifi setup, AD migration
 ```
 
@@ -466,21 +465,6 @@ kubectl -n searxng create secret generic searxng-secrets --from-literal=secret-k
 - **Workstation UFW rule**: `ufw allow from 10.0.20.0/24 to any port 11434 proto tcp`
 - Workstation Ollama binds `0.0.0.0` via systemd override at `/etc/systemd/system/ollama.service.d/override.conf`
 
-## AI 3D Service (Workstation)
-
-Local image and 3D generation on the workstation RTX 5090 for the game's art pipeline
-(`~/github/videogame/tools/ai_assets/`). Files: `workstation/ai-3d/` (`setup.sh`, `ai3d.sh`, `models.md`, `README.md`).
-
-- **What:** ComfyUI (pinned tag) with TRELLIS.2 (image to textured mesh) and SDXL + OpenPose/depth ControlNets.
-  Every node, model and revision is pinned in `setup.sh`; `models.md` lists licences (read 2026-10-14).
-- **Where:** heavy files in `~/ai-3d/` (venv, ComfyUI, weights) and `~/.ce/` (the TRELLIS2 node's pixi env); not in git.
-- **Run:** `workstation/ai-3d/ai3d.sh start|stop|status|log`. Listens on **127.0.0.1:8188 only** (no UFW/USG rule;
-  not behind LiteLLM). Starts with `HF_HUB_OFFLINE=1` so nothing downloads weights or remote code at run time.
-- **VRAM:** TRELLIS.2 needs about 24 GB. Unload Ollama models first (`ollama ps`, `ollama stop <model>`);
-  `ai3d.sh` warns when Ollama has models loaded.
-- **Licence to-do:** DINOv3 (used inside TRELLIS.2) comes from a re-upload; accept Meta's licence on the official
-  `facebook/dinov3-vitl16-pretrain-lvd1689m` page once.
-
 ## Public Door (traefik-public)
 
 A second Traefik on its own MetalLB address (`10.0.20.83`, namespace `traefik-public`, serves only Ingresses of class
@@ -488,8 +472,8 @@ A second Traefik on its own MetalLB address (`10.0.20.83`, namespace `traefik-pu
 forwards to the lab-wide Traefik. Certificates come from the ClusterIssuer `letsencrypt-prod` (HTTP-01; `letsencrypt-staging` for tests).
 
 **History:** it was built for the MMO game server (azskylab/videogame, `wss://jankmmo.duckdns.org`). The game was taken
-down on 2026-10-24 (namespace `mmo`, Argo app, database `mmo`, Grafana board, GHCR image all removed). The restore kit,
-including this section as it was, is in that repo: `docs/LAB_TEARDOWN.md` and `deploy/lab-wide/homelab/`.
+down on 2026-10-24 (namespace `mmo`, Argo app, database `mmo`, Grafana board, GHCR image all removed) and retired on
+2026-11-06 (local copy, backups and secrets deleted; the code lives on only in the private GitHub repo).
 
 ### USG Port Forwards
 
