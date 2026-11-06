@@ -13,7 +13,15 @@ spec:
   source:
     repoURL: https://metallb.github.io/metallb
     chart: metallb
-    targetRevision: "0.14.9"
+    targetRevision: "0.16.2"
+    helm:
+      valuesObject:
+        # L2 only: native speaker. 0.16 defaults to the FRR-K8s backend (BGP), which we don't use.
+        speaker:
+          frr:
+            enabled: false
+        frrk8s:
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: metallb-system
