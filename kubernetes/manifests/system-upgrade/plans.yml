@@ -1,0 +1,51 @@
+# k3s upgrade plans for the system-upgrade-controller (controller.yml + crd.yml are the upstream v0.20.2 release
+# manifests, with the job kubectl image bumped to v1.36.2).
+#
+# To upgrade k3s: change `version` in BOTH plans (and `k3s_version` in the Ansible k3s_server/k3s_agent roles), one
+# minor at a time, then push. The server upgrades first; the agents wait for it (`prepare`), one node at a time.
+# Nodes are cordoned, not drained: restarting k3s leaves running containers alone (same as the old binary swap).
+# Progress: kubectl -n system-upgrade get plans,jobs
+---
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: server-plan
+  namespace: system-upgrade
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  version: v1.36.6+k3s1
+  concurrency: 1
+  cordon: true
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: In
+        values: ["true"]
+  serviceAccountName: system-upgrade
+  upgrade:
+    image: rancher/k3s-upgrade
+---
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: agent-plan
+  namespace: system-upgrade
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  version: v1.36.6+k3s1
+  concurrency: 1
+  cordon: true
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+  prepare:
+    image: rancher/k3s-upgrade
+    args: ["prepare", "server-plan"]
+  serviceAccountName: system-upgrade
+  upgrade:
+    image: rancher/k3s-upgrade
