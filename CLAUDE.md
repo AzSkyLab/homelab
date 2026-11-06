@@ -38,7 +38,6 @@ homelab/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
 │   │   ├── litellm/             # LiteLLM API gateway
 │   │   ├── searxng/             # SearXNG metasearch (web search for Open WebUI)
-│   │   ├── swgemu/              # SWGEmu Core3 (Star Wars Galaxies emulator) + MariaDB
 │   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
 │   │   ├── traefik-public/      # Second Traefik, internet-facing: the file share only (10.0.20.83)
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
@@ -48,9 +47,7 @@ homelab/
 │       ├── cert-manager-ca/     # Internal CA issuers + Let's Encrypt issuers (letsencrypt-issuers.yml)
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
 │       ├── searxng/             # SearXNG (settings.yml ConfigMap, Deployment, Service, Ingress)
-│       ├── swgemu/              # Core3 Deployment + UDP LoadBalancer (10.0.20.84), MariaDB
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
-├── images/swgemu-core3/          # Core3 server image (Dockerfile, entrypoint, console + add-account helpers, custom_scripts, dev/ test server)
 ├── workstation/ai-3d/            # Local AI 3D service on the workstation (ComfyUI, TRELLIS.2, SDXL)
 └── docs/                         # Network design, Unifi setup, AD migration
 ```
@@ -80,7 +77,6 @@ homelab/
 | LiteLLM | 10.0.20.80 | `llm.home.lab` (via Traefik) |
 | SearXNG | 10.0.20.80 | `searxng.home.lab` (via Traefik, internal only) |
 | WireGuard | 10.0.20.21 (hostNetwork) | `vpn.home.lab` (web UI) |
-| SWGEmu Core3 LB | 10.0.20.84 | — (UDP 44453 login, 44462 ping, 44463 zone; TCP 44455 status) |
 
 ### Kubeconfig
 
@@ -241,7 +237,6 @@ spec:
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
 | SearXNG | searxng | homelab (kubernetes/manifests/searxng/) | https://searxng.home.lab |
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
-| SWGEmu Core3 | swgemu | homelab (kubernetes/manifests/swgemu/), image from images/swgemu-core3 | UDP `10.0.20.84:44453` |
 | File share | fileshare | homelab (kubernetes/manifests/fileshare/) | `https://charknox.duckdns.org` (public, password) |
 
 ## External PostgreSQL
@@ -348,12 +343,6 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
 | `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomains kept on the home IP (`malliefivpn,charknox`) |
 | `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `fucksony`, SHA-512 hash) | fileshare | Download page password |
-| `homelab/swgemu/db-password` | swgemu-secrets (`db-password`) | swgemu | MariaDB `swgemu` user, used by Core3 |
-| `homelab/swgemu/db-root-password` | swgemu-secrets (`db-root-password`) | swgemu | MariaDB root |
-| `homelab/swgemu/db-secret` | swgemu-secrets (`db-secret`) | swgemu | Core3 `DBSecret`, mixed into every account password hash (changing it breaks all logins) |
-| `homelab/swgemu/admin-password` | — | — | Game account `cameren` (admin level 15) |
-| `homelab/swgemu/litellm-key` | swgemu-secrets (`litellm-key`) | swgemu | LiteLLM virtual key `swgemu-talk` for the talk bridge, limited to the talk models (optional: without it the NPCs give canned lines) |
-| — (copied from corpocache) | ghcr-pull-secret | swgemu | GHCR pull secret, attached to the namespace's `default` ServiceAccount |
 
 ### Recreating a K8s Secret from pass
 
@@ -544,152 +533,6 @@ Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. 
   USG login page (`nslookup <name>.duckdns.org` tells which).
 - **Testing from the LAN is misleading.** `curl https://<public IP>/` from inside answers with the USG login page for any
   host name (HTTP 200). Test the doors by address (`--resolve host:443:10.0.20.83`) or from a phone on mobile data.
-
-## SWGEmu Core3 (Star Wars Galaxies Emulator)
-
-[swgemu/Core3](https://github.com/swgemu/Core3) (pre-CU SWG server, C++, AGPL) runs in the `swgemu` namespace with its
-own MariaDB. Upstream only ships a dev container (gdb, screen, interactive shell), so the image is our own:
-`images/swgemu-core3/`.
-
-The Linux client, the scripts that built the TRE set (`tools/fetch-tre.sh`) and our game settings live in the local
-repo `~/github/swgemu` on the workstation (not on GitHub). Server changes go here, client and tooling there.
-
-### Architecture
-
-```
-SWG client → UDP 44453 (login) → core3 LB 10.0.20.84 → core3 pod
-           ← galaxy table hands out GALAXY_ADDRESS:44463 (zone) and :44462 (ping)
-core3 pod → mariadb:3306 (accounts, characters list, galaxy row)
-core3 pod → /data (PVC core3-data: Berkeley DB world state, navmeshes, logs) and /tre (PVC core3-tre: client TRE files)
-```
-
-### Key Details
-
-| Setting | Value |
-|---------|-------|
-| Image | `ghcr.io/azskylab/swgemu-core3:<core3 sha8>-<homelab sha7>` (private; the homelab part is the last commit touching `images/swgemu-core3/`), built on the workstation, tag in `core3.yml` |
-| Core3 commit | `CORE3_REF` build arg in the Dockerfile (unstable branch) |
-| Our scripts | `images/swgemu-core3/custom_scripts/`, copied over Core3's empty `bin/scripts/custom_scripts/` hooks (Living Cities: player-looking city crowds; bot players' jobs and roster). Specs in `~/github/swgemu/specs/` |
-| Our C++ | `images/swgemu-core3/patches/` (bot players), applied at image build |
-| Clock | `TZ=America/New_York` (scripts read the local hour) |
-| Galaxy | `Homelab`, id 2; address from `GALAXY_ADDRESS` (written into the `galaxy` table at every start) |
-| Registration | Closed (`AUTOREG=0`); make accounts with `add-account` |
-| Admin account | `cameren`, admin level 15 (`pass homelab/swgemu/admin-password`) |
-| Storage | `local-path`: `mariadb-data` 5Gi, `core3-data` 20Gi, `core3-tre` 5Gi (all landed on k3s-agent-01) |
-| Resources | ~3–4 GiB RSS with all 12 ground + 10 space zones; limits 2 CPU / 12Gi; boot ≈ 1 min |
-| TRE files (source) | `~/Games/swg-original/tre` on the workstation (51 needed + 2 hotfix, 2.8 GB); rebuild with `~/github/swgemu/tools/fetch-tre.sh` |
-
-### Important Design Decisions and Gotchas
-
-- **CPU target.** The agents are Sandy Bridge (E5-2670: AVX, no AVX2/BMI/FMA). Upstream builds with `-march=native`,
-  which on the workstation would emit instructions that crash on the agents. The Dockerfile sets `ENABLE_NATIVE=OFF`,
-  `-march=sandybridge`, and fails the build if objdump finds AVX2/BMI/FMA opcodes.
-- **Checkout path must not contain `src/`.** `src/CMakeLists.txt` derives autogen paths by replacing every `src/` in
-  the absolute path; a checkout at `/src` breaks every IDL object ("no such file"). The image builds in `/core3`.
-- **Legacy docker builder here** (no buildx), so no `COPY --chmod`.
-- **Console on a FIFO.** Core3 reads commands from stdin; at EOF its reader would spin. The entrypoint feeds stdin from
-  `/run/core3/console` (held open) and the `console` helper writes to it. Output goes to the pod log.
-- **Clean stops.** No SIGTERM handler in Core3, so the entrypoint traps it and sends `shutdown 0` (full save, then exit).
-  Measured: ~80 s with an empty world; `terminationGracePeriodSeconds: 600`. Never `kubectl delete pod --force`.
-  No liveness probe on purpose (a slow load or save must not be killed); readiness = status port 44455.
-- **TRE files.** The server reads game data from the original client files. 21 came from the 2003 retail discs
-  (`unshield` on `data1.cab`); the JTL `data_sku1_*` and all `patch_*` files came from the SWGEmu Launchpad mirror
-  `http://www.launchpad2.net/SWGEmu/`, checked against its `required2.txt` MD5s (what the official launcher does for
-  disc owners). The entrypoint waits, logging what's missing, until every `TreFiles` entry exists in `/tre`.
-- **CPU limit (2) and `MaxNavMeshJobs = 2`.** Core3 builds navmeshes on first boot (and when regions change) with 6
-  parallel jobs by default. Uncapped, that pinned k3s-agent-01 at 100% (load 60 on 4 vCPUs); the MetalLB speaker there
-  failed its probes and crash-looped, which dropped every LB IP it announces (10.0.20.53, .80, .83, .84). Navmeshes
-  persist in `/data/navmeshes`, so a restart resumes the build.
-- **Accounts.** `add-account` inserts unsalted SHA1; Core3 accepts that once and rewrites it as
-  SHA256(`DBSecret` + password + salt) on first login.
-- **Our scripts never edit upstream files.** Core3 includes `scripts/custom_scripts/{screenplays/screenplays,mobile,
-  object,loot}/serverobjects.lua` last; ours live there. Screenplays reload live (`console reloadscreenplays`, then
-  `console runLuaFunction LivingCities:restart` to rebuild the crowds); mobile templates and outfits only load at boot.
-  The directory is owned by `swgemu`, so a quick test can `kubectl cp` a script into the pod; a restart goes back to the
-  image's copy.
-- **NPCs that talk (talk bridge).** A second container, `talk`, in the core3 pod, from the same image (keep both
-  `image:` tags equal). It runs `images/swgemu-core3/talk/talk_bridge.py` (Python standard library). Core3's Lua can't
-  call out without stalling a server thread, so it writes request files to the shared `emptyDir` `/run/talk/req/`;
-  the bridge asks LiteLLM (`http://litellm.litellm.svc:4000/v1`, model `TALK_MODEL`, set to `vm/qwen3.6-abliterated:27b`
-  in core3.yml, thinking off) and writes `/run/talk/rep/<id>.txt`. City fact sheets: `talk/facts.json`, built by
-  `~/github/swgemu/tools/living_cities/build_facts.py`. Logs: `kubectl -n swgemu logs deploy/core3 -c talk` (one line
-  per reply, with its latency). The key is `swgemu-secrets` `litellm-key` (`pass homelab/swgemu/litellm-key`): a LiteLLM
-  virtual key limited to the talk models. Switch models with `scripts/swgemu-talk-model.sh <model>`. Without it the bridge gets 401s and the NPCs give canned lines. Test from the
-  workstation: `LITELLM_URL=https://llm.home.lab/v1 LITELLM_KEY=... python3 talk/talk_bridge.py --ask mos_eisley
-  "where's the bank?"`.
-- **Local test server.** `images/swgemu-core3/dev/docker-compose.yml` runs our image on the workstation with only
-  Tatooine, Corellia and Naboo and `custom_scripts` bind-mounted. Build it once with `--build-arg
-  CORE3_CXX_EXTRA=-DDEBUG_AI` (tag `dev-debug-ai`): Core3 reads `AiAgentLoadTesting` (AI awake with no player near)
-  only in `DEBUG_AI` builds, and a Release build leaves every NPC standing until a player comes. Production leaves the
-  arg empty. Copy the three planets' navmeshes from the cluster into its data dir first, or the first boot builds
-  them.
-- **Our C++ (bot players).** `images/swgemu-core3/patches/` holds:
-  - `bots/`: our own files, copied into `MMOCoreORB/src/server/zone/managers/bot/`;
-  - six hook patches (`NNNN-*.patch`), applied with `git apply`.
-
-  The Dockerfile applies both after the checkout, and a patch that doesn't apply fails the build. After a
-  `CORE3_REF` bump, fix the patches first. `patches/README.md` lists the hooks and how to write one.
-- **Dev builds of the C++.** `bash images/swgemu-core3/dev/build-core3.sh`:
-  - builds incrementally in `~/.cache/swgemu-scratch/core3-dev`, with production's toolchain plus `-DDEBUG_AI`;
-  - tags `dev-bots` for the local test server (`CORE3_IMAGE=ghcr.io/azskylab/swgemu-core3:dev-bots docker compose
-    up -d`);
-  - the first build takes about 20 minutes, the rest only what changed.
-- **Bot players.** 26 characters the server plays itself, with no client:
-  - in Mos Eisley, Coronet and Theed, a master doctor, dancer, musician and smuggler (who slices by trade);
-  - in the Mos Eisley cantina, a hunting crew of four (tank, rifleman, medic, ranger) you can group with;
-  - Varenhal, a bot-run player city on Naboo at (-3291, 4911): a mayor, a dancer, musician and doctor, six citizens.
-  - **Roster:** `custom_scripts/bots/roster.lua`; the city's plan `custom_scripts/bots/city.lua`.
-  - **Accounts and characters:** `bot_<firstname>` accounts with unusable passwords, made on first boot.
-  - **When they're online:** they log in a minute after the first human and out 10 minutes after the last. The ten
-    Varenhal bots only while a human is on Naboo.
-  - **Fights:** any bot fights a player who insults it three times in 10 minutes, or accepts a `/duel`, to the
-    first incap.
-  - **Credits:** the city's bots pay its upkeep from credits the server gives them: the one place we create credits.
-  - **Status port:** never counts them, so `scripts/swgemu-deploy.sh`'s players check still means humans.
-  - **A stuck bot:** `BotJobs:logout:<first>` then `login:<first>`. A restart also puts every bot back at its
-    station.
-  - Specs: `~/github/swgemu/specs/2026-10-23-bot-players/` (the contract in `interfaces.md`),
-    `2026-10-23-musicians-smugglers/`, `2026-10-23-bot-group-mates/`, `2026-10-23-player-city/`.
-
-### Common Tasks
-
-```bash
-kubectl -n swgemu logs deploy/core3 -f
-kubectl -n swgemu exec deploy/core3 -- console help             # also: save, chars, broadcast <msg>, shutdown <min>
-kubectl -n swgemu exec -i deploy/core3 -- add-account <name> [admin_level] <<< '<password>'
-# Status XML (players online, uptime)
-timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.20.84/44455; cat <&3'
-# Copy TRE files onto a fresh core3-tre volume (pod waits for them), then verify
-tar cf - -C ~/Games/swg-original/tre . | kubectl -n swgemu exec -i deploy/core3 -- tar xf - -C /tre
-# Update Core3 (bump CORE3_REF in images/swgemu-core3/Dockerfile) or our scripts: commit on main, then
-bash scripts/swgemu-deploy.sh     # build + push the image, set the tag in core3.yml, commit, push, wait, show start lines
-bash scripts/swgemu-talk-key.sh   # once: LiteLLM key for the talk bridge into pass and swgemu-secrets
-# Living Cities (crowd report, rebuild the crowds, every NPC's state)
-kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:report
-kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:restart
-kubectl -n swgemu exec deploy/core3 -- console runLuaFunction LivingCities:dump
-# Bot players (every bot and its job state; force one in or out; a bot's buffs, wounds and HAM)
-kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:list
-kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:login:Hesk
-kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotJobs:devBuffs:Hesk
-# The bot city (rank, citizens, treasury, next update and election), and every bot's fight state
-kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotCityJobs:status
-kubectl -n swgemu exec deploy/core3 -c core3 -- console runLuaFunction BotFight:devList
-```
-
-### Recreating K8s Secrets
-
-```bash
-kubectl create namespace swgemu
-kubectl -n swgemu create secret generic swgemu-secrets \
-  --from-literal=db-password="$(pass homelab/swgemu/db-password)" \
-  --from-literal=db-root-password="$(pass homelab/swgemu/db-root-password)" \
-  --from-literal=db-secret="$(pass homelab/swgemu/db-secret)" \
-  --from-literal=litellm-key="$(pass homelab/swgemu/litellm-key)"
-kubectl -n corpocache get secret ghcr-pull-secret -o json \
-  | jq '{apiVersion,kind,type,data,metadata:{name:"ghcr-pull-secret",namespace:"swgemu"}}' | kubectl apply -f -
-kubectl -n swgemu patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull-secret"}]}'
-```
 
 ## File Share (Public Downloads)
 
