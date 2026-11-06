@@ -32,6 +32,10 @@ data:
         litellm_params:
           model: "ollama_chat/qwen3.8:27b"
           api_base: "http://10.0.10.40:11434"
+      - model_name: "ws/flint:40b"
+        litellm_params:
+          model: "ollama_chat/flint:40b"
+          api_base: "http://10.0.10.40:11434"
       # Load-balanced — same model_name with multiple backends for round-robin
       - model_name: "ollama/qwen3.6-abliterated:27b"
         litellm_params:

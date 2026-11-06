@@ -386,7 +386,8 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup). Use `model: "ollama_chat/<model>"` in `litellm_params`: the `ollama/` prefix talks to `/api/generate` and fakes tool calls with JSON mode, which broke every tool-using client (omp, Open WebUI tools) until 2026-10-22.
 
 Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
-and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster).
+and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster). `ws/flint:40b` (since 2026-11-06; Recursive's Flint, NVFP4,
+22GB, needs Ollama >= 0.40.9, text only) fits the 5090 at 64k context (28.4 of 32.6 GB).
 
 `qwen3.6-abliterated:27b` (both backends, since 2026-10-23) is huihui-ai's abliterated (refusals removed) Qwen3.6 27B,
 not from the Ollama library, so `ollama pull` and the Ansible role can't fetch it. To rebuild it on a backend:
@@ -424,7 +425,7 @@ so it also runs on the 3090's 16k context (omp could not).
   native 262k context; `opencode` is OpenCode's hosted free-model service, which would send code off the LAN.
   `share: disabled`, `update: disable` (pacman updates it).
 - A background server (127.0.0.1 only) runs the sessions; after editing the config run `opencode service restart`.
-  `opencode models` should list exactly the three `homelab/...` models.
+  `opencode models` should list exactly the four `homelab/...` models.
 - Usage: `opencode` (TUI) in a project folder, or `opencode run --auto "prompt"` (one-shot, auto-approves tools);
   `-m homelab/ws/qwen3.6:35b-a3b` for the faster model, `-m homelab/vm/qwen3.8:27b` for the 3090.
 - omp's leftover config and sessions are in `~/.omp` (796K); `rm -rf ~/.omp` once it is no longer wanted.
