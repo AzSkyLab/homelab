@@ -20,7 +20,7 @@ homelab/
 │       └── sandbox/              # On-demand test VMs
 ├── ansible/                      # Post-provisioning playbooks + roles
 ├── cloud-init/                   # Cloud-init configs (base, k8s, postgres)
-├── scripts/                      # Proxmox host setup, API token generation
+├── scripts/                      # Proxmox host setup, API token generation, lab-status.sh
 ├── kubernetes/
 │   ├── root-app.yml              # ArgoCD bootstrap (app-of-apps)
 │   ├── projects/                 # ArgoCD AppProjects (NOT auto-synced)
@@ -29,19 +29,24 @@ homelab/
 │   ├── apps/                     # ArgoCD Applications (auto-synced by root-app)
 │   │   ├── cert-manager/
 │   │   ├── coredns/
-│   │   ├── linkwarden/
 │   │   ├── metallb/
 │   │   ├── monitoring/
 │   │   ├── speedtest-tracker/
 │   │   ├── traefik/
 │   │   ├── workout-tracker/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
+│   │   ├── system-upgrade/      # system-upgrade-controller: k3s upgrades from git
 │   │   ├── litellm/             # LiteLLM API gateway
+│   │   ├── searxng/             # SearXNG metasearch (web search for Open WebUI)
+│   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
+│   │   ├── traefik-public/      # Second Traefik, internet-facing: the file share only (10.0.20.83)
 │   │   └── wireguard/           # WireGuard VPN (wg-easy)
 │   └── manifests/
 │       ├── ingress/              # Traefik Ingress resources for infra services
 │       ├── arc/                  # ARC runner CA certificate
+│       ├── cert-manager-ca/     # Internal CA issuers + Let's Encrypt issuers (letsencrypt-issuers.yml)
 │       ├── litellm/             # LiteLLM proxy (ConfigMap, Deployment, Service, Ingress)
+│       ├── searxng/             # SearXNG (settings.yml ConfigMap, Deployment, Service, Ingress)
 │       └── wireguard/           # wg-easy + DuckDNS CronJob
 └── docs/                         # Network design, Unifi setup, AD migration
 ```
@@ -62,12 +67,14 @@ homelab/
 
 | Service | IP | DNS |
 |---------|-----|-----|
-| Traefik LB | 10.0.20.80 | `*.home.lab` ingress |
+| Traefik LB | 10.0.20.80 | `*.home.lab` ingress (internal only; never port-forward this) |
+| Traefik public LB | 10.0.20.83 | `charknox.duckdns.org` (internet-facing: the file share only) |
 | CoreDNS LB | 10.0.20.53 | Internal DNS |
 | PostgreSQL | 10.0.30.10 | `postgres.home.lab` |
 | Ollama (VM) | 10.0.20.30 | `ollama.home.lab` |
 | Ollama (Workstation) | 10.0.10.40 | `desktop.home.lab` |
 | LiteLLM | 10.0.20.80 | `llm.home.lab` (via Traefik) |
+| SearXNG | 10.0.20.80 | `searxng.home.lab` (via Traefik, internal only) |
 | WireGuard | 10.0.20.21 (hostNetwork) | `vpn.home.lab` (web UI) |
 
 ### Kubeconfig
@@ -153,6 +160,9 @@ kubectl apply -f kubernetes/projects/infrastructure.yml
      - https://github.com/azskylab/<new-repo>.git
    ```
    Then apply manually: `kubectl apply -f kubernetes/projects/applications.yml`
+   A **private** repo also needs an ArgoCD repository Secret (a read-only deploy key over SSH, a Secret labelled
+   `argocd.argoproj.io/secret-type=repository` in `argocd`),
+   and the AppProject must list the SSH URL.
 
 3. **Add DNS entry** in `kubernetes/apps/coredns/coredns.yml` under `zoneFiles[0].contents`:
    ```
@@ -206,24 +216,27 @@ spec:
 |---------|-----------|------|--------|
 | ArgoCD | argocd | Helm (argo-helm) | https://argocd.home.lab |
 | Traefik | traefik | Helm | LB at 10.0.20.80 |
+| Traefik (public) | traefik-public | Helm (same chart as `traefik`) | LB at 10.0.20.83; serves only Ingresses of class `traefik-public` |
 | CoreDNS | coredns | Helm | LB at 10.0.20.53 |
-| cert-manager | cert-manager | Helm | Internal CA (`home-lab-ca`) |
+| cert-manager | cert-manager | Helm | Internal CA (`home-lab-ca`); Let's Encrypt (`letsencrypt-staging`, `letsencrypt-prod`) for public hosts |
 | MetalLB | metallb-system | Helm | IP pool: `k8s-vlan-pool` |
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
 | ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
 | ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
+| system-upgrade-controller | system-upgrade | Upstream manifests v0.20.2 + `plans.yml` | k3s upgrades (see Common Tasks) |
 
 ### Application Workloads
 
 | App | Namespace | Source Repo | Access |
 |-----|-----------|-------------|--------|
-| Linkwarden | linkwarden | homelab (kubernetes/manifests/linkwarden/) | https://linkwarden.home.lab |
 | Workout Tracker | workout-tracker | GitHub azskylab/workouttracker (k8s/) | https://workout.home.lab |
 | CorpoCache | corpocache | GitHub azskylab/CorpoCache (helm/) | https://cache.home.lab |
 | Speedtest Tracker | speedtest-tracker | homelab (kubernetes/manifests/speedtest-tracker/) | https://speedtest.home.lab |
 | LiteLLM | litellm | homelab (kubernetes/manifests/litellm/) | https://llm.home.lab |
 | Open WebUI | open-webui | homelab (kubernetes/manifests/open-webui/) | https://chat.home.lab |
+| SearXNG | searxng | homelab (kubernetes/manifests/searxng/) | https://searxng.home.lab |
 | WireGuard | wireguard | homelab (kubernetes/manifests/wireguard/) | https://vpn.home.lab |
+| File share | fileshare | homelab (kubernetes/manifests/fileshare/) | `https://charknox.duckdns.org` (public, password) |
 
 ## External PostgreSQL
 
@@ -252,6 +265,27 @@ postgresql://<user>:<password>@10.0.30.10:5432/<database>
 Store in a Kubernetes Secret in the app's namespace, referenced by the backend pods.
 
 ## Common Tasks
+
+### Lab Status Snapshot
+
+`bash scripts/lab-status.sh` prints the whole lab in about 7 seconds and changes nothing: git, workstation, k3s nodes,
+Argo apps that aren't Synced+Healthy, problem pods, k3s upgrade plans, then Proxmox hosts and VMs over SSH (versions,
+pending updates, reboots needed, disk, Ollama/GPU). Run it first in any maintenance sweep.
+
+### Upgrading k3s (system-upgrade-controller)
+
+k3s upgrades come from git (since 2026-11-06). The system-upgrade-controller (`system-upgrade` namespace, app
+`kubernetes/apps/system-upgrade/`) runs the `server-plan` and `agent-plan` in `kubernetes/manifests/system-upgrade/plans.yml`.
+
+1. Bump `version` in both plans (one minor at a time), and `k3s_version` in the Ansible `k3s_server`/`k3s_agent` role
+   defaults so fresh installs match. Push.
+2. The server upgrades first; the agents wait for it, then go one at a time. Nodes are cordoned, not drained:
+   restarting k3s leaves running containers alone.
+3. Watch: `kubectl -n system-upgrade get plans,jobs` and `kubectl get nodes` (both plans show `COMPLETE True`).
+
+The datastore is single-server SQLite and the plans don't back it up. For a minor bump, take an online copy first
+(the server has no `sqlite3` CLI, so through Python):
+`ssh ubuntu@10.0.20.10 'sudo python3 -c "import sqlite3; d=\"/var/lib/rancher/k3s/server/\"; sqlite3.connect(d+\"db/state.db\").backup(sqlite3.connect(d+\"db.bak-pre-<ver>.db\"))"'`
 
 ### Deploying Code Changes to an App
 
@@ -310,7 +344,6 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/glance/jellyfin-api-key` | glance-secrets | glance | Jellyfin API key for media widgets |
 | `homelab/glance/unifi-api-key` | glance-secrets | glance | Unifi controller API key |
 | `homelab/glance/speedtest-tracker-api-token` | glance-secrets | glance | Speedtest Tracker API token |
-| `homelab/linkwarden/*` | linkwarden-secrets | linkwarden | DB password, NextAuth, Meili key, API key |
 | `homelab/proxmox/monitoring-*` | pve-exporter-credentials | monitoring | PVE API token (`prometheus@pve!monitoring`) |
 | `homelab/unifi/unpoller-*` | unpoller-credentials | monitoring | UnPoller read-only user credentials |
 | `homelab/speedtest-tracker/app-key` | speedtest-tracker-secrets | speedtest-tracker | Laravel APP_KEY |
@@ -323,20 +356,20 @@ echo 'value' | pass insert -e homelab/<app>/<key-name>
 | `homelab/litellm/master-key` | litellm-secrets | litellm | LiteLLM master key (API auth + UI login) |
 | `homelab/litellm/db-password` | litellm-secrets | litellm | LiteLLM PostgreSQL password |
 | `homelab/litellm/master-key` | litellm-api-key | open-webui | Same key, used by Open WebUI to call LiteLLM |
+| `homelab/searxng/secret-key` | searxng-secrets (`secret-key`) | searxng | SearXNG `server.secret_key` (env `SEARXNG_SECRET`) |
 | `homelab/wireguard/password-hash` | wireguard-secrets | wireguard | Bcrypt hash for wg-easy web UI login |
 | `homelab/wireguard/wg-host` | wireguard-secrets | wireguard | DuckDNS hostname (`malliefivpn.duckdns.org`) |
 | `homelab/wireguard/duckdns-token` | duckdns-secrets | wireguard | DuckDNS API token |
-| `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomain (`malliefivpn`) |
+| `homelab/wireguard/duckdns-subdomain` | duckdns-secrets | wireguard | DuckDNS subdomains kept on the home IP (`malliefivpn,charknox`) |
+| `homelab/fileshare/password` | fileshare-auth (`htpasswd`, user `fucksony`, SHA-512 hash) | fileshare | Download page password |
 
 ### Recreating a K8s Secret from pass
 
 ```bash
-# Example: recreate linkwarden-secrets
-kubectl create secret generic linkwarden-secrets -n linkwarden \
-  --from-literal=NEXTAUTH_SECRET="$(pass homelab/linkwarden/nextauth-secret)" \
-  --from-literal=NEXTAUTH_URL="https://linkwarden.home.lab/api/v1/auth" \
-  --from-literal=DATABASE_URL="$(pass homelab/linkwarden/database-url)" \
-  --from-literal=MEILI_MASTER_KEY="$(pass homelab/linkwarden/meili-master-key)"
+# Example: recreate pgadmin-credentials
+kubectl create secret generic pgadmin-credentials -n pgadmin \
+  --from-literal=default-email="$(pass homelab/pgadmin/default-email)" \
+  --from-literal=default-password="$(pass homelab/pgadmin/default-password)"
 ```
 
 ## LiteLLM (Multi-GPU API Gateway)
@@ -356,9 +389,21 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 - **`ws/<model>`** — routes to the workstation (RTX 5090)
 - **`ollama/<model>`** — load-balanced across whichever backend has the model
 
-Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup).
+Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup). Use `model: "ollama_chat/<model>"` in `litellm_params`: the `ollama/` prefix talks to `/api/generate` and fakes tool calls with JSON mode, which broke every tool-using client (omp, Open WebUI tools) until 2026-10-22.
 
-Current headliners (2026-08): `ws/qwen3.6:35b-a3b` (MoE, thinking, 23GB on the 5090) and `vm/qwen3.6:27b` (17GB on the 3090).
+Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
+and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster). `ws/flint:40b` (since 2026-11-06; Recursive's Flint, NVFP4,
+22GB, needs Ollama >= 0.40.9, text only) fits the 5090 at 64k context (28.4 of 32.6 GB).
+
+`qwen3.6-abliterated:27b` (both backends, since 2026-10-23) is huihui-ai's abliterated (refusals removed) Qwen3.6 27B,
+not from the Ollama library, so `ollama pull` and the Ansible role can't fetch it. To rebuild it on a backend:
+- Download `Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf` (16.8 GB) and `mmproj-model-f16.gguf` from
+  `huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF` and check them against the repo's LFS sha256. `ollama pull
+  hf.co/...:Q4_K` doesn't work: Hugging Face only accepts standard quant names like `Q4_K_M` as tags.
+- `ollama create qwen3.6-abliterated:27b -f Modelfile`. The Modelfile is `ollama show --modelfile qwen3.6:35b-a3b`
+  minus its `FROM`, plus two `FROM` lines (the model GGUF, then the mmproj), so it gets the same renderer, parser,
+  sampling and MTP drafting.
+- MTP (the `nextn` layer, `draft_num_predict 2`) roughly doubles speed: 66 → 115 tok/s on the 5090.
 
 ### Ollama context length (important)
 
@@ -367,18 +412,29 @@ systemd drop-in `zz-context.conf` on both backends (the `zz-` prefix matters —
 `override.conf` also sets `OLLAMA_CONTEXT_LENGTH` and drop-ins are applied in filename
 order, last wins):
 
-- Workstation: `OLLAMA_CONTEXT_LENGTH=32768`, `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
+- Workstation: `OLLAMA_CONTEXT_LENGTH=65536` (since 2026-10-22; every model still fits on the 5090, 25-27.4 of 32.6 GB), `OLLAMA_NUM_PARALLEL=1` (parallel slots multiply KV memory)
 - ollama-01 VM: `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_NUM_PARALLEL=1` (24GB card, tighter)
 
-### oh-my-pi (omp) — local coding agent on the workstation
+### OpenCode — local coding agent on the workstation
 
-[omp](https://github.com/can1357/oh-my-pi) is installed on the workstation
-(`npm -g --prefix ~/.local`, needs `bun` from extra) and wired to LiteLLM, so it codes
-against local GPUs:
+[OpenCode](https://github.com/anomalyco/opencode) 2.x (MIT) is installed from the Arch repo (`pacman -S opencode`, so
+`-Syu` updates it) and wired to LiteLLM, so it codes against the local GPUs. It replaced oh-my-pi (omp) on 2026-10-22:
+same bug-fix task on `ws/qwen3.8:27b`, both passed, but OpenCode's own prompt is about 8k tokens against omp's 18k,
+so it also runs on the 3090's 16k context (omp could not).
 
-- Provider config: `~/.omp/agent/models.yml` — provider `homelab`, `baseUrl: http://llm.home.lab/v1`, `api: openai-chat` (NOT `openai-completions` — that endpoint hangs against LiteLLM/Ollama), apiKey = LiteLLM master key
-- Default model: `~/.omp/agent/config.yml` → `modelRoles: default: qwen3.6:35b-a3b` — use the **fuzzy short name**; the full `homelab/ws/qwen3.6:35b-a3b` form breaks omp's provider/model parsing (extra slash) and it silently falls back to another model
-- Usage: `omp "prompt"` (interactive) or `omp -p "prompt"` (print mode); `--model <fuzzy>` to switch
+- Config: `~/.config/opencode/opencode.jsonc`. Provider `homelab`, package `@opencode/ai/providers/openai-compatible`,
+  `settings.baseURL: http://llm.home.lab/v1`, `settings.apiKey: {file:~/.config/opencode/litellm.key}` (the LiteLLM
+  master key, mode 600). Model keys are LiteLLM model names; default `homelab/ws/qwen3.8:27b`.
+- Each model's `limit.context` is its backend's `OLLAMA_CONTEXT_LENGTH` (ws 65536, vm 16384); `limit.output` 16384 / 4096.
+  `capabilities.tools: true` must be set on custom models.
+- `disabled_providers: [ollama, lmstudio, vllm, opencode]`: the first three would list the same models again with their
+  native 262k context; `opencode` is OpenCode's hosted free-model service, which would send code off the LAN.
+  `share: disabled`, `update: disable` (pacman updates it).
+- A background server (127.0.0.1 only) runs the sessions; after editing the config run `opencode service restart`.
+  `opencode models` should list exactly the four `homelab/...` models.
+- Usage: `opencode` (TUI) in a project folder, or `opencode run --auto "prompt"` (one-shot, auto-approves tools);
+  `-m homelab/ws/qwen3.6:35b-a3b` for the faster model, `-m homelab/vm/qwen3.8:27b` for the 3090.
+- omp's leftover config and sessions are in `~/.omp` (796K); `rm -rf ~/.omp` once it is no longer wanted.
 
 ### Authentication
 
@@ -393,12 +449,125 @@ The LiteLLM admin UI is at `https://llm.home.lab/ui` (login with the master key)
 Open WebUI connects to LiteLLM via env vars in `kubernetes/manifests/open-webui/deployment.yml`:
 - `OPENAI_API_BASE_URLS` → `http://litellm.litellm.svc.cluster.local:4000/v1`
 - `OPENAI_API_KEYS` → from Secret `litellm-api-key` in `open-webui` namespace
+- `ENABLE_OLLAMA_API=False`: every model comes through LiteLLM (since 2026-10-23)
+
+These env vars only seed a fresh install. After that the saved settings in `webui.db` (table `config`, keys
+`openai.*`/`ollama.*`) win, so change connections in Admin ▸ Settings ▸ Connections. The `ollama/` load-balanced
+routes are switched off in Admin ▸ Models (`is_active` 0), so the picker shows only `vm/` and `ws/`. A new
+`ollama/` route shows up until it is switched off the same way.
+
+### Web Search (SearXNG)
+
+Open WebUI searches through SearXNG (`searxng` namespace, internal only:
+`http://searxng.searxng.svc.cluster.local:8080`, browser at `https://searxng.home.lab`).
+
+- The `WEB_SEARCH_*` env vars in the deployment have the same seed-only catch: the `web.search.*` rows in `webui.db` win,
+  so change them in Admin ▸ Settings ▸ Web Search.
+- Settings: `kubernetes/manifests/searxng/configmap.yml`. Limiter off, so no Valkey. `preferences.lock: [safesearch]`
+  because Open WebUI sends `safesearch=1` on every query, which would otherwise beat `safe_search: 0`.
+- Google, Bing and Startpage are off by default in SearXNG (Startpage `inactive`, it has a proof-of-work captcha), so the
+  ConfigMap turns them on. Google and Startpage refused the home IP on 2026-10-30 (DuckDuckGo only sometimes); Brave
+  and Bing carry the results. An engine that refuses is suspended for a while and shows in `unresponsive_engines`.
+- Open WebUI embeds fetched pages inside its own pod, so its memory limit went from 1 to 2 GiB (it already peaked at
+  1 GB without web search).
+
+```bash
+# Recreate the secret
+kubectl create namespace searxng
+kubectl -n searxng create secret generic searxng-secrets --from-literal=secret-key="$(pass homelab/searxng/secret-key)"
+```
 
 ### Network Requirements
 
 - **USG firewall rule**: VLAN 20 (10.0.20.0/24) → 10.0.10.40:11434 (TCP) — allows k8s pods to reach workstation Ollama
 - **Workstation UFW rule**: `ufw allow from 10.0.20.0/24 to any port 11434 proto tcp`
 - Workstation Ollama binds `0.0.0.0` via systemd override at `/etc/systemd/system/ollama.service.d/override.conf`
+
+## Public Door (traefik-public)
+
+A second Traefik on its own MetalLB address (`10.0.20.83`, namespace `traefik-public`, serves only Ingresses of class
+`traefik-public`) is the lab's only internet-facing TCP entry, used by the file share (next section); the router never
+forwards to the lab-wide Traefik. Certificates come from the ClusterIssuer `letsencrypt-prod` (HTTP-01; `letsencrypt-staging` for tests).
+
+**History:** it was built for the MMO game server (azskylab/videogame, `wss://jankmmo.duckdns.org`). The game was taken
+down on 2026-10-24 (namespace `mmo`, Argo app, database `mmo`, Grafana board, GHCR image all removed) and retired on
+2026-11-06 (local copy, backups and secrets deleted; the code lives on only in the private GitHub repo).
+
+### USG Port Forwards
+
+| Name | Protocol | WAN port | Forward IP | Forward port |
+|------|----------|----------|------------|--------------|
+| WireGuard VPN | UDP | 443 | `10.0.20.21` | 443 |
+| Public https | TCP | 443 | `10.0.20.83` | 443 |
+| Public http (Let's Encrypt) | TCP | 80 | `10.0.20.83` | 80 |
+
+Never forward to `10.0.20.80` (lab-wide Traefik) or to a node address over TCP. TCP and UDP 443 go to different hosts.
+
+### Important Design Decisions and Gotchas
+
+- **Separate public Traefik.** It only serves Ingresses of class `traefik-public`, so `*.home.lab` hosts return 404 on
+  the public door. Check after any change:
+  `curl -sk -o /dev/null -w "%{http_code}\n" --resolve grafana.home.lab:443:10.0.20.83 https://grafana.home.lab/` → `404`.
+  The lab-wide Traefik serves only class `traefik` (since 2026-10-22; before that both doors claimed the game's
+  Ingresses and kept overwriting their status). Both doors strip aliasing headers (`aliasHeadersStrategy: delete`,
+  CVE-2026-88879) and set `core.strictTLSOptions`; the public door also refuses encoded characters in paths.
+- **HTTP-01 behind an https redirect.** The public Traefik redirects port 80 to https for everything, so the Let's
+  Encrypt issuers give the solver Ingress `router.entrypoints: web,websecure` and `router.tls: "true"`
+  (`letsencrypt-issuers.yml`, `ingressTemplate`). Let's Encrypt follows the redirect and does not check the
+  certificate behind it.
+- **Split DNS inside the cluster (manual, not in git).** From inside the LAN the public IP answers with the USG's own
+  login page (no hairpin for that path), so cert-manager's self-check failed. The k3s CoreDNS override resolves a public
+  name to the public Traefik inside the cluster. It lives in the `coredns-custom` ConfigMap in `kube-system`, one key
+  per name (the game used `jankmmo.server`, removed 2026-10-24):
+  ```
+  <name>.duckdns.org:53 {
+    errors
+    hosts {
+      10.0.20.83 <name>.duckdns.org
+    }
+  }
+  ```
+  Add with `kubectl -n kube-system patch configmap coredns-custom --type merge -p '{"data":{"<name>.server":"..."}}'`
+  then `kubectl -n kube-system rollout restart deploy/coredns`.
+- **Split DNS for LAN clients (in git, since 2026-10-18).** The lab CoreDNS (`coredns-external`, 10.0.20.53) has a
+  zone answering `10.0.20.83` for each public name (`kubernetes/apps/coredns/coredns.yml`), so home computers that use
+  10.0.20.53 reach them. A device on a network whose DHCP hands out another DNS server still gets the public IP and the
+  USG login page (`nslookup <name>.duckdns.org` tells which).
+- **Testing from the LAN is misleading.** `curl https://<public IP>/` from inside answers with the USG login page for any
+  host name (HTTP 200). Test the doors by address (`--resolve host:443:10.0.20.83`) or from a phone on mobile data.
+
+## File Share (Public Downloads)
+
+A password-protected download page for handing big files (tens of GB) to a friend: `https://charknox.duckdns.org`,
+user `fucksony`, password `pass homelab/fileshare/password`. Pull only: the friend downloads in a browser, nothing uploads.
+
+```
+Browser → USG TCP 443 → traefik-public 10.0.20.83 → Ingress fileshare (class traefik-public) → nginx :8080
+nginx → NFS 10.0.10.11:/mnt/media/fileshare (read-only: the k8s VLAN's export of /mnt/media is ro)
+```
+
+- **Files:** copy them from the workstation (the management VLAN has the rw export), then they show up in the listing:
+  `rsync -ah --progress --partial <files> root@10.0.10.11:/mnt/media/fileshare/`. Make sure they're world-readable
+  (nginx runs as uid 101). Dot files (rsync's partial uploads) are never listed or served.
+- **Not on local disks:** the agents have about 50 GB free each, so a 50 GB file would put a node under disk pressure.
+  The NFS share had 502 GB free (2026-10-24), shared with Jellyfin's media.
+- **Downloads resume** (nginx answers Range requests); every file downloads as `application/octet-stream`.
+- **Limits:** 4 connections and 5 requests/s (burst 20) per client address, so password guessing gets 429. No bandwidth
+  cap; add `limit_rate` in the ConfigMap if downloads crowd out other traffic.
+- **DNS:** DuckDNS updater in `wireguard` keeps `charknox` on the home IP (subdomain list in `duckdns-secrets`).
+  Split DNS (see the Public Door section): `charknox.duckdns.org` zone in `kubernetes/apps/coredns/coredns.yml`, and key
+  `charknox.server` in `coredns-custom` in `kube-system` (manual, not in git; needed for cert-manager's self-check).
+- **Certificate:** `fileshare-tls`, ClusterIssuer `letsencrypt-prod` (HTTP-01).
+- **Switch it off** when not in use: `kubectl -n fileshare scale deploy/fileshare --replicas=0` is reverted by
+  self-heal, so set `replicas: 0` in the manifest (or delete `kubernetes/apps/fileshare/`) and push.
+
+```bash
+# Recreate the secret
+kubectl create namespace fileshare
+kubectl -n fileshare create secret generic fileshare-auth --from-literal=htpasswd="fucksony:$(openssl passwd -6 "$(pass homelab/fileshare/password)")"
+# Test from the LAN (by address: the public IP answers with the USG login page from inside)
+curl -s -o /dev/null -w "%{http_code}\n" -u "fucksony:$(pass homelab/fileshare/password)" --resolve charknox.duckdns.org:443:10.0.20.83 https://charknox.duckdns.org/
+```
 
 ## GitHub Actions CI/CD (ARC)
 

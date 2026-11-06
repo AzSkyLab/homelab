@@ -20,7 +20,7 @@ homelab/
 │       └── sandbox/              # On-demand test VMs
 ├── ansible/                      # Post-provisioning playbooks + roles
 ├── cloud-init/                   # Cloud-init configs (base, k8s, postgres)
-├── scripts/                      # Proxmox host setup, API token generation
+├── scripts/                      # Proxmox host setup, API token generation, lab-status.sh
 ├── kubernetes/
 │   ├── root-app.yml              # ArgoCD bootstrap (app-of-apps)
 │   ├── projects/                 # ArgoCD AppProjects (NOT auto-synced)
@@ -35,6 +35,7 @@ homelab/
 │   │   ├── traefik/
 │   │   ├── workout-tracker/
 │   │   ├── arc/                  # GitHub Actions Runner Controller (ARC)
+│   │   ├── system-upgrade/      # system-upgrade-controller: k3s upgrades from git
 │   │   ├── litellm/             # LiteLLM API gateway
 │   │   ├── searxng/             # SearXNG metasearch (web search for Open WebUI)
 │   │   ├── fileshare/           # Password-protected download page for a friend (public, charknox.duckdns.org)
@@ -222,6 +223,7 @@ spec:
 | Prometheus + Grafana | monitoring | Helm | https://grafana.home.lab |
 | ARC Controller | arc-systems | Helm (gha-runner-scale-set-controller) | N/A (internal) |
 | ARC Runner Set | arc-runners | Helm (gha-runner-scale-set) | GitHub Actions `homelab-runners` |
+| system-upgrade-controller | system-upgrade | Upstream manifests v0.20.2 + `plans.yml` | k3s upgrades (see Common Tasks) |
 
 ### Application Workloads
 
@@ -263,6 +265,27 @@ postgresql://<user>:<password>@10.0.30.10:5432/<database>
 Store in a Kubernetes Secret in the app's namespace, referenced by the backend pods.
 
 ## Common Tasks
+
+### Lab Status Snapshot
+
+`bash scripts/lab-status.sh` prints the whole lab in about 7 seconds and changes nothing: git, workstation, k3s nodes,
+Argo apps that aren't Synced+Healthy, problem pods, k3s upgrade plans, then Proxmox hosts and VMs over SSH (versions,
+pending updates, reboots needed, disk, Ollama/GPU). Run it first in any maintenance sweep.
+
+### Upgrading k3s (system-upgrade-controller)
+
+k3s upgrades come from git (since 2026-11-06). The system-upgrade-controller (`system-upgrade` namespace, app
+`kubernetes/apps/system-upgrade/`) runs the `server-plan` and `agent-plan` in `kubernetes/manifests/system-upgrade/plans.yml`.
+
+1. Bump `version` in both plans (one minor at a time), and `k3s_version` in the Ansible `k3s_server`/`k3s_agent` role
+   defaults so fresh installs match. Push.
+2. The server upgrades first; the agents wait for it, then go one at a time. Nodes are cordoned, not drained:
+   restarting k3s leaves running containers alone.
+3. Watch: `kubectl -n system-upgrade get plans,jobs` and `kubectl get nodes` (both plans show `COMPLETE True`).
+
+The datastore is single-server SQLite and the plans don't back it up. For a minor bump, take an online copy first
+(the server has no `sqlite3` CLI, so through Python):
+`ssh ubuntu@10.0.20.10 'sudo python3 -c "import sqlite3; d=\"/var/lib/rancher/k3s/server/\"; sqlite3.connect(d+\"db/state.db\").backup(sqlite3.connect(d+\"db.bak-pre-<ver>.db\"))"'`
 
 ### Deploying Code Changes to an App
 
