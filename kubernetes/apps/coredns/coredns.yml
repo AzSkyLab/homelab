@@ -67,7 +67,7 @@ spec:
           - filename: home.lab.db
             domain: home.lab
             contents: |
-              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026110601 3600 600 604800 600
+              home.lab.    IN  SOA  ns.home.lab. admin.home.lab. 2026110602 3600 600 604800 600
               home.lab.    IN  NS   ns.home.lab.
               ns                IN  A    10.0.20.53
               k3s-server        IN  A    10.0.20.10
@@ -88,7 +88,6 @@ spec:
               ollama            IN  A    10.0.20.30
               chat              IN  A    10.0.20.80
               n8n               IN  A    10.0.20.80
-              longhorn          IN  A    10.0.20.80
               glance-k8s        IN  A    10.0.20.61
               pve-identity      IN  A    10.0.10.11
               pve-r720          IN  A    10.0.10.12
