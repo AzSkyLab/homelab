@@ -1,9 +1,10 @@
 ---
 # ArgoCD
 argocd_namespace: argocd
-argocd_chart_version: "9.5.11"
-# Newest 3.3 patch; no argo-helm chart ships it yet, so the image is pinned on top of the chart
-argocd_image_tag: "v3.3.19"
+# Chart 10.11.7 ships v3.5.7 (the newest 3.5). 3.6 waits for a few patches: it forces Server-Side Diff on every
+# ServerSideApply app (metallb, kube-prometheus-stack, system-upgrade). Chart 10 adds NetworkPolicies by default.
+argocd_chart_version: "10.11.7"
+argocd_image_tag: "v3.5.7"
 argocd_chart_repo: https://argoproj.github.io/argo-helm
 argocd_nodeport: 30443
 
