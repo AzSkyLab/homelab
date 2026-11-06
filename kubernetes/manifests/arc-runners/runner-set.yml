@@ -6,10 +6,10 @@ metadata:
   name: homelab-runners-gha-rs-no-permission
   namespace: arc-runners
   labels:
-    helm.sh/chart: gha-rs-0.14.0
+    helm.sh/chart: gha-rs-0.15.1
     app.kubernetes.io/name: homelab-runners
     app.kubernetes.io/instance: homelab-runners
-    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/version: "0.15.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gha-rs
     actions.github.com/scale-set-name: homelab-runners
@@ -25,10 +25,10 @@ metadata:
   name: homelab-runners-gha-rs-manager
   namespace: arc-runners
   labels:
-    helm.sh/chart: gha-rs-0.14.0
+    helm.sh/chart: gha-rs-0.15.1
     app.kubernetes.io/name: homelab-runners
     app.kubernetes.io/instance: homelab-runners
-    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/version: "0.15.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gha-rs
     actions.github.com/scale-set-name: homelab-runners
@@ -102,10 +102,10 @@ metadata:
   name: homelab-runners-gha-rs-manager
   namespace: arc-runners
   labels:
-    helm.sh/chart: gha-rs-0.14.0
+    helm.sh/chart: gha-rs-0.15.1
     app.kubernetes.io/name: homelab-runners
     app.kubernetes.io/instance: homelab-runners
-    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/version: "0.15.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gha-rs
     actions.github.com/scale-set-name: homelab-runners
@@ -133,16 +133,16 @@ metadata:
   namespace: arc-runners
   labels:
     app.kubernetes.io/component: "autoscaling-runner-set"
-    helm.sh/chart: gha-rs-0.14.0
+    helm.sh/chart: gha-rs-0.15.1
     app.kubernetes.io/name: homelab-runners
     app.kubernetes.io/instance: homelab-runners
-    app.kubernetes.io/version: "0.14.0"
+    app.kubernetes.io/version: "0.15.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gha-rs
     actions.github.com/scale-set-name: homelab-runners
     actions.github.com/scale-set-namespace: arc-runners
   annotations:
-    actions.github.com/values-hash: c01ca1640e16b8722f6a39a382ecf9aceb35fe6716fa8a35abc1231e6c4c1da
+    actions.github.com/values-hash: da6ad4b07ffb32b04f144a9b4586cdcd60d2701b54cb72c880d2123b915ee65
     actions.github.com/cleanup-manager-role-binding: homelab-runners-gha-rs-manager
     actions.github.com/cleanup-manager-role-name: homelab-runners-gha-rs-manager
     actions.github.com/cleanup-no-permission-service-account-name: homelab-runners-gha-rs-no-permission
@@ -153,6 +153,10 @@ spec:
   runnerScaleSetName: homelab-runners
   maxRunners: 3
   minRunners: 0
+  listenerConfig:
+    scaler:
+      burst: 100
+      qps: 50
 
   template:
     spec:

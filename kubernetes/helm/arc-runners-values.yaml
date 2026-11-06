@@ -1,0 +1,44 @@
+# Values for: helm template homelab-runners oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set --version <ver> -n arc-runners -f kubernetes/helm/arc-runners-values.yaml > kubernetes/manifests/arc-runners/runner-set.yml
+# The controller uses chart defaults: helm template arc-controller oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller --version <ver> -n arc-systems > kubernetes/manifests/arc-controller/controller.yml
+# CRDs are not in the render: before pushing, helm pull the controller chart --untar and kubectl apply --server-side --force-conflicts -f <chart>/crds/
+githubConfigUrl: https://github.com/azskylab
+githubConfigSecret: arc-github-app
+runnerScaleSetName: homelab-runners
+minRunners: 0
+maxRunners: 3
+containerMode:
+  type: dind
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+template:
+  spec:
+    dnsPolicy: None
+    dnsConfig:
+      nameservers:
+      - 10.0.20.53
+      searches:
+      - svc.cluster.local
+      - cluster.local
+    initContainers:
+    - name: setup-ca
+      image: docker:27-dind
+      command:
+      - sh
+      - -c
+      - |
+        cp /ca/home-lab-root-ca.crt /usr/local/share/ca-certificates/
+        update-ca-certificates
+        cp -r /etc/ssl/certs/* /ssl-certs/
+      volumeMounts:
+      - name: home-lab-ca
+        mountPath: /ca
+        readOnly: true
+      - name: ssl-certs
+        mountPath: /ssl-certs
+    volumes:
+    - name: home-lab-ca
+      configMap:
+        name: arc-runner-ca
+    - name: ssl-certs
+      emptyDir: {}
