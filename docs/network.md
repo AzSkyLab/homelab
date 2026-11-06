@@ -8,7 +8,7 @@
 | Switch | US-24-250W (24-port PoE) | 10.0.10.2 | Management | Trunk + access ports, powers APs |
 | Controller | Cloud Key Plus | 10.0.10.3 | Management | Unifi Network controller |
 | AP | UAP-AC-Pro | 10.0.10.5 | Management | WiFi — 802.11ac Wave 1 |
-| AP | U7 Pro | 10.0.10.6 | Management | WiFi — WiFi 7 |
+| AP | U7 Pro | 10.0.10.4 | Management | WiFi — WiFi 7 |
 
 ## Physical Topology
 
@@ -33,7 +33,7 @@ USG 4 Pro (10.0.10.1)
   │               ├── Port 11 (access, Mgmt)    ──► neuromancer (workstation)
   │               ├── Port 12 (access, Mgmt)    ──► Cloud Key Plus (PoE)
   │               ├── Port 13 (PoE, trunk)      ──► UAP-AC-Pro (10.0.10.5)
-  │               ├── Port 14 (PoE, trunk)      ──► U7 Pro (10.0.10.6)
+  │               ├── Port 14 (PoE, trunk)      ──► U7 Pro (10.0.10.4)
   │               ├── Port 15 (access, Personal)──► Room connection #1
   │               ├── Port 16 (access, Personal)──► Room connection #2
   │               ├── Port 17 (access, Personal)──► Room connection #3
@@ -73,8 +73,8 @@ Management is the renamed default network (no VLAN tag — native/untagged).
 | 10.0.10.1 | USG 4 Pro | Gateway / router |
 | 10.0.10.2 | US-24-250W | Switch management |
 | 10.0.10.3 | Cloud Key Plus | Unifi Controller |
+| 10.0.10.4 | U7 Pro | AP |
 | 10.0.10.5 | UAP-AC-Pro | AP |
-| 10.0.10.6 | U7 Pro | AP |
 | 10.0.10.10 | dc-01 | AD DC / DNS / Entra Connect (azureskylab.net) |
 | 10.0.10.11 | pve-identity | Proxmox node (Intel E3-1230 v3) |
 | 10.0.10.12 | pve-r720 | Proxmox node (R720xd) |

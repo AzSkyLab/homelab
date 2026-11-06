@@ -7,7 +7,7 @@ Step-by-step guide for configuring VLANs on the USG 4 Pro and mapping SSIDs to V
 - Unifi Controller running on Cloud Key Plus (10.0.10.3)
 - USG 4 Pro adopted into controller (10.0.10.1)
 - UAP-AC-Pro adopted into controller (10.0.10.5)
-- U7 Pro adopted into controller (10.0.10.6)
+- U7 Pro adopted into controller (10.0.10.4)
 - US-24-250W Switch adopted into controller (10.0.10.2)
 
 ## Step 1: Create Networks (VLANs)
