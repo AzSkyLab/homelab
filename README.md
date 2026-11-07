@@ -119,7 +119,6 @@ Two Ollama backends are aggregated behind LiteLLM for unified model access:
 | Model | Backend | Size | Notes |
 |-------|---------|------|-------|
 | `ws/` + `vm/qwen3.8:27b` | both | 18GB | Dense, vision, thinking; strongest at agentic and coding work; load-balanced as `ollama/qwen3.8:27b` |
-| `ws/qwen3.6:35b-a3b` | RTX 5090 | 23GB | MoE (3B active), thinking modes; about 3x faster than qwen3.8 |
 | `ws/flint:40b` | RTX 5090 | 22GB | Recursive's Flint, NVFP4, text only (since 2026-11-06) |
 | `ws/` + `vm/qwen3.6-abliterated:27b` | both | 18GB | huihui-ai's abliterated (refusals removed) Qwen3.6 27B, vision, MTP drafting; load-balanced as `ollama/qwen3.6-abliterated:27b` |
 
@@ -136,7 +135,7 @@ Default model: `ws/qwen3.8:27b` on the 5090.
 ```bash
 opencode                                              # interactive TUI in the current folder
 opencode run --auto "fix the failing tests"           # one-shot
-opencode run -m homelab/ws/qwen3.6:35b-a3b "..."      # switch model (faster MoE)
+opencode run -m homelab/ws/flint:40b "..."            # switch model
 ```
 
 Config: `~/.config/opencode/opencode.jsonc` (provider → `http://llm.home.lab/v1`);
