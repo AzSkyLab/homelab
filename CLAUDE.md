@@ -287,6 +287,19 @@ The datastore is single-server SQLite and the plans don't back it up. For a mino
 (the server has no `sqlite3` CLI, so through Python):
 `ssh ubuntu@10.0.20.10 'sudo python3 -c "import sqlite3; d=\"/var/lib/rancher/k3s/server/\"; sqlite3.connect(d+\"db/state.db\").backup(sqlite3.connect(d+\"db.bak-pre-<ver>.db\"))"'`
 
+### Version Updates (Renovate)
+
+Renovate (Mend's hosted GitHub App, since 2026-11-06) reads `renovate.json` and opens PRs on Monday mornings for every
+pinned version: Helm charts in `kubernetes/apps/`, image tags in `kubernetes/manifests/`, Terraform providers, and the
+pins marked with a `# renovate:` comment (Ansible role defaults, `plans.yml`). Its Dependency Dashboard issue lists
+everything pending.
+
+- Patch updates share one PR. Majors wait until ticked on the dashboard. ArgoCD releases wait 14 days. wg-easy is off.
+- Merging deploys through Argo, except ArgoCD and Ollama (the PR says which playbook to run). The ARC and
+  system-upgrade-controller PRs only bump the image; their notes say what to re-render or replace first.
+- A new pin needs a `# renovate: datasource=... depName=...` comment on the line above it. Check the config with
+  `npx --package renovate -- renovate-config-validator --strict renovate.json`.
+
 ### Deploying Code Changes to an App
 
 For apps using `imagePullPolicy: Always` with `latest` tag:
@@ -391,18 +404,18 @@ LiteLLM runs as an OpenAI-compatible proxy in k8s, aggregating both Ollama backe
 
 Models are listed explicitly per backend in `kubernetes/manifests/litellm/configmap.yml`. When pulling a new model on either Ollama instance, add a corresponding entry to the ConfigMap (then `kubectl rollout restart deployment litellm -n litellm` — config is read at startup). Use `model: "ollama_chat/<model>"` in `litellm_params`: the `ollama/` prefix talks to `/api/generate` and fakes tool calls with JSON mode, which broke every tool-using client (omp, Open WebUI tools) until 2026-10-22.
 
-Current headliners (2026-10): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`),
-and `ws/qwen3.6:35b-a3b` (MoE, 23GB, about 3x faster). `ws/flint:40b` (since 2026-11-06; Recursive's Flint, NVFP4,
-22GB, needs Ollama >= 0.40.9, text only) fits the 5090 at 64k context (28.4 of 32.6 GB).
+Current headliners (2026-11): `qwen3.8:27b` on both (dense, vision, 18GB; also load-balanced as `ollama/qwen3.8:27b`)
+and `ws/flint:40b` (since 2026-11-06; Recursive's Flint, NVFP4, 22GB, needs Ollama >= 0.40.9, text only), which fits
+the 5090 at 64k context (28.4 of 32.6 GB). `ws/qwen3.6:35b-a3b` was removed on 2026-11-06.
 
 `qwen3.6-abliterated:27b` (both backends, since 2026-10-23) is huihui-ai's abliterated (refusals removed) Qwen3.6 27B,
 not from the Ollama library, so `ollama pull` and the Ansible role can't fetch it. To rebuild it on a backend:
 - Download `Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf` (16.8 GB) and `mmproj-model-f16.gguf` from
   `huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF` and check them against the repo's LFS sha256. `ollama pull
   hf.co/...:Q4_K` doesn't work: Hugging Face only accepts standard quant names like `Q4_K_M` as tags.
-- `ollama create qwen3.6-abliterated:27b -f Modelfile`. The Modelfile is `ollama show --modelfile qwen3.6:35b-a3b`
-  minus its `FROM`, plus two `FROM` lines (the model GGUF, then the mmproj), so it gets the same renderer, parser,
-  sampling and MTP drafting.
+- `ollama create qwen3.6-abliterated:27b -f Modelfile`. The Modelfile is `ollama show --modelfile qwen3.6-abliterated:27b`
+  from the other backend (originally taken from the since-removed `qwen3.6:35b-a3b`) with its `FROM` lines pointed at
+  the model GGUF, then the mmproj, so it keeps the same renderer, parser, sampling and MTP drafting.
 - MTP (the `nextn` layer, `draft_num_predict 2`) roughly doubles speed: 66 → 115 tok/s on the 5090.
 
 ### Ollama context length (important)
@@ -431,10 +444,9 @@ so it also runs on the 3090's 16k context (omp could not).
   native 262k context; `opencode` is OpenCode's hosted free-model service, which would send code off the LAN.
   `share: disabled`, `update: disable` (pacman updates it).
 - A background server (127.0.0.1 only) runs the sessions; after editing the config run `opencode service restart`.
-  `opencode models` should list exactly the four `homelab/...` models.
+  `opencode models` should list exactly the three `homelab/...` models.
 - Usage: `opencode` (TUI) in a project folder, or `opencode run --auto "prompt"` (one-shot, auto-approves tools);
-  `-m homelab/ws/qwen3.6:35b-a3b` for the faster model, `-m homelab/vm/qwen3.8:27b` for the 3090.
-- omp's leftover config and sessions are in `~/.omp` (796K); `rm -rf ~/.omp` once it is no longer wanted.
+  `-m homelab/ws/flint:40b` for Flint, `-m homelab/vm/qwen3.8:27b` for the 3090.
 
 ### Authentication
 

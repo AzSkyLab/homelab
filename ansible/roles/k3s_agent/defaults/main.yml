@@ -1,3 +1,4 @@
 ---
 # Pinned k3s version (must match k3s_server role / running control plane).
+# renovate: datasource=github-releases depName=k3s-io/k3s
 k3s_version: "v1.37.2+k3s1"

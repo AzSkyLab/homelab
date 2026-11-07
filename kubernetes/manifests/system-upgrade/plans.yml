@@ -15,6 +15,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
+  # renovate: datasource=github-releases depName=k3s-io/k3s
   version: v1.37.2+k3s1
   concurrency: 1
   cordon: true
@@ -36,6 +37,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
+  # renovate: datasource=github-releases depName=k3s-io/k3s
   version: v1.37.2+k3s1
   concurrency: 1
   cordon: true
