@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: https://traefik.github.io/charts
     chart: traefik
-    targetRevision: "42.3.0"
+    targetRevision: 42.4.1
     helm:
       valuesObject:
         core:
@@ -40,8 +40,8 @@ spec:
               encodedCharacters:
                 allowEncodedNullCharacter: false
         service:
-          type: LoadBalancer
           spec:
+            type: LoadBalancer # chart 42.4 schema: under spec, not service.type
             loadBalancerIP: "10.0.20.80"
           annotations:
             metallb.universe.tf/address-pool: k8s-vlan-pool

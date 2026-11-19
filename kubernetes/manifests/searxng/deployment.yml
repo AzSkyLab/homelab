@@ -22,7 +22,7 @@ spec:
         runAsGroup: 977
       containers:
         - name: searxng
-          image: searxng/searxng:2026.11.5-3e95f6cd2
+          image: searxng/searxng:2026.11.19-368baa340
           env:
             - name: GRANIAN_HOST
               value: 0.0.0.0

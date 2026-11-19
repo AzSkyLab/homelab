@@ -16,7 +16,7 @@ spec:
   source:
     repoURL: https://traefik.github.io/charts
     chart: traefik
-    targetRevision: "42.3.0"
+    targetRevision: 42.4.1
     helm:
       valuesObject:
         fullnameOverride: traefik-public
@@ -35,11 +35,11 @@ spec:
           dashboard:
             enabled: false
         service:
-          type: LoadBalancer
           annotations:
             metallb.universe.tf/address-pool: k8s-vlan-pool
             metallb.universe.tf/loadBalancerIPs: "10.0.20.83"
           spec:
+            type: LoadBalancer # chart 42.4 schema: under spec, not service.type
             # Local keeps the player's real source address: Traefik then sets X-Forwarded-For / X-Real-Ip
             # (and drops forged ones from clients by default). MetalLB announces from the node running the pod.
             externalTrafficPolicy: Local
