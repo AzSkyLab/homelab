@@ -23,7 +23,7 @@ controller:
       memory: 512Mi
     limits:
       cpu: "1"
-      memory: 1Gi
+      memory: 2Gi # 1Gi OOMKilled on 2026-11-19 with 8 apps syncing at once (Traefik charts carry ~25 CRDs each)
 
 repoServer:
   resources:
